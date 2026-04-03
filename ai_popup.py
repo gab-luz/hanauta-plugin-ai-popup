@@ -51,15 +51,50 @@ except Exception:
     QWebEngineView = object  # type: ignore[assignment]
     WEBENGINE_AVAILABLE = False
 
-APP_DIR = Path(__file__).resolve().parents[2]
+PLUGIN_ROOT = Path(__file__).resolve().parent
+
+
+def _resolve_hanauta_src() -> Path:
+    env_hint = Path(str(os.environ.get("HANAUTA_SRC", "")).strip()).expanduser()
+    candidates: list[Path] = []
+    if str(env_hint).strip():
+        candidates.append(env_hint)
+    candidates.append(Path.home() / ".config" / "i3" / "hanauta" / "src")
+    try:
+        candidates.append(PLUGIN_ROOT.parents[2])
+    except Exception:
+        pass
+    for parent in PLUGIN_ROOT.parents:
+        candidates.append(parent / "hanauta" / "src")
+        candidates.append(parent / "src")
+    seen: set[str] = set()
+    for candidate in candidates:
+        try:
+            resolved = candidate.expanduser().resolve()
+        except Exception:
+            resolved = candidate.expanduser()
+        key = str(resolved)
+        if key in seen:
+            continue
+        seen.add(key)
+        if (resolved / "pyqt" / "shared" / "theme.py").exists():
+            return resolved
+    return Path.home() / ".config" / "i3" / "hanauta" / "src"
+
+
+APP_DIR = _resolve_hanauta_src()
 if str(APP_DIR) not in sys.path:
-    sys.path.append(str(APP_DIR))
+    sys.path.insert(0, str(APP_DIR))
 
 from pyqt.shared.theme import load_theme_palette, palette_mtime, relative_luminance
 from pyqt.shared.button_helpers import create_close_button
 
 THEME = load_theme_palette()
-AI_ASSETS_DIR = APP_DIR / "pyqt" / "ai-popup" / "assets"
+AI_ASSETS_DIR = (
+    PLUGIN_ROOT / "assets"
+    if (PLUGIN_ROOT / "assets" / "backend-icons").exists()
+    else APP_DIR / "pyqt" / "ai-popup" / "assets"
+)
 BACKEND_ICONS_DIR = AI_ASSETS_DIR / "backend-icons"
 AI_STATE_DIR = Path.home() / ".local" / "state" / "hanauta" / "ai-popup"
 BACKEND_SETTINGS_FILE = AI_STATE_DIR / "backend_settings.json"
@@ -178,7 +213,7 @@ apply_theme_globals()
 
 
 def load_ui_font() -> str:
-    font_dir = APP_DIR.parents[1] / "assets" / "fonts"
+    font_dir = APP_DIR.parent / "assets" / "fonts"
     if QFont("Rubik").exactMatch():
         return "Rubik"
     for name in ("Rubik-VariableFont_wght.ttf", "Rubik-Italic-VariableFont_wght.ttf", "Inter-Regular.ttf", "Inter.ttf"):
@@ -203,7 +238,7 @@ def _button_css_weight(ui_font: str) -> int:
 
 
 def load_material_icon_font() -> str:
-    font_dir = APP_DIR.parents[1] / "assets" / "fonts"
+    font_dir = APP_DIR.parent / "assets" / "fonts"
     for name in (
         "MaterialIcons-Regular.ttf",
         "MaterialIconsOutlined-Regular.otf",
