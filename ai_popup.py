@@ -79,10 +79,11 @@ except Exception:
     QMediaPlayer = object  # type: ignore[assignment]
     QT_MULTIMEDIA_AVAILABLE = False
 try:
-    from PyQt6.QtWebEngineCore import QWebEngineSettings
+    from PyQt6.QtWebEngineCore import QWebEnginePage, QWebEngineSettings
     from PyQt6.QtWebEngineWidgets import QWebEngineView
     WEBENGINE_AVAILABLE = True
 except Exception:
+    QWebEnginePage = object  # type: ignore[assignment]
     QWebEngineSettings = object  # type: ignore[assignment]
     QWebEngineView = object  # type: ignore[assignment]
     WEBENGINE_AVAILABLE = False
@@ -289,7 +290,7 @@ def apply_theme_globals() -> None:
     global ACCENT, ACCENT_SOFT, ACCENT_ALT, ACCENT_GLOW
     global USER_BG, ASSISTANT_BG, INPUT_BG, BOTTOM_BG
     global SHADOW, HOVER_BG, HERO_TOP, HERO_BOTTOM
-    global UI_TEXT_STRONG, UI_TEXT_MUTED, UI_ICON_DIM, UI_ICON_ACTIVE, CHAT_TEXT
+    global UI_TEXT_STRONG, UI_TEXT_MUTED, UI_ICON_DIM, UI_ICON_ACTIVE, CHAT_TEXT, CHAT_SURFACE_BG
 
     THEME = load_theme_palette()
     PANEL_BG = THEME.panel_bg
@@ -333,12 +334,14 @@ def apply_theme_globals() -> None:
         UI_ICON_DIM = rgba(UI_TEXT_STRONG, 0.84)
         UI_ICON_ACTIVE = UI_TEXT_STRONG
         CHAT_TEXT = "#F6F8FF"
+        CHAT_SURFACE_BG = mix(THEME.panel_bg, "#000000", 0.10)
     else:
         UI_TEXT_STRONG = TEXT
         UI_TEXT_MUTED = TEXT_MID
         UI_ICON_DIM = TEXT_DIM
         UI_ICON_ACTIVE = TEXT
         CHAT_TEXT = TEXT
+        CHAT_SURFACE_BG = mix(THEME.surface_container, "#ffffff", 0.22)
 
 
 apply_theme_globals()
@@ -2944,6 +2947,45 @@ def _looks_like_audio_filename(text: str) -> bool:
     return value.endswith((".wav", ".mp3", ".ogg", ".flac", ".m4a", ".aac"))
 
 
+def _audio_wave_svg_html(is_playing: bool) -> str:
+    active = "#b7a1ff"
+    idle = "#6f678d"
+    dot = "#d1c1ff" if is_playing else "#9f94cc"
+    fills = [active if idx < (11 if is_playing else 7) else idle for idx in range(27)]
+    return (
+        '<svg class="audio-wave-svg" viewBox="0 0 185 40" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">'
+        f'<rect y="17" width="3" height="6" rx="1.5" fill="{fills[0]}"/>'
+        f'<rect x="7" y="15.5" width="3" height="9" rx="1.5" fill="{fills[1]}"/>'
+        f'<rect x="21" y="6.5" width="3" height="27" rx="1.5" fill="{fills[2]}"/>'
+        f'<rect x="14" y="6.5" width="3" height="27" rx="1.5" fill="{fills[3]}"/>'
+        f'<rect x="28" y="3" width="3" height="34" rx="1.5" fill="{fills[4]}"/>'
+        f'<rect x="35" y="3" width="3" height="34" rx="1.5" fill="{fills[5]}"/>'
+        f'<rect x="42" y="5.5" width="3" height="29" rx="1.5" fill="{fills[6]}"/>'
+        f'<rect x="49" y="10" width="3" height="20" rx="1.5" fill="{fills[7]}"/>'
+        f'<rect x="56" y="13.5" width="3" height="13" rx="1.5" fill="{fills[8]}"/>'
+        f'<rect x="63" y="16" width="3" height="8" rx="1.5" fill="{fills[9]}"/>'
+        f'<rect x="70" y="12.5" width="3" height="15" rx="1.5" fill="{fills[10]}"/>'
+        f'<rect x="77" y="3" width="3" height="34" rx="1.5" fill="{fills[11]}"/>'
+        f'<rect x="84" y="3" width="3" height="34" rx="1.5" fill="{fills[12]}"/>'
+        f'<rect x="91" y="0.5" width="3" height="39" rx="1.5" fill="{fills[13]}"/>'
+        f'<rect x="98" y="0.5" width="3" height="39" rx="1.5" fill="{fills[14]}"/>'
+        f'<rect x="105" y="2" width="3" height="36" rx="1.5" fill="{fills[15]}"/>'
+        f'<rect x="112" y="6.5" width="3" height="27" rx="1.5" fill="{fills[16]}"/>'
+        f'<rect x="119" y="9" width="3" height="22" rx="1.5" fill="{fills[17]}"/>'
+        f'<rect x="126" y="11.5" width="3" height="17" rx="1.5" fill="{fills[18]}"/>'
+        f'<rect x="133" y="2" width="3" height="36" rx="1.5" fill="{fills[19]}"/>'
+        f'<rect x="140" y="2" width="3" height="36" rx="1.5" fill="{fills[20]}"/>'
+        f'<rect x="147" y="7" width="3" height="26" rx="1.5" fill="{fills[21]}"/>'
+        f'<rect x="154" y="9" width="3" height="22" rx="1.5" fill="{fills[22]}"/>'
+        f'<rect x="161" y="9" width="3" height="22" rx="1.5" fill="{fills[23]}"/>'
+        f'<rect x="168" y="13.5" width="3" height="13" rx="1.5" fill="{fills[24]}"/>'
+        f'<rect x="175" y="16" width="3" height="8" rx="1.5" fill="{fills[25]}"/>'
+        f'<rect x="182" y="17.5" width="3" height="5" rx="1.5" fill="{fills[26]}"/>'
+        f'<rect x="66" y="16" width="8" height="8" rx="4" fill="{dot}"/>'
+        "</svg>"
+    )
+
+
 def render_chat_html(
     history: list[ChatItemData],
     *,
@@ -2962,7 +3004,7 @@ def render_chat_html(
             for chip in item.chips
             if not _looks_like_audio_filename(chip.text)
         )
-        audio_chip_html = ""
+        audio_card_html = ""
         if item.audio_path.strip():
             current = str(Path(item.audio_path).expanduser())
             is_active = bool(active_audio_path and current == active_audio_path)
@@ -2970,16 +3012,17 @@ def render_chat_html(
             play_icon = "⏸" if (is_active and audio_playing) else "▶"
             tooltip = html.escape(Path(current).name)
             duration = _audio_duration_label(current)
-            waveform_bars = "".join(f'<span class="wave-bar bar-{idx % 7}"></span>' for idx in range(16))
-            audio_chip_html = (
-                f'<a class="chip chip-audio" title="{tooltip}" aria-label="{html.escape(chip_label)}" href="{_audio_chip_href(current)}">'
-                f'<span class="chip-audio-play">{play_icon}</span>'
-                f'<span class="chip-audio-wave">{waveform_bars}</span>'
-                f'<span class="chip-audio-time">{duration}</span>'
-                f"</a>"
+            state_class = "is-playing" if (is_active and audio_playing) else "is-paused"
+            waveform = _audio_wave_svg_html(is_active and audio_playing)
+            audio_card_html = (
+                '<div class="audio-card-shell">'
+                f'<a class="audio-card {state_class}" title="{tooltip}" aria-label="{html.escape(chip_label)}" href="{_audio_chip_href(current)}">'
+                f'<span class="audio-play">{play_icon}</span>'
+                f'<span class="audio-wave">{waveform}</span>'
+                f'<span class="audio-duration">{duration}</span>'
+                "</a>"
+                "</div>"
             )
-        if audio_chip_html:
-            chips = f"{chips}{audio_chip_html}"
         chips_html = f'<div class="chips">{chips}</div>' if chips else ""
         blocks.append(
             f"""
@@ -2992,6 +3035,7 @@ def render_chat_html(
                   <span class="meta">{html.escape(item.meta)}</span>
                 </div>
                 <div class="body">{item.body}</div>
+                {audio_card_html}
                 {chips_html}
               </div>
             </article>
@@ -3015,7 +3059,7 @@ def render_chat_html(
         html, body {{
             margin: 0;
             padding: 0;
-            background: {rgba(CARD_BG, 0.72)};
+            background: {CHAT_SURFACE_BG};
             color: {TEXT};
             font-family: system-ui, sans-serif;
         }}
@@ -3146,74 +3190,62 @@ def render_chat_html(
             color: {CHAT_TEXT};
             font-size: 11px;
           }}
-          .chip-audio {{
+          .audio-card-shell {{
+            margin-top: 10px;
+          }}
+          .audio-card {{
             text-decoration: none;
-            margin-left: 8px;
-            padding: 9px 13px;
-            border-radius: 999px;
-            background: linear-gradient(180deg, #201d2b 0%, #181624 100%);
-            border: 1px solid #3a3550;
-            color: #c6b5ff;
-            min-width: 262px;
             display: inline-flex;
             align-items: center;
-            gap: 12px;
-            box-shadow:
-              inset 0 1px 0 rgba(255, 255, 255, 0.08),
-              0 0 0 1px rgba(255, 255, 255, 0.06),
-              0 0 0 2px rgba(124, 108, 196, 0.32),
-              0 10px 24px rgba(0, 0, 0, 0.22);
+            gap: 10px;
+            min-width: 286px;
+            max-width: 336px;
+            padding: 10px 12px;
+            border-radius: 14px;
+            background: linear-gradient(180deg, #201d2b 0%, #181624 100%);
+            border: 1px solid #3f3a57;
+            box-shadow: inset 0 1px 0 rgba(255,255,255,0.08), 0 0 0 1px rgba(139, 123, 228, 0.28);
+            color: #c7b8ff;
           }}
-          .chip-audio:hover {{
-            border-color: #4f4780;
-            background: linear-gradient(180deg, #262136 0%, #1d192c 100%);
-            box-shadow:
-              inset 0 1px 0 rgba(255, 255, 255, 0.10),
-              0 0 0 1px rgba(140, 122, 230, 0.55),
-              0 0 0 2px rgba(168, 148, 245, 0.52),
-              0 12px 26px rgba(0, 0, 0, 0.24);
+          .audio-card:hover {{
+            background: linear-gradient(180deg, #27223a 0%, #1e1a2f 100%);
+            border-color: #5a5190;
+            box-shadow: inset 0 1px 0 rgba(255,255,255,0.10), 0 0 0 1px rgba(170, 152, 248, 0.45);
           }}
-          .chip-audio-play {{
-            width: 40px;
-            height: 40px;
-            min-width: 40px;
+          .audio-play {{
+            width: 34px;
+            min-width: 34px;
+            height: 34px;
             border-radius: 50%;
             display: inline-flex;
             align-items: center;
             justify-content: center;
-            font-size: 18px;
+            font-size: 16px;
             line-height: 1;
-            color: #2e2153;
+            color: #2f2354;
             background: #bca8ff;
-            border: 1px solid #9d86f2;
+            border: 1px solid #a58af5;
           }}
-          .chip-audio-wave {{
+          .audio-card.is-playing .audio-play {{
+            background: #d0c0ff;
+            border-color: #b9a4ff;
+          }}
+          .audio-wave {{
             display: inline-flex;
-            align-items: flex-end;
-            gap: 5px;
+            align-items: center;
             flex: 1;
-            min-height: 28px;
           }}
-          .wave-bar {{
-            width: 4px;
-            border-radius: 2px;
-            background: #c6b5ff;
-            opacity: 0.98;
+          .audio-wave-svg {{
+            display: block;
+            width: 150px;
+            height: 32px;
           }}
-          .bar-0 {{ height: 10px; }}
-          .bar-1 {{ height: 18px; }}
-          .bar-2 {{ height: 26px; }}
-          .bar-3 {{ height: 14px; }}
-          .bar-4 {{ height: 22px; }}
-          .bar-5 {{ height: 12px; }}
-          .bar-6 {{ height: 20px; }}
-          .chip-audio-time {{
-            min-width: 42px;
+          .audio-duration {{
+            min-width: 36px;
             text-align: right;
-            font-size: 11px;
+            font-size: 12px;
             font-weight: 700;
             color: #bda9ff;
-            letter-spacing: 0.3px;
           }}
           .empty-state {{
             padding: 28px 18px;
@@ -3243,20 +3275,58 @@ def render_chat_html(
     """
 
 
-class ChatWebView(QTextBrowser):
+class _AudioWebPage(QWebEnginePage):
+    link_clicked = pyqtSignal(QUrl)
+
+    def acceptNavigationRequest(self, url: QUrl, nav_type, is_main_frame: bool) -> bool:  # type: ignore[override]
+        if nav_type == QWebEnginePage.NavigationType.NavigationTypeLinkClicked:
+            self.link_clicked.emit(url)
+            return False
+        return super().acceptNavigationRequest(url, nav_type, is_main_frame)
+
+
+class ChatWebView(QWidget):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self.setContextMenuPolicy(Qt.ContextMenuPolicy.NoContextMenu)
-        self.setOpenExternalLinks(False)
-        self.setOpenLinks(False)
-        self.setReadOnly(True)
-        self.setFrameShape(QFrame.Shape.NoFrame)
+        self.setStyleSheet(f"background: {CHAT_SURFACE_BG}; border: none;")
         self._history: list[ChatItemData] = []
         self._active_audio_path: str = ""
         self._audio_playing: bool = False
         self._pending_play_path: str = ""
+        # Default to QTextBrowser HTML rendering for stability on Linux GPU/GBM stacks.
+        # Set HANAUTA_AI_POPUP_WEBENGINE=1 to force QWebEngineView.
+        self._using_webengine = WEBENGINE_AVAILABLE and os.environ.get("HANAUTA_AI_POPUP_WEBENGINE", "0").strip() == "1"
+        self._web_restore_mode: str = ""
+        self._web_restore_ratio: float = 1.0
+        self._view: QWebEngineView | QTextBrowser
         self._audio_output: QAudioOutput | None = None
         self._media_player: QMediaPlayer | None = None
+
+        shell = QVBoxLayout(self)
+        shell.setContentsMargins(0, 0, 0, 0)
+        shell.setSpacing(0)
+        if self._using_webengine:
+            view = QWebEngineView(self)
+            page = _AudioWebPage(view)
+            page.link_clicked.connect(self._on_anchor_clicked)
+            page.setBackgroundColor(QColor(CHAT_SURFACE_BG))
+            view.setPage(page)
+            view.loadFinished.connect(self._on_web_load_finished)
+            view.setContextMenuPolicy(Qt.ContextMenuPolicy.NoContextMenu)
+            self._view = view
+        else:
+            view = QTextBrowser(self)
+            view.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+            view.setOpenExternalLinks(False)
+            view.setOpenLinks(False)
+            view.setReadOnly(True)
+            view.setFrameShape(QFrame.Shape.NoFrame)
+            view.anchorClicked.connect(self._on_anchor_clicked)
+            view.highlighted.connect(self._on_anchor_hovered)
+            view.customContextMenuRequested.connect(self._on_text_context_menu)
+            self._view = view
+        shell.addWidget(self._view, 1)
+
         if QT_MULTIMEDIA_AVAILABLE:
             try:
                 self._audio_output = QAudioOutput(self)
@@ -3267,12 +3337,10 @@ class ChatWebView(QTextBrowser):
             except Exception:
                 self._audio_output = None
                 self._media_player = None
-        self.anchorClicked.connect(self._on_anchor_clicked)
-        self.highlighted.connect(self._on_anchor_hovered)
-        self.setStyleSheet(
+        self._view.setStyleSheet(
             f"""
-            QTextBrowser {{
-                background: {rgba(CARD_BG, 0.72)};
+            QTextBrowser, QWebEngineView {{
+                background: {CHAT_SURFACE_BG};
                 border: none;
                 color: {TEXT};
             }}
@@ -3303,30 +3371,93 @@ class ChatWebView(QTextBrowser):
     def set_history(self, history: list[ChatItemData]) -> None:
         LOGGER.debug("ChatWebView.set_history called with %d items", len(history))
         self._history = list(history)
-        self._rerender()
+        self._rerender(preserve_scroll=False)
         self._scroll_bottom()
 
     def _scroll_bottom(self) -> None:
         try:
-            bar = self.verticalScrollBar()
-            bar.setValue(bar.maximum())
+            if self._using_webengine:
+                assert isinstance(self._view, QWebEngineView)
+                self._view.page().runJavaScript("window.scrollTo(0, document.body.scrollHeight);")
+            else:
+                assert isinstance(self._view, QTextBrowser)
+                bar = self._view.verticalScrollBar()
+                bar.setValue(bar.maximum())
         except Exception:
             pass
 
-    def _rerender(self) -> None:
-        self.setHtml(
-            render_chat_html(
-                self._history,
-                active_audio_path=self._active_audio_path,
-                audio_playing=self._audio_playing,
+    def _on_web_load_finished(self, ok: bool) -> None:
+        if not ok or not self._using_webengine:
+            return
+        assert isinstance(self._view, QWebEngineView)
+        if self._web_restore_mode == "bottom":
+            self._view.page().runJavaScript("window.scrollTo(0, document.body.scrollHeight);")
+            return
+        if self._web_restore_mode == "ratio":
+            ratio = max(0.0, min(1.0, float(self._web_restore_ratio)))
+            self._view.page().runJavaScript(
+                f"(function(){{const d=document.documentElement||document.body;"
+                f"const max=Math.max(1,d.scrollHeight-window.innerHeight);window.scrollTo(0,Math.round(max*{ratio}));}})();"
             )
+
+    def _rerender(self, preserve_scroll: bool = True) -> None:
+        html_doc = render_chat_html(
+            self._history,
+            active_audio_path=self._active_audio_path,
+            audio_playing=self._audio_playing,
         )
+        if self._using_webengine:
+            assert isinstance(self._view, QWebEngineView)
+            if not preserve_scroll:
+                self._web_restore_mode = "bottom"
+                self._web_restore_ratio = 1.0
+                self._view.setHtml(html_doc)
+                return
+
+            def _apply(result) -> None:
+                y = 0.0
+                max_scroll = 1.0
+                if isinstance(result, (list, tuple)) and len(result) >= 2:
+                    try:
+                        y = float(result[0] or 0.0)
+                        max_scroll = max(1.0, float(result[1] or 1.0))
+                    except Exception:
+                        y = 0.0
+                        max_scroll = 1.0
+                at_bottom = bool(y >= (max_scroll - 3.0))
+                self._web_restore_mode = "bottom" if at_bottom else "ratio"
+                self._web_restore_ratio = 1.0 if at_bottom else (y / max_scroll)
+                self._view.setHtml(html_doc)
+
+            self._view.page().runJavaScript(
+                "(function(){const d=document.documentElement||document.body;"
+                "const max=Math.max(1,d.scrollHeight-window.innerHeight);return [window.scrollY,max];})();",
+                _apply,
+            )
+            return
+
+        assert isinstance(self._view, QTextBrowser)
+        bar = self._view.verticalScrollBar()
+        old_value = int(bar.value())
+        old_max = max(1, int(bar.maximum()))
+        at_bottom = bool(old_value >= (bar.maximum() - 3))
+        self._view.setHtml(html_doc)
+        if not preserve_scroll:
+            return
+        def _restore() -> None:
+            current_bar = self._view.verticalScrollBar()
+            if at_bottom:
+                current_bar.setValue(current_bar.maximum())
+                return
+            new_max = max(1, int(current_bar.maximum()))
+            ratio = old_value / float(old_max)
+            current_bar.setValue(int(ratio * new_max))
+        QTimer.singleShot(0, _restore)
 
     def _set_audio_state(self, path: Path, playing: bool) -> None:
         self._active_audio_path = str(path.expanduser().resolve())
         self._audio_playing = bool(playing)
-        self._rerender()
-        self._scroll_bottom()
+        self._rerender(preserve_scroll=True)
 
     def _on_playback_state_changed(self, state) -> None:
         if self._media_player is None:
@@ -3419,19 +3550,20 @@ class ChatWebView(QTextBrowser):
         QDesktopServices.openUrl(url)
 
     def _on_anchor_hovered(self, href: str) -> None:
-        audio_path = _audio_chip_path(href) if href else None
-        if audio_path is None:
-            self.setToolTip("")
+        if self._using_webengine:
             return
-        self.setToolTip(audio_path.name)
+        audio_path = _audio_chip_path(href) if href else None
+        self._view.setToolTip(audio_path.name if audio_path is not None else "")
 
-    def contextMenuEvent(self, event) -> None:  # type: ignore[override]
-        anchor = self.anchorAt(event.pos())
+    def _on_text_context_menu(self, pos: QPoint) -> None:
+        if self._using_webengine:
+            return
+        assert isinstance(self._view, QTextBrowser)
+        anchor = self._view.anchorAt(pos)
         audio_path = _audio_chip_path(anchor) if anchor else None
         if audio_path is None:
-            super().contextMenuEvent(event)
             return
-        menu = QMenu(self)
+        menu = QMenu(self._view)
         play_pause_label = (
             "Pause"
             if self._active_audio_path == str(audio_path.expanduser().resolve()) and self._audio_playing
@@ -3439,7 +3571,7 @@ class ChatWebView(QTextBrowser):
         )
         play_action = menu.addAction(play_pause_label)
         save_action = menu.addAction("Download audio...")
-        chosen = menu.exec(event.globalPos())
+        chosen = menu.exec(self._view.mapToGlobal(pos))
         if chosen == play_action:
             self._toggle_audio_path(audio_path)
         elif chosen == save_action:
