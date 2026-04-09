@@ -3439,7 +3439,6 @@ class ChatWebView(QWidget):
         assert isinstance(self._view, QTextBrowser)
         bar = self._view.verticalScrollBar()
         old_value = int(bar.value())
-        old_max = max(1, int(bar.maximum()))
         at_bottom = bool(old_value >= (bar.maximum() - 3))
         self._view.setHtml(html_doc)
         if not preserve_scroll:
@@ -3449,10 +3448,10 @@ class ChatWebView(QWidget):
             if at_bottom:
                 current_bar.setValue(current_bar.maximum())
                 return
-            new_max = max(1, int(current_bar.maximum()))
-            ratio = old_value / float(old_max)
-            current_bar.setValue(int(ratio * new_max))
+            current_bar.setValue(min(old_value, current_bar.maximum()))
         QTimer.singleShot(0, _restore)
+        QTimer.singleShot(24, _restore)
+        QTimer.singleShot(72, _restore)
 
     def _set_audio_state(self, path: Path, playing: bool) -> None:
         self._active_audio_path = str(path.expanduser().resolve())
@@ -3465,6 +3464,8 @@ class ChatWebView(QWidget):
         playing = bool(state == QMediaPlayer.PlaybackState.PlayingState)
         if playing:
             self._pending_play_path = ""
+        if playing == self._audio_playing:
+            return
         self._audio_playing = playing
         self._rerender()
 
