@@ -163,6 +163,7 @@ _KOKORO_RUNTIME_READY = False
 AI_POPUP_LOG_FILE = AI_STATE_DIR / "ai_popup.log"
 AI_POPUP_CRASH_FILE = AI_STATE_DIR / "ai_popup.crash.log"
 KOKORO_SYNTH_LOG_FILE = AI_STATE_DIR / "kokoro_synth_worker.log"
+_WAVEFORM_CACHE: dict[str, list[int]] = {}
 
 
 LOGGER = logging.getLogger("hanauta.ai_popup")
@@ -414,6 +415,7 @@ class ChatItemData:
     chips: list[SourceChipData] = field(default_factory=list)
     pending: bool = False
     audio_path: str = ""
+    audio_waveform: list[int] = field(default_factory=list)
 
 
 @dataclass
@@ -889,6 +891,7 @@ def secure_append_chat(item: ChatItemData) -> None:
                         "meta": item.meta,
                         "chips": [chip.text for chip in item.chips],
                         "audio_path": item.audio_path,
+                        "audio_waveform": [int(v) for v in item.audio_waveform],
                     }
                 ),
                 time.time(),
@@ -913,6 +916,12 @@ def secure_load_chat_history() -> list[ChatItemData]:
             continue
         chips_raw = payload.get("chips", [])
         chips = [SourceChipData(str(chip)) for chip in chips_raw if str(chip).strip()] if isinstance(chips_raw, list) else []
+        waveform_raw = payload.get("audio_waveform", [])
+        waveform = (
+            [max(0, min(100, int(v))) for v in waveform_raw if isinstance(v, (int, float, str))]
+            if isinstance(waveform_raw, list)
+            else []
+        )
         history.append(
             ChatItemData(
                 role=str(payload.get("role", "assistant")),
@@ -921,6 +930,7 @@ def secure_load_chat_history() -> list[ChatItemData]:
                 meta=str(payload.get("meta", "")),
                 chips=chips,
                 audio_path=str(payload.get("audio_path", "")),
+                audio_waveform=waveform,
             )
         )
     return history
@@ -1031,6 +1041,46 @@ def _play_audio_file(audio_path: Path) -> None:
                 return
         except Exception:
             continue
+
+
+def _resolve_hanauta_service_binary() -> Path | None:
+    candidates = [
+        APP_DIR.parent / "bin" / "hanauta-service",
+        Path.home() / ".config" / "i3" / "hanauta" / "bin" / "hanauta-service",
+    ]
+    for candidate in candidates:
+        path = candidate.expanduser()
+        if path.exists() and os.access(path, os.X_OK):
+            return path
+    return None
+
+
+def _waveform_from_hanauta_service(audio_path: Path, bars: int = 32) -> list[int]:
+    key = str(audio_path.expanduser().resolve())
+    cached = _WAVEFORM_CACHE.get(key)
+    if cached:
+        return list(cached)
+    binary = _resolve_hanauta_service_binary()
+    if binary is None:
+        return []
+    try:
+        result = subprocess.run(
+            [str(binary), "--waveform", key, str(max(8, min(128, int(bars))))],
+            capture_output=True,
+            text=True,
+            timeout=6,
+            check=True,
+        )
+        payload = json.loads((result.stdout or "").strip() or "{}")
+        raw = payload.get("bars", []) if isinstance(payload, dict) else []
+        if not isinstance(raw, list):
+            return []
+        cleaned = [max(0, min(100, int(v))) for v in raw if isinstance(v, (int, float, str))]
+        if cleaned:
+            _WAVEFORM_CACHE[key] = list(cleaned)
+        return cleaned
+    except Exception:
+        return []
 
 
 def _hf_resolve_url(repo_id: str, rel_path: str) -> str:
@@ -2947,34 +2997,20 @@ def _looks_like_audio_filename(text: str) -> bool:
     return value.endswith((".wav", ".mp3", ".ogg", ".flac", ".m4a", ".aac"))
 
 
-def _audio_wave_inline_html(is_playing: bool) -> str:
-    heights = [8, 12, 18, 24, 30, 22, 16, 10, 14, 20, 28, 22, 16, 12, 18, 24, 20, 14, 10]
-    active_cut = 8 if not is_playing else 13
+def _audio_wave_inline_html(samples: list[int], is_playing: bool) -> str:
+    if not samples:
+        samples = [18, 26, 42, 58, 73, 54, 37, 24, 33, 49, 67, 54, 39, 28, 34, 51, 45, 30, 22]
+    picked = samples[:24]
+    active_cut = max(4, min(len(picked), 8 if not is_playing else 13))
     bars: list[str] = []
-    for idx, height in enumerate(heights):
+    for idx, amplitude in enumerate(picked):
+        height = 8 + int((max(0, min(100, amplitude)) / 100.0) * 24)
         color = "#d8ccff" if idx < active_cut else "#8b84a8"
         bars.append(
             f'<span style="display:inline-block;width:3px;height:{height}px;margin-right:3px;'
             f'background:{color};border-radius:2px;vertical-align:bottom;"></span>'
         )
     return "".join(bars)
-
-
-def _audio_control_icon_svg(is_playing: bool, color: str) -> str:
-    if is_playing:
-        return (
-            '<svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true" '
-            'xmlns="http://www.w3.org/2000/svg" style="display:block;">'
-            f'<rect x="7" y="6" width="3" height="12" rx="1.5" fill="{color}"/>'
-            f'<rect x="14" y="6" width="3" height="12" rx="1.5" fill="{color}"/>'
-            "</svg>"
-        )
-    return (
-        '<svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true" '
-        'xmlns="http://www.w3.org/2000/svg" style="display:block;">'
-        f'<path d="M8 6v12l10-6-10-6Z" fill="{color}"/>'
-        "</svg>"
-    )
 
 
 def render_chat_html(
@@ -3001,31 +3037,34 @@ def render_chat_html(
             is_active = bool(active_audio_path and current == active_audio_path)
             chip_label = "Pause audio" if (is_active and audio_playing) else "Play audio"
             tooltip = html.escape(Path(current).name)
-            waveform = _audio_wave_inline_html(is_active and audio_playing)
+            samples = item.audio_waveform or _waveform_from_hanauta_service(Path(current), bars=24)
+            waveform = _audio_wave_inline_html(samples, is_active and audio_playing)
             card_border = "#7e72d6" if (is_active and audio_playing) else "#655da8"
             icon_color = "#f4eeff"
-            icon_svg = _audio_control_icon_svg(is_active and audio_playing, icon_color)
+            icon_text = "⏸" if (is_active and audio_playing) else "▶"
             audio_href = _audio_chip_href(current)
             audio_card_html = (
                 '<div class="audio-card-shell">'
-                '<table cellspacing="0" cellpadding="0" '
-                'style="border-collapse:separate;border-spacing:0;display:inline-table;'
+                f'<div title="{tooltip}" aria-label="{html.escape(chip_label)}" '
+                'style="display:inline-block;outline:none;'
                 f'background:linear-gradient(180deg,#262039 0%,#1e1a2e 100%);'
-                f'border:2px solid {card_border};border-radius:15px;">'
-                "<tr>"
-                '<td style="width:42px;vertical-align:middle;padding:8px 10px;border:none;background:transparent;outline:none;">'
+                f'border:2px solid {card_border};border-radius:15px;'
+                'padding:8px 10px;line-height:0;">'
+                '<table cellspacing="0" cellpadding="0" style="border-collapse:collapse;"><tr>'
+                '<td style="width:42px;vertical-align:middle;text-align:center;padding-right:8px;">'
                 f'<a href="{audio_href}" title="{tooltip}" aria-label="{html.escape(chip_label)}" '
-                'style="text-decoration:none;display:inline-block;outline:none;border:none;color:inherit;">'
-                f'<span style="display:inline-flex;width:31px;height:31px;align-items:center;justify-content:center;'
-                f'border-radius:16px;background:transparent;border:none;line-height:0;">{icon_svg}</span></a>'
+                'style="display:inline-block;text-decoration:none;outline:none;border:none;">'
+                f'<span style="display:inline-block;width:31px;height:31px;line-height:31px;'
+                f'font-size:18px;font-weight:700;color:{icon_color};font-family:DejaVu Sans, sans-serif;'
+                'background:transparent;border:none;">'
+                f'{icon_text}</span>'
+                "</a>"
                 "</td>"
-                '<td style="vertical-align:middle;padding:8px 11px 8px 0;min-width:154px;max-width:230px;border:none;background:transparent;outline:none;">'
-                f'<a href="{audio_href}" title="{tooltip}" aria-label="{html.escape(chip_label)}" '
-                'style="text-decoration:none;display:inline-block;line-height:0;outline:none;border:none;color:inherit;">'
-                f'{waveform}</a>'
+                '<td style="vertical-align:middle;min-width:154px;max-width:230px;line-height:0;">'
+                f'{waveform}'
                 "</td>"
-                "</tr>"
-                "</table>"
+                "</tr></table>"
+                "</div>"
                 "</div>"
             )
         chips_html = f'<div class="chips">{chips}</div>' if chips else ""
@@ -4619,18 +4658,16 @@ class SidebarPanel(QFrame):
         self._clear_pending_state()
         audio_path = Path(audio_path_text)
         resolved_audio = audio_path.expanduser().resolve()
-        audio_url = resolved_audio.as_uri()
+        waveform = _waveform_from_hanauta_service(resolved_audio, bars=24)
         self.add_card(
             ChatItemData(
                 role="assistant",
                 title=profile_label,
                 meta="tts",
-                body=(
-                    "<p><b>Speech generated.</b> Playback was started automatically.</p>"
-                    f"<p><a href=\"{audio_url}\">Open audio file</a></p>"
-                ),
+                body="<p><b>Speech generated.</b> Playback was started automatically.</p>",
                 chips=[SourceChipData("tts"), SourceChipData(source)],
                 audio_path=str(resolved_audio),
+                audio_waveform=waveform,
             )
         )
         try:
