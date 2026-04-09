@@ -2947,41 +2947,32 @@ def _looks_like_audio_filename(text: str) -> bool:
     return value.endswith((".wav", ".mp3", ".ogg", ".flac", ".m4a", ".aac"))
 
 
-def _audio_wave_svg_html(is_playing: bool) -> str:
-    active = "#b7a1ff"
-    idle = "#6f678d"
-    dot = "#d1c1ff" if is_playing else "#9f94cc"
-    fills = [active if idx < (11 if is_playing else 7) else idle for idx in range(27)]
+def _audio_wave_inline_html(is_playing: bool) -> str:
+    heights = [8, 12, 18, 24, 30, 22, 16, 10, 14, 20, 28, 22, 16, 12, 18, 24, 20, 14, 10]
+    active_cut = 8 if not is_playing else 13
+    bars: list[str] = []
+    for idx, height in enumerate(heights):
+        color = "#d8ccff" if idx < active_cut else "#8b84a8"
+        bars.append(
+            f'<span style="display:inline-block;width:3px;height:{height}px;margin-right:3px;'
+            f'background:{color};border-radius:2px;vertical-align:bottom;"></span>'
+        )
+    return "".join(bars)
+
+
+def _audio_control_icon_svg(is_playing: bool, color: str) -> str:
+    if is_playing:
+        return (
+            '<svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true" '
+            'xmlns="http://www.w3.org/2000/svg" style="display:block;">'
+            f'<rect x="7" y="6" width="3" height="12" rx="1.5" fill="{color}"/>'
+            f'<rect x="14" y="6" width="3" height="12" rx="1.5" fill="{color}"/>'
+            "</svg>"
+        )
     return (
-        '<svg class="audio-wave-svg" viewBox="0 0 185 40" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">'
-        f'<rect y="17" width="3" height="6" rx="1.5" fill="{fills[0]}"/>'
-        f'<rect x="7" y="15.5" width="3" height="9" rx="1.5" fill="{fills[1]}"/>'
-        f'<rect x="21" y="6.5" width="3" height="27" rx="1.5" fill="{fills[2]}"/>'
-        f'<rect x="14" y="6.5" width="3" height="27" rx="1.5" fill="{fills[3]}"/>'
-        f'<rect x="28" y="3" width="3" height="34" rx="1.5" fill="{fills[4]}"/>'
-        f'<rect x="35" y="3" width="3" height="34" rx="1.5" fill="{fills[5]}"/>'
-        f'<rect x="42" y="5.5" width="3" height="29" rx="1.5" fill="{fills[6]}"/>'
-        f'<rect x="49" y="10" width="3" height="20" rx="1.5" fill="{fills[7]}"/>'
-        f'<rect x="56" y="13.5" width="3" height="13" rx="1.5" fill="{fills[8]}"/>'
-        f'<rect x="63" y="16" width="3" height="8" rx="1.5" fill="{fills[9]}"/>'
-        f'<rect x="70" y="12.5" width="3" height="15" rx="1.5" fill="{fills[10]}"/>'
-        f'<rect x="77" y="3" width="3" height="34" rx="1.5" fill="{fills[11]}"/>'
-        f'<rect x="84" y="3" width="3" height="34" rx="1.5" fill="{fills[12]}"/>'
-        f'<rect x="91" y="0.5" width="3" height="39" rx="1.5" fill="{fills[13]}"/>'
-        f'<rect x="98" y="0.5" width="3" height="39" rx="1.5" fill="{fills[14]}"/>'
-        f'<rect x="105" y="2" width="3" height="36" rx="1.5" fill="{fills[15]}"/>'
-        f'<rect x="112" y="6.5" width="3" height="27" rx="1.5" fill="{fills[16]}"/>'
-        f'<rect x="119" y="9" width="3" height="22" rx="1.5" fill="{fills[17]}"/>'
-        f'<rect x="126" y="11.5" width="3" height="17" rx="1.5" fill="{fills[18]}"/>'
-        f'<rect x="133" y="2" width="3" height="36" rx="1.5" fill="{fills[19]}"/>'
-        f'<rect x="140" y="2" width="3" height="36" rx="1.5" fill="{fills[20]}"/>'
-        f'<rect x="147" y="7" width="3" height="26" rx="1.5" fill="{fills[21]}"/>'
-        f'<rect x="154" y="9" width="3" height="22" rx="1.5" fill="{fills[22]}"/>'
-        f'<rect x="161" y="9" width="3" height="22" rx="1.5" fill="{fills[23]}"/>'
-        f'<rect x="168" y="13.5" width="3" height="13" rx="1.5" fill="{fills[24]}"/>'
-        f'<rect x="175" y="16" width="3" height="8" rx="1.5" fill="{fills[25]}"/>'
-        f'<rect x="182" y="17.5" width="3" height="5" rx="1.5" fill="{fills[26]}"/>'
-        f'<rect x="66" y="16" width="8" height="8" rx="4" fill="{dot}"/>'
+        '<svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true" '
+        'xmlns="http://www.w3.org/2000/svg" style="display:block;">'
+        f'<path d="M8 6v12l10-6-10-6Z" fill="{color}"/>'
         "</svg>"
     )
 
@@ -3009,18 +3000,32 @@ def render_chat_html(
             current = str(Path(item.audio_path).expanduser())
             is_active = bool(active_audio_path and current == active_audio_path)
             chip_label = "Pause audio" if (is_active and audio_playing) else "Play audio"
-            play_icon = "⏸" if (is_active and audio_playing) else "▶"
             tooltip = html.escape(Path(current).name)
-            duration = _audio_duration_label(current)
-            state_class = "is-playing" if (is_active and audio_playing) else "is-paused"
-            waveform = _audio_wave_svg_html(is_active and audio_playing)
+            waveform = _audio_wave_inline_html(is_active and audio_playing)
+            card_border = "#7e72d6" if (is_active and audio_playing) else "#655da8"
+            icon_color = "#f4eeff"
+            icon_svg = _audio_control_icon_svg(is_active and audio_playing, icon_color)
+            audio_href = _audio_chip_href(current)
             audio_card_html = (
                 '<div class="audio-card-shell">'
-                f'<a class="audio-card {state_class}" title="{tooltip}" aria-label="{html.escape(chip_label)}" href="{_audio_chip_href(current)}">'
-                f'<span class="audio-play">{play_icon}</span>'
-                f'<span class="audio-wave">{waveform}</span>'
-                f'<span class="audio-duration">{duration}</span>'
-                "</a>"
+                '<table cellspacing="0" cellpadding="0" '
+                'style="border-collapse:separate;border-spacing:0;display:inline-table;'
+                f'background:linear-gradient(180deg,#262039 0%,#1e1a2e 100%);'
+                f'border:2px solid {card_border};border-radius:15px;">'
+                "<tr>"
+                '<td style="width:42px;vertical-align:middle;padding:8px 10px;border:none;background:transparent;outline:none;">'
+                f'<a href="{audio_href}" title="{tooltip}" aria-label="{html.escape(chip_label)}" '
+                'style="text-decoration:none;display:inline-block;outline:none;border:none;color:inherit;">'
+                f'<span style="display:inline-flex;width:31px;height:31px;align-items:center;justify-content:center;'
+                f'border-radius:16px;background:transparent;border:none;line-height:0;">{icon_svg}</span></a>'
+                "</td>"
+                '<td style="vertical-align:middle;padding:8px 11px 8px 0;min-width:154px;max-width:230px;border:none;background:transparent;outline:none;">'
+                f'<a href="{audio_href}" title="{tooltip}" aria-label="{html.escape(chip_label)}" '
+                'style="text-decoration:none;display:inline-block;line-height:0;outline:none;border:none;color:inherit;">'
+                f'{waveform}</a>'
+                "</td>"
+                "</tr>"
+                "</table>"
                 "</div>"
             )
         chips_html = f'<div class="chips">{chips}</div>' if chips else ""
