@@ -24,7 +24,7 @@ import traceback
 import wave
 import zipfile
 import zlib
-from base64 import b64decode
+from base64 import b64decode, b64encode
 from dataclasses import dataclass, field
 import faulthandler
 from pathlib import Path
@@ -949,13 +949,18 @@ def secure_clear_chat_history() -> None:
         connection.close()
 
 
-def send_desktop_notification(title: str, body: str) -> None:
+def send_desktop_notification(title: str, body: str, icon_path: str = "") -> None:
     try:
         import subprocess
 
-        LOGGER.debug("notify-send queued: title=%r body=%r", title, body)
+        command = ["notify-send", "-a", "Hanauta AI"]
+        icon_candidate = Path(str(icon_path).strip()).expanduser() if str(icon_path).strip() else None
+        if icon_candidate is not None and icon_candidate.exists():
+            command.extend(["-i", str(icon_candidate)])
+        command.extend([title, body])
+        LOGGER.debug("notify-send queued: title=%r body=%r icon=%r", title, body, icon_path)
         subprocess.Popen(
-            ["notify-send", "-a", "Hanauta AI", title, body],
+            command,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             start_new_session=True,
@@ -971,22 +976,58 @@ def _normalize_host_url(host: str) -> str:
     return value
 
 
-def _http_json(url: str, timeout: float = 10.0) -> dict[str, object] | list[object]:
-    req = request.Request(url, headers={"User-Agent": "Hanauta AI/1.0"})
+def _http_json(
+    url: str,
+    timeout: float = 10.0,
+    headers: dict[str, str] | None = None,
+) -> dict[str, object] | list[object]:
+    merged_headers = {"User-Agent": "Hanauta AI/1.0"}
+    if headers:
+        merged_headers.update(headers)
+    req = request.Request(url, headers=merged_headers)
     with request.urlopen(req, timeout=timeout) as response:
         return json.loads(response.read().decode("utf-8"))
 
 
-def _http_post_json(url: str, payload: dict[str, object], timeout: float = 180.0) -> dict[str, object]:
+def _http_post_json(
+    url: str,
+    payload: dict[str, object],
+    timeout: float = 180.0,
+    headers: dict[str, str] | None = None,
+) -> dict[str, object]:
     body = json.dumps(payload).encode("utf-8")
+    merged_headers = {
+        "User-Agent": "Hanauta AI/1.0",
+        "Content-Type": "application/json",
+    }
+    if headers:
+        merged_headers.update(headers)
     req = request.Request(
         url,
         data=body,
-        headers={"User-Agent": "Hanauta AI/1.0", "Content-Type": "application/json"},
+        headers=merged_headers,
         method="POST",
     )
     with request.urlopen(req, timeout=timeout) as response:
         return json.loads(response.read().decode("utf-8"))
+
+
+def _sd_auth_headers(profile_key: str, payload: dict[str, object]) -> dict[str, str]:
+    username = str(payload.get("sd_auth_user", "")).strip()
+    password = secure_load_secret(f"{profile_key}:sd_auth_pass").strip()
+    if not username or not password:
+        return {}
+    token = b64encode(f"{username}:{password}".encode("utf-8")).decode("ascii")
+    return {"Authorization": f"Basic {token}"}
+
+
+def _sdapi_not_found_message(host: str) -> str:
+    normalized = _normalize_host_url(host)
+    return (
+        "SD API endpoint returned 404. "
+        "Start WebUI/Forge with --api and use the base host only "
+        f"(example: {normalized})."
+    )
 
 
 def _http_post_bytes(
@@ -1718,9 +1759,17 @@ def validate_backend(profile: BackendProfile, payload: dict[str, object]) -> tup
     if profile.provider == "sdwebui":
         url = _normalize_host_url(host)
         try:
-            response = _http_json(f"{url}/sdapi/v1/samplers", timeout=3.0)
+            response = _http_json(
+                f"{url}/sdapi/v1/samplers",
+                timeout=3.0,
+                headers=_sd_auth_headers(profile.key, payload),
+            )
             if not isinstance(response, list):
                 return False, "SD WebUI did not return samplers."
+        except error.HTTPError as exc:
+            if int(getattr(exc, "code", 0) or 0) == 404:
+                return False, _sdapi_not_found_message(host)
+            return False, f"SD WebUI request failed: HTTP {getattr(exc, 'code', 'error')}"
         except Exception:
             return False, "SD WebUI host did not respond."
         return True, "SD WebUI connection looks valid."
@@ -2340,10 +2389,23 @@ class BackendSettingsDialog(QDialog):
         self.host_input = QLineEdit()
         self.host_input.setPlaceholderText("Host")
         shell_layout.addWidget(self.host_input)
+        self.sd_auth_user_input = QLineEdit()
+        self.sd_auth_user_input.setPlaceholderText("SD WebUI username (optional)")
+        shell_layout.addWidget(self.sd_auth_user_input)
+        self.sd_auth_pass_input = QLineEdit()
+        self.sd_auth_pass_input.setPlaceholderText("SD WebUI password (optional)")
+        self.sd_auth_pass_input.setEchoMode(QLineEdit.EchoMode.Password)
+        shell_layout.addWidget(self.sd_auth_pass_input)
 
         self.model_input = QLineEdit()
         self.model_input.setPlaceholderText("Model")
         shell_layout.addWidget(self.model_input)
+        self.sd_model_combo = QComboBox()
+        self.sd_model_combo.setEditable(True)
+        if self.sd_model_combo.lineEdit() is not None:
+            self.sd_model_combo.lineEdit().setPlaceholderText("Checkpoint / model")
+        self.sd_model_combo.setToolTip("SD checkpoint")
+        shell_layout.addWidget(self.sd_model_combo)
         self.kokoro_voice_combo = QComboBox()
         self.kokoro_voice_combo.setToolTip("Kokoro voice")
         shell_layout.addWidget(self.kokoro_voice_combo)
@@ -2431,25 +2493,49 @@ class BackendSettingsDialog(QDialog):
         self.negative_prompt_input.setPlaceholderText("Default negative prompt")
         shell_layout.addWidget(self.negative_prompt_input)
 
-        self.sampler_input = QLineEdit()
-        self.sampler_input.setPlaceholderText("Sampler")
-        shell_layout.addWidget(self.sampler_input)
+        self.sampler_combo = QComboBox()
+        self.sampler_combo.setEditable(True)
+        if self.sampler_combo.lineEdit() is not None:
+            self.sampler_combo.lineEdit().setPlaceholderText("Sampler")
+        shell_layout.addWidget(self.sampler_combo)
 
-        self.steps_input = QLineEdit()
-        self.steps_input.setPlaceholderText("Steps")
-        shell_layout.addWidget(self.steps_input)
-
+        self.cfg_steps_row = QWidget()
+        self.cfg_steps_layout = QHBoxLayout(self.cfg_steps_row)
+        self.cfg_steps_layout.setContentsMargins(0, 0, 0, 0)
+        self.cfg_steps_layout.setSpacing(8)
+        self.cfg_label = QLabel("CFG")
+        self.cfg_steps_layout.addWidget(self.cfg_label)
         self.cfg_scale_input = QLineEdit()
-        self.cfg_scale_input.setPlaceholderText("CFG scale")
-        shell_layout.addWidget(self.cfg_scale_input)
+        self.cfg_scale_input.setPlaceholderText("7.0")
+        self.cfg_scale_input.setMaximumWidth(110)
+        self.cfg_steps_layout.addWidget(self.cfg_scale_input)
+        self.steps_label = QLabel("Steps")
+        self.cfg_steps_layout.addWidget(self.steps_label)
+        self.steps_input = QLineEdit()
+        self.steps_input.setPlaceholderText("28")
+        self.steps_input.setMaximumWidth(110)
+        self.cfg_steps_layout.addWidget(self.steps_input)
+        self.cfg_steps_layout.addStretch(1)
+        shell_layout.addWidget(self.cfg_steps_row)
 
+        self.resolution_row = QWidget()
+        self.resolution_layout = QHBoxLayout(self.resolution_row)
+        self.resolution_layout.setContentsMargins(0, 0, 0, 0)
+        self.resolution_layout.setSpacing(8)
+        self.width_label = QLabel("Width")
+        self.resolution_layout.addWidget(self.width_label)
         self.width_input = QLineEdit()
-        self.width_input.setPlaceholderText("Width")
-        shell_layout.addWidget(self.width_input)
-
+        self.width_input.setPlaceholderText("1024")
+        self.width_input.setMaximumWidth(120)
+        self.resolution_layout.addWidget(self.width_input)
+        self.height_label = QLabel("Height")
+        self.resolution_layout.addWidget(self.height_label)
         self.height_input = QLineEdit()
-        self.height_input.setPlaceholderText("Height")
-        shell_layout.addWidget(self.height_input)
+        self.height_input.setPlaceholderText("1024")
+        self.height_input.setMaximumWidth(120)
+        self.resolution_layout.addWidget(self.height_input)
+        self.resolution_layout.addStretch(1)
+        shell_layout.addWidget(self.resolution_row)
 
         self.output_dir_input = QLineEdit()
         self.output_dir_input.setPlaceholderText("SD output folder for monitor notifications")
@@ -2457,6 +2543,9 @@ class BackendSettingsDialog(QDialog):
 
         self.monitor_check = QCheckBox("Notify when new SD images appear in the output folder")
         shell_layout.addWidget(self.monitor_check)
+        self.sd_options_refresh_button = QPushButton("Refresh SD samplers/checkpoints")
+        self.sd_options_refresh_button.clicked.connect(self._refresh_sd_options_clicked)
+        shell_layout.addWidget(self.sd_options_refresh_button)
 
         self.status_label = QLabel("Configure um backend e clique em Test.")
         self.status_label.setWordWrap(True)
@@ -2545,12 +2634,15 @@ class BackendSettingsDialog(QDialog):
         model_value = (
             str(self.kokoro_voice_combo.currentData() or self.kokoro_voice_combo.currentText()).strip()
             if profile.key == "kokorotts"
+            else str(self.sd_model_combo.currentData() or self.sd_model_combo.currentText()).strip()
+            if profile.provider == "sdwebui"
             else self.model_input.text().strip()
         )
         existing.update(
             {
                 "enabled": bool(self.enabled_check.isChecked()),
                 "host": self.host_input.text().strip(),
+                "sd_auth_user": self.sd_auth_user_input.text().strip(),
                 "model": model_value,
                 "binary_path": self.binary_path_input.text().strip(),
                 "tts_mode": str(self.tts_mode_combo.currentData()),
@@ -2565,7 +2657,9 @@ class BackendSettingsDialog(QDialog):
                 "mmproj_path": self.mmproj_path_input.text().strip(),
                 "device": str(self.device_combo.currentData()),
                 "negative_prompt": self.negative_prompt_input.text().strip(),
-                "sampler_name": self.sampler_input.text().strip(),
+                "sampler_name": str(
+                    self.sampler_combo.currentData() or self.sampler_combo.currentText()
+                ).strip(),
                 "steps": self.steps_input.text().strip(),
                 "cfg_scale": self.cfg_scale_input.text().strip(),
                 "width": self.width_input.text().strip(),
@@ -2581,7 +2675,12 @@ class BackendSettingsDialog(QDialog):
         payload = dict(self.settings.get(profile.key, {}))
         self.enabled_check.setChecked(bool(payload.get("enabled", True)))
         self.host_input.setText(str(payload.get("host", profile.host)))
+        self.sd_auth_user_input.setText(str(payload.get("sd_auth_user", "")).strip())
+        self.sd_auth_pass_input.setText(secure_load_secret(f"{profile.key}:sd_auth_pass"))
         self.model_input.setText(str(payload.get("model", profile.model)))
+        self._set_combo_selected(
+            self.sd_model_combo, str(payload.get("model", profile.model)).strip() or profile.model
+        )
         self.api_key_input.setText(secure_load_secret(f"{profile.key}:api_key"))
         self.binary_path_input.setText(str(payload.get("binary_path", "")))
         self.tts_mode_combo.setCurrentIndex(1 if _default_tts_mode(payload) == "external_api" else 0)
@@ -2597,7 +2696,9 @@ class BackendSettingsDialog(QDialog):
         device = str(payload.get("device", "cpu")).lower()
         self.device_combo.setCurrentIndex(1 if device == "gpu" else 0)
         self.negative_prompt_input.setText(str(payload.get("negative_prompt", "")))
-        self.sampler_input.setText(str(payload.get("sampler_name", "Euler a")))
+        self._set_combo_selected(
+            self.sampler_combo, str(payload.get("sampler_name", "Euler a")).strip() or "Euler a"
+        )
         self.steps_input.setText(str(payload.get("steps", "28")))
         self.cfg_scale_input.setText(str(payload.get("cfg_scale", "7.0")))
         self.width_input.setText(str(payload.get("width", "1024")))
@@ -2611,6 +2712,8 @@ class BackendSettingsDialog(QDialog):
         is_kobold = profile.key == "koboldcpp"
         is_tts = profile.provider == "tts_local"
         device_enabled = is_kobold or is_tts
+        self.sd_auth_user_input.setVisible(is_sd)
+        self.sd_auth_pass_input.setVisible(is_sd)
         self.binary_path_input.setVisible(is_kobold or is_tts)
         self.tts_mode_combo.setVisible(is_tts)
         self.tts_repo_input.setVisible(is_tts)
@@ -2632,13 +2735,12 @@ class BackendSettingsDialog(QDialog):
         self.mmproj_path_input.setVisible(is_kobold)
         self.device_combo.setVisible(device_enabled)
         self.negative_prompt_input.setVisible(is_sd)
-        self.sampler_input.setVisible(is_sd)
-        self.steps_input.setVisible(is_sd)
-        self.cfg_scale_input.setVisible(is_sd)
-        self.width_input.setVisible(is_sd)
-        self.height_input.setVisible(is_sd)
+        self.sampler_combo.setVisible(is_sd)
+        self.cfg_steps_row.setVisible(is_sd)
+        self.resolution_row.setVisible(is_sd)
         self.output_dir_input.setVisible(is_sd)
         self.monitor_check.setVisible(is_sd)
+        self.sd_options_refresh_button.setVisible(is_sd)
         if is_sd:
             self.model_input.setPlaceholderText("Checkpoint / model")
         elif is_tts:
@@ -2650,8 +2752,11 @@ class BackendSettingsDialog(QDialog):
                 self.model_input.setPlaceholderText("Kokoro voice")
         else:
             self.model_input.setPlaceholderText("Model")
-        self.model_input.setVisible(not (is_tts and profile.key == "kokorotts"))
+        self.model_input.setVisible(not (is_tts and profile.key == "kokorotts") and not is_sd)
+        self.sd_model_combo.setVisible(is_sd)
         self.kokoro_voice_combo.setVisible(is_tts and profile.key == "kokorotts")
+        if is_sd:
+            self._reload_sd_backend_options(payload, user_initiated=False)
         if is_tts and profile.key == "kokorotts":
             self._reload_kokoro_voice_list(payload)
             self._refresh_kokoro_server_status(payload)
@@ -2684,6 +2789,7 @@ class BackendSettingsDialog(QDialog):
         payload = self._current_payload()
         existing = self.settings.get(profile.key, {})
         secure_store_secret(f"{profile.key}:api_key", self.api_key_input.text().strip())
+        secure_store_secret(f"{profile.key}:sd_auth_pass", self.sd_auth_pass_input.text().strip())
         payload["tested"] = bool(existing.get("tested", False))
         payload["last_status"] = existing.get("last_status", "Saved.")
         self.settings[profile.key] = payload
@@ -2857,6 +2963,147 @@ class BackendSettingsDialog(QDialog):
         worker.failed.connect(_failed)
         worker.finished.connect(lambda: setattr(self, "_tts_preview_worker", None))
         worker.start()
+
+    def _set_combo_selected(self, combo: QComboBox, value: str) -> None:
+        selected = value.strip()
+        combo.blockSignals(True)
+        if selected:
+            idx = combo.findData(selected)
+            if idx < 0:
+                idx = combo.findText(selected, Qt.MatchFlag.MatchFixedString)
+            if idx >= 0:
+                combo.setCurrentIndex(idx)
+            else:
+                combo.setCurrentText(selected)
+        elif combo.count() > 0:
+            combo.setCurrentIndex(0)
+        combo.blockSignals(False)
+
+    def _set_combo_options(self, combo: QComboBox, values: list[str], selected: str) -> None:
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for value in values:
+            clean = str(value).strip()
+            if not clean or clean in seen:
+                continue
+            seen.add(clean)
+            normalized.append(clean)
+        combo.blockSignals(True)
+        combo.clear()
+        for item in normalized:
+            combo.addItem(item, item)
+        combo.blockSignals(False)
+        self._set_combo_selected(combo, selected)
+
+    def _sd_sampler_options(self, host: str) -> list[str]:
+        url = _normalize_host_url(host)
+        raw = _http_json(
+            f"{url}/sdapi/v1/samplers",
+            timeout=3.0,
+            headers=self._sd_auth_headers_for_payload(),
+        )
+        if not isinstance(raw, list):
+            raise RuntimeError("Sampler endpoint returned an invalid payload.")
+        names: list[str] = []
+        for entry in raw:
+            if isinstance(entry, dict):
+                name = str(entry.get("name", "")).strip()
+            else:
+                name = str(entry).strip()
+            if name:
+                names.append(name)
+        if not names:
+            raise RuntimeError("No samplers were returned by SD WebUI.")
+        return names
+
+    def _sd_checkpoint_options(self, host: str) -> list[str]:
+        url = _normalize_host_url(host)
+        raw = _http_json(
+            f"{url}/sdapi/v1/sd-models",
+            timeout=3.0,
+            headers=self._sd_auth_headers_for_payload(),
+        )
+        if not isinstance(raw, list):
+            raise RuntimeError("Checkpoint endpoint returned an invalid payload.")
+        names: list[str] = []
+        for entry in raw:
+            if not isinstance(entry, dict):
+                continue
+            title = str(entry.get("title", "")).strip()
+            model_name = str(entry.get("model_name", "")).strip()
+            if title:
+                names.append(title)
+            elif model_name:
+                names.append(model_name)
+        if not names:
+            raise RuntimeError("No checkpoints were returned by SD WebUI.")
+        return names
+
+    def _reload_sd_backend_options(
+        self, payload: dict[str, object], *, user_initiated: bool
+    ) -> None:
+        profile = self._selected_profile()
+        if profile.provider != "sdwebui":
+            return
+        host = str(payload.get("host", self.host_input.text().strip() or profile.host)).strip()
+        if not host:
+            if user_initiated:
+                self.status_label.setText("Set SD host first, then refresh options.")
+                self.status_label.setStyleSheet(f"color: {ACCENT_ALT};")
+            return
+        current_sampler = (
+            str(payload.get("sampler_name", "")).strip()
+            or str(self.sampler_combo.currentData() or self.sampler_combo.currentText()).strip()
+            or "Euler a"
+        )
+        current_model = (
+            str(payload.get("model", "")).strip()
+            or str(self.sd_model_combo.currentData() or self.sd_model_combo.currentText()).strip()
+            or profile.model
+        )
+        try:
+            samplers = self._sd_sampler_options(host)
+            checkpoints = self._sd_checkpoint_options(host)
+        except error.HTTPError as exc:
+            if int(getattr(exc, "code", 0) or 0) == 404:
+                if user_initiated:
+                    self.status_label.setText(_sdapi_not_found_message(host))
+                    self.status_label.setStyleSheet(f"color: {ACCENT_ALT};")
+                return
+            if user_initiated:
+                self.status_label.setText(
+                    f"Unable to refresh SD options: HTTP {getattr(exc, 'code', 'error')}"
+                )
+                self.status_label.setStyleSheet(f"color: {ACCENT_ALT};")
+            return
+        except Exception as exc:
+            if user_initiated:
+                self.status_label.setText(f"Unable to refresh SD options: {exc}")
+                self.status_label.setStyleSheet(f"color: {ACCENT_ALT};")
+            return
+        self._set_combo_options(self.sampler_combo, samplers, current_sampler)
+        self._set_combo_options(self.sd_model_combo, checkpoints, current_model)
+        if user_initiated:
+            self.status_label.setText(
+                f"Loaded {len(samplers)} sampler(s) and {len(checkpoints)} checkpoint(s) from SD API."
+            )
+            self.status_label.setStyleSheet(f"color: {TEXT_MID};")
+
+    def _refresh_sd_options_clicked(self) -> None:
+        self._reload_sd_backend_options(self._current_payload(), user_initiated=True)
+
+    def _sd_auth_headers_for_payload(self) -> dict[str, str]:
+        profile = self._selected_profile()
+        if profile.provider != "sdwebui":
+            return {}
+        username = self.sd_auth_user_input.text().strip()
+        password = self.sd_auth_pass_input.text().strip()
+        if not password:
+            password = secure_load_secret(f"{profile.key}:sd_auth_pass").strip()
+        if not username or not password:
+            return {}
+        token = b64encode(f"{username}:{password}".encode("utf-8")).decode("ascii")
+        return {"Authorization": f"Basic {token}"}
 
 
 class HeaderBadge(QFrame):
@@ -3660,7 +3907,12 @@ class SdImageWorker(QThread):
         checkpoint = str(self.settings.get("model", self.profile.model)).strip()
         if checkpoint:
             request_payload["override_settings"] = {"sd_model_checkpoint": checkpoint}
-        response = _http_post_json(f"{url}/sdapi/v1/txt2img", request_payload, timeout=300.0)
+        response = _http_post_json(
+            f"{url}/sdapi/v1/txt2img",
+            request_payload,
+            timeout=300.0,
+            headers=_sd_auth_headers(self.profile.key, self.settings),
+        )
         images = response.get("images", [])
         if not isinstance(images, list) or not images:
             raise RuntimeError("SD WebUI returned no images.")
@@ -3989,6 +4241,24 @@ class CharacterLibraryDialog(QDialog):
             QLabel {{
                 color: {TEXT_MID};
             }}
+            QPushButton {{
+                background: {rgba(CARD_BG_SOFT, 0.90)};
+                color: {TEXT};
+                border: 1px solid {rgba(BORDER_SOFT, 0.98)};
+                border-radius: 12px;
+                padding: 8px 12px;
+                font-weight: 600;
+            }}
+            QPushButton:hover {{
+                background: {HOVER_BG};
+                color: {UI_TEXT_STRONG};
+                border: 1px solid {BORDER_ACCENT};
+            }}
+            QPushButton:pressed {{
+                background: {rgba(ACCENT_SOFT, 0.92)};
+                color: {ACCENT_ALT};
+                border: 1px solid {rgba(ACCENT_ALT, 0.45)};
+            }}
             """
         )
         layout = QVBoxLayout(self)
@@ -4230,9 +4500,18 @@ class SidebarPanel(QFrame):
         win = self.window()
         return bool(win is not None and win.isVisible() and not win.isMinimized())
 
-    def _notify_if_popup_closed(self, title: str, body: str) -> None:
+    def _notify_if_popup_closed(self, title: str, body: str, icon_path: str = "") -> None:
         if not self._popup_open():
-            send_desktop_notification(title, body)
+            send_desktop_notification(title, body, icon_path=icon_path)
+
+    def _active_character_avatar_icon(self) -> str:
+        active = self._active_character()
+        if active is None:
+            return ""
+        avatar = Path(str(active.avatar_path or "").strip()).expanduser()
+        if not str(avatar).strip() or not avatar.exists():
+            return ""
+        return str(avatar)
 
     def _build_hero(self) -> QFrame:
         frame = QFrame()
@@ -4750,7 +5029,11 @@ class SidebarPanel(QFrame):
             )
         )
         LOGGER.debug("finish_mock_text_response: answer card appended")
-        self._notify_if_popup_closed("New AI answer", summary)
+        send_desktop_notification(
+            "New AI answer",
+            summary,
+            icon_path=self._active_character_avatar_icon(),
+        )
 
     def add_user_message(self, text: str) -> None:
         command = text.strip()
