@@ -1,0 +1,93 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Hanauta AI</title>
+  <style>
+    html, body { margin:0; padding:0; height:100%; }
+    body { font-family: system-ui, sans-serif; background: {{SURFACE_BG}}; color: {{TEXT}}; }
+    .app { display:flex; flex-direction:column; height:100%; padding:12px; box-sizing:border-box; gap:10px; }
+    .top { display:flex; align-items:center; gap:8px; }
+    .title { font-weight:700; font-size:16px; color: {{TITLE}}; }
+    .hint { font-size:12px; color: {{TEXT_DIM}}; margin-top:4px; }
+    .actions a { display:inline-block; margin-left:6px; text-decoration:none; color: {{ACCENT}}; border:1px solid {{BORDER}}; border-radius:10px; padding:5px 8px; font-size:12px; }
+    .backends { display:flex; gap:6px; flex-wrap:wrap; }
+    .backend { text-decoration:none; color: {{TEXT}}; border:1px solid {{BORDER}}; border-radius:999px; padding:6px 10px; font-size:12px; background: {{CARD_BG}}; }
+    .backend.active { border-color: {{ACCENT}}; background: {{ACCENT_SOFT}}; }
+    .chat-wrap { flex:1; min-height:240px; overflow:auto; border:1px solid {{BORDER}}; border-radius:14px; background: {{CHAT_BG}}; padding:8px; }
+    .message { display:flex; gap:10px; margin:0 0 12px 0; align-items:flex-start; }
+    .message.user { flex-direction:row-reverse; }
+    .avatar { width:30px; min-width:30px; height:30px; border-radius:15px; display:flex; align-items:center; justify-content:center; font-size:11px; font-weight:700; background: {{AVATAR_BG}}; color: {{ACCENT}}; border:1px solid {{AVATAR_BORDER}}; }
+    .message.user .avatar { background: {{AVATAR_USER_BG}}; color: {{AVATAR_USER_FG}}; border-color: {{AVATAR_USER_BORDER}}; }
+    .bubble { flex:1; max-width:calc(100% - 48px); border-radius:24px; padding:14px 16px 16px 16px; box-sizing:border-box; }
+    .header { display:flex; align-items:center; gap:8px; margin-bottom:10px; }
+    .title { font-weight:700; font-size:13px; }
+    .meta { color: {{TEXT_DIM}}; font-size:11px; margin-left:8px; }
+    .body { color: {{CHAT_TEXT}}; font-size:13px; line-height:1.55; }
+    .body p { margin:0 0 8px 0; }
+    .body code { background: {{CODE_BG}}; padding:2px 6px; border-radius:10px; }
+    .body pre { background: {{PRE_BG}}; border:1px solid {{PRE_BORDER}}; padding:10px 12px; border-radius:16px; white-space:pre-wrap; }
+    .body img { margin-top:10px; max-width:100%; border-radius:18px; border:1px solid {{PRE_BORDER}}; }
+    .chips { display:flex; flex-wrap:wrap; gap:8px; margin-top:12px; }
+    .chip { padding:7px 12px; border-radius:999px; background: {{CHIP_BG}}; border:1px solid {{CHIP_BORDER}}; color: {{CHAT_TEXT}}; font-size:11px; }
+    .empty-state { padding:28px 18px; border-radius:24px; border:1px dashed {{EMPTY_BORDER}}; background: {{EMPTY_BG}}; }
+    .empty-title { font-size:15px; font-weight:700; margin-bottom:8px; color: {{TITLE}}; }
+    .empty-copy { font-size:13px; line-height:1.55; color: {{TEXT_DIM}}; }
+    .audio-card-shell { margin-top: 10px; }
+    .composer { border:1px solid {{BORDER}}; border-radius:12px; padding:8px; background: {{CARD_BG}}; }
+    textarea { width:100%; min-height:68px; resize:vertical; border:1px solid {{BORDER}}; border-radius:10px; padding:8px; box-sizing:border-box; background: {{INPUT_BG}}; color: {{TEXT}}; }
+    .composer-row { display:flex; justify-content:space-between; align-items:center; margin-top:8px; }
+    .send { text-decoration:none; color:#fff; background: {{ACCENT}}; border-radius:999px; padding:6px 12px; font-size:12px; }
+    .provider { font-size:12px; color: {{TEXT_DIM}}; }
+    a { color: {{ACCENT}}; text-decoration: none; }
+    .chat-wrap::-webkit-scrollbar { width: 11px; }
+    .chat-wrap::-webkit-scrollbar-track { background: {{SCROLL_TRACK}}; border-radius: 8px; }
+    .chat-wrap::-webkit-scrollbar-thumb { background: {{SCROLL_THUMB}}; border-radius: 8px; border: 1px solid {{SCROLL_BORDER}}; }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <div class="top">
+      <div>
+        <div class="title">Hanauta AI</div>
+        <div class="hint">{{HEADER_STATUS}}</div>
+      </div>
+      <div style="flex:1"></div>
+      <div class="actions">
+        <a href="hanauta-ui://settings">Settings</a>
+        <a href="hanauta-ui://characters">Characters</a>
+      </div>
+    </div>
+
+    <div class="backends">{{BACKEND_BUTTONS}}</div>
+
+    <div class="chat-wrap">{{CHAT_HTML}}</div>
+
+    <div class="composer">
+      <textarea id="msg" placeholder="Message the model... Enter to send"></textarea>
+      <div class="composer-row">
+        <div class="provider">{{PROVIDER_LABEL}}</div>
+        <a class="send" href="#" onclick="sendNow(); return false;">Send</a>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    function sendNow(){
+      const el = document.getElementById('msg');
+      const text = (el.value || '').trim();
+      if(!text) return;
+      location.href = 'hanauta-ui://send?text=' + encodeURIComponent(text);
+      el.value = '';
+    }
+    document.addEventListener('keydown', function(ev){
+      const el = document.getElementById('msg');
+      if(document.activeElement === el && ev.key === 'Enter' && !ev.shiftKey){
+        ev.preventDefault();
+        sendNow();
+      }
+    });
+  </script>
+</body>
+</html>
