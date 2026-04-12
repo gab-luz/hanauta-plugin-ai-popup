@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import argparse
 import html
 import importlib
 import importlib.util
@@ -45,6 +46,7 @@ from cryptography.fernet import Fernet, InvalidToken
 from PyQt6.QtCore import QEasingCurve, QObject, QPoint, QPropertyAnimation, QThread, Qt, QTimer, QUrl, pyqtProperty, pyqtSignal, qInstallMessageHandler
 from PyQt6.QtGui import QColor, QCursor, QFont, QFontDatabase, QGuiApplication, QIcon, QPainter, QPen, QPixmap
 from PyQt6.QtGui import QDesktopServices
+from PyQt6.QtNetwork import QHostAddress, QTcpServer, QTcpSocket
 from PyQt6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -4168,10 +4170,10 @@ class SidebarPanel(QFrame):
             f"""
             QFrame#sidebarPanel {{
                 background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-                    stop:0 {PANEL_BG_FLOAT},
-                    stop:0.55 {rgba(HERO_BOTTOM, 0.97)},
+                    stop:0 {rgba(PANEL_BG_FLOAT, 0.99)},
+                    stop:0.45 {rgba(HERO_BOTTOM, 0.975)},
                     stop:1 {rgba(PANEL_BG_DEEP, 0.99)});
-                border: 1px solid {BORDER_HARD};
+                border: 1px solid {rgba(BORDER_HARD, 0.95)};
                 border-radius: 34px;
             }}
             QToolTip {{
@@ -4192,13 +4194,13 @@ class SidebarPanel(QFrame):
         self.setGraphicsEffect(shadow)
 
         root = QVBoxLayout(self)
-        root.setContentsMargins(14, 14, 14, 14)
-        root.setSpacing(12)
+        root.setContentsMargins(16, 16, 16, 16)
+        root.setSpacing(13)
 
         root.addWidget(self._build_hero())
         root.addWidget(self._build_backend_strip())
 
-        convo_shell = SurfaceFrame(bg=rgba(CARD_BG, 0.72), border=rgba(BORDER_SOFT, 0.85), radius=28)
+        convo_shell = SurfaceFrame(bg=rgba(CARD_BG, 0.78), border=rgba(BORDER_SOFT, 0.90), radius=28)
         convo_layout = QVBoxLayout(convo_shell)
         convo_layout.setContentsMargins(10, 10, 10, 10)
         convo_layout.setSpacing(8)
@@ -4264,12 +4266,16 @@ class SidebarPanel(QFrame):
 
         title_wrap = QVBoxLayout()
         title_wrap.setContentsMargins(0, 0, 0, 0)
-        title_wrap.setSpacing(0)
+        title_wrap.setSpacing(2)
 
         title = QLabel("Hanauta AI")
         title.setFont(QFont(self.ui_font, 16, QFont.Weight.DemiBold))
         title.setStyleSheet(f"color: {UI_TEXT_STRONG};")
         title_wrap.addWidget(title)
+        subtitle = QLabel("Local-first assistant")
+        subtitle.setFont(QFont(self.ui_font, 10, QFont.Weight.Medium))
+        subtitle.setStyleSheet(f"color: {TEXT_MID};")
+        title_wrap.addWidget(subtitle)
         top.addLayout(title_wrap, 1)
 
         settings_button = ActionIcon("⚙", "Backend settings", self.ui_font)
@@ -4294,7 +4300,7 @@ class SidebarPanel(QFrame):
             }}
             """
         )
-        close_button.clicked.connect(self.window().close)
+        close_button.clicked.connect(self._close_popup_window)
         top.addWidget(close_button)
         layout.addLayout(top)
 
@@ -4309,7 +4315,23 @@ class SidebarPanel(QFrame):
         status_layout.addWidget(self.header_status)
         layout.addWidget(status_shell)
 
+        badges = QHBoxLayout()
+        badges.setContentsMargins(0, 0, 0, 0)
+        badges.setSpacing(8)
+        badges.addWidget(HeaderBadge("Chat", self.ui_font))
+        badges.addWidget(HeaderBadge("Images", self.ui_font))
+        badges.addWidget(HeaderBadge("TTS", self.ui_font, accent=True))
+        badges.addStretch(1)
+        layout.addLayout(badges)
+
         return frame
+
+    def _close_popup_window(self) -> None:
+        host = self.window()
+        if isinstance(host, QWidget):
+            host.close()
+            return
+        self.close()
 
     def _build_backend_strip(self) -> QFrame:
         self.backend_buttons: dict[str, BackendPill] = {}
@@ -4944,6 +4966,20 @@ class DemoWindow(QMainWindow):
         self._drag_offset = None
         super().mouseReleaseEvent(event)
 
+    def present(self) -> None:
+        if self.isMinimized():
+            self.showNormal()
+        if not self.isVisible():
+            self.show()
+        self.raise_()
+        self.activateWindow()
+
+    def toggle_visible(self) -> None:
+        if self.isVisible() and not self.isMinimized():
+            self.hide()
+            return
+        self.present()
+
     def keyPressEvent(self, event) -> None:  # type: ignore[override]
         if event.key() == Qt.Key.Key_Escape:
             self.close()
@@ -4951,18 +4987,157 @@ class DemoWindow(QMainWindow):
         super().keyPressEvent(event)
 
 
-if __name__ == "__main__":
+class PopupCommandServer(QObject):
+    def __init__(self, window: DemoWindow, host: str, port: int) -> None:
+        super().__init__(window)
+        self.window = window
+        self.host = host.strip() or "127.0.0.1"
+        self.port = max(1, min(65535, int(port)))
+        self._server = QTcpServer(self)
+        self._server.newConnection.connect(self._on_new_connection)
+        self._buffers: dict[int, bytearray] = {}
+
+    def start(self) -> tuple[bool, str]:
+        address = QHostAddress(self.host)
+        if address.isNull():
+            return False, f"Invalid host: {self.host}"
+        if not self._server.listen(address, self.port):
+            return False, self._server.errorString()
+        return True, f"Listening on {self.host}:{self.port}"
+
+    def stop(self) -> None:
+        if self._server.isListening():
+            self._server.close()
+
+    def _on_new_connection(self) -> None:
+        while self._server.hasPendingConnections():
+            socket_obj = self._server.nextPendingConnection()
+            if socket_obj is None:
+                continue
+            self._buffers[id(socket_obj)] = bytearray()
+            socket_obj.readyRead.connect(lambda s=socket_obj: self._on_ready_read(s))
+            socket_obj.disconnected.connect(lambda s=socket_obj: self._on_disconnected(s))
+
+    def _on_disconnected(self, socket_obj: QTcpSocket) -> None:
+        self._buffers.pop(id(socket_obj), None)
+        socket_obj.deleteLater()
+
+    def _on_ready_read(self, socket_obj: QTcpSocket) -> None:
+        sock_id = id(socket_obj)
+        bucket = self._buffers.setdefault(sock_id, bytearray())
+        data = bytes(socket_obj.readAll())
+        if data:
+            bucket.extend(data)
+        if not bucket:
+            return
+        if b"\n" not in bucket and len(bucket) < 2048:
+            return
+        line = bytes(bucket).splitlines()[0].decode("utf-8", errors="ignore").strip().lower()
+        response = self._handle_command(line)
+        socket_obj.write((response + "\n").encode("utf-8"))
+        socket_obj.flush()
+        socket_obj.disconnectFromHost()
+
+    def _handle_command(self, command: str) -> str:
+        if command == "show":
+            self.window.present()
+            return "ok shown"
+        if command == "hide":
+            self.window.hide()
+            return "ok hidden"
+        if command == "toggle":
+            self.window.toggle_visible()
+            return "ok toggled"
+        if command == "status":
+            visible = self.window.isVisible() and not self.window.isMinimized()
+            return "open" if visible else "hidden"
+        if command == "quit":
+            QTimer.singleShot(0, QApplication.instance().quit)
+            return "ok quitting"
+        return "error unsupported command"
+
+
+def _send_server_command(command: str, host: str, port: int) -> tuple[bool, str]:
+    payload = (command.strip().lower() + "\n").encode("utf-8")
+    try:
+        with socket.create_connection((host, port), timeout=0.8) as sock:
+            sock.sendall(payload)
+            sock.settimeout(0.8)
+            response = sock.recv(2048).decode("utf-8", errors="ignore").strip()
+            return True, response or "ok"
+    except Exception as exc:
+        return False, str(exc)
+
+
+def _parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Hanauta AI popup")
+    parser.add_argument(
+        "--server",
+        action="store_true",
+        help="Enable popup command server (show/hide/toggle/status/quit).",
+    )
+    parser.add_argument(
+        "--host",
+        default=str(os.environ.get("HANAUTA_AI_POPUP_HOST", "127.0.0.1")),
+        help="Server host for command mode.",
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=int(str(os.environ.get("HANAUTA_AI_POPUP_PORT", "59687")) or 59687),
+        help="Server port for command mode.",
+    )
+    parser.add_argument(
+        "--command",
+        choices=["show", "hide", "toggle", "status", "quit"],
+        help="Send command to a running popup server and exit.",
+    )
+    parser.add_argument(
+        "--start-hidden",
+        action="store_true",
+        help="Start window hidden (mostly useful with --server).",
+    )
+    return parser.parse_args()
+
+
+def main() -> int:
+    args = _parse_args()
+    host = str(args.host or "127.0.0.1").strip() or "127.0.0.1"
+    port = max(1, min(65535, int(args.port)))
+
+    if args.command:
+        ok, message = _send_server_command(str(args.command), host, port)
+        if message:
+            print(message)
+        return 0 if ok else 1
+
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
     ui_font = load_ui_font()
     app.setFont(QFont(ui_font, 10))
+
     def _handle_sigint(_sig, _frame) -> None:
         LOGGER.info("SIGINT received (Ctrl+C). Quitting Hanauta AI popup.")
         app.quit()
+
     try:
         signal.signal(signal.SIGINT, _handle_sigint)
     except Exception as exc:
         LOGGER.warning("Unable to install SIGINT handler: %s", exc)
+
     window = DemoWindow(ui_font)
-    window.show()
-    sys.exit(app.exec())
+    if args.server:
+        command_server = PopupCommandServer(window, host, port)
+        ok, detail = command_server.start()
+        if ok:
+            LOGGER.info("Popup command server started: %s", detail)
+        else:
+            LOGGER.warning("Popup command server unavailable: %s", detail)
+        window._popup_command_server = command_server  # type: ignore[attr-defined]
+    if not args.start_hidden:
+        window.show()
+    return app.exec()
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
