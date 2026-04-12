@@ -78,15 +78,17 @@ except Exception:
     QAudioOutput = object  # type: ignore[assignment]
     QMediaPlayer = object  # type: ignore[assignment]
     QT_MULTIMEDIA_AVAILABLE = False
-try:
-    from PyQt6.QtWebEngineCore import QWebEnginePage, QWebEngineSettings
-    from PyQt6.QtWebEngineWidgets import QWebEngineView
-    WEBENGINE_AVAILABLE = True
-except Exception:
-    QWebEnginePage = object  # type: ignore[assignment]
-    QWebEngineSettings = object  # type: ignore[assignment]
-    QWebEngineView = object  # type: ignore[assignment]
-    WEBENGINE_AVAILABLE = False
+QWebEnginePage = object  # type: ignore[assignment]
+QWebEngineSettings = object  # type: ignore[assignment]
+QWebEngineView = object  # type: ignore[assignment]
+WEBENGINE_AVAILABLE = False
+if os.environ.get("HANAUTA_AI_POPUP_WEBENGINE", "0").strip() == "1":
+    try:
+        from PyQt6.QtWebEngineCore import QWebEnginePage, QWebEngineSettings
+        from PyQt6.QtWebEngineWidgets import QWebEngineView
+        WEBENGINE_AVAILABLE = True
+    except Exception:
+        WEBENGINE_AVAILABLE = False
 
 PLUGIN_ROOT = Path(__file__).resolve().parent
 
