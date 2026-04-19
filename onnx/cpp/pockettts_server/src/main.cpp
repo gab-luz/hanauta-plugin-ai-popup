@@ -1,7 +1,7 @@
 #include <arpa/inet.h>
+#include <csignal>
 #include <errno.h>
 #include <netinet/in.h>
-#include <signal.h>
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <sys/wait.h>

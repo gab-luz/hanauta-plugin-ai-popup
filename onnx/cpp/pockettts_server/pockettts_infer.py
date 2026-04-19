@@ -6,6 +6,9 @@ import importlib.util
 import sys
 import wave
 from pathlib import Path
+import subprocess
+import hashlib
+import shutil
 
 
 def _load_engine(model_dir: Path):
@@ -46,6 +49,31 @@ def _write_wav_float32_mono(path: Path, samples, sample_rate: int) -> None:
         wav.writeframes(pcm.tobytes())
 
 
+def _ensure_wav_reference(source_path: Path, cache_dir: Path) -> Path:
+    source = source_path.expanduser()
+    if not source.exists():
+        raise RuntimeError(f"Voice reference not found: {source}")
+    if source.suffix.lower() == ".wav":
+        return source
+    if shutil.which("ffmpeg") is None and shutil.which("sox") is None:
+        raise RuntimeError("ffmpeg or sox is required to convert voice reference audio to WAV.")
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    key = f"{str(source.resolve())}|{int(source.stat().st_mtime)}|{int(source.stat().st_size)}".encode("utf-8", "ignore")
+    digest = hashlib.sha1(key).hexdigest()[:10]
+    out = cache_dir / f"{source.stem}_{digest}.wav"
+    if out.exists():
+        return out
+    if shutil.which("ffmpeg") is not None:
+        cmd = ["ffmpeg", "-y", "-i", str(source), "-ac", "1", "-ar", "24000", str(out)]
+    else:
+        cmd = ["sox", str(source), "-c", "1", "-r", "24000", str(out)]
+    result = subprocess.run(cmd, capture_output=True, text=True, check=False, timeout=90)
+    if result.returncode != 0 or not out.exists():
+        detail = (result.stderr or result.stdout or "").strip().splitlines()[-8:]
+        raise RuntimeError("Audio conversion failed:\n" + "\n".join(detail).strip())
+    return out
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--model-dir", required=True)
@@ -66,8 +94,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.voice_reference.strip()
         else (model_dir / "reference_sample.wav")
     )
-    if not reference.exists():
-        raise RuntimeError(f"Voice reference WAV not found: {reference}")
+    reference = _ensure_wav_reference(reference, cache_dir=model_dir / "references_wav_cache")
 
     text = str(args.text or "").strip()
     if not text:

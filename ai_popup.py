@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import html
 import importlib
 import importlib.util
@@ -170,6 +171,7 @@ POCKETTTS_SERVER_SRC_DIR = PLUGIN_ROOT / "onnx" / "cpp" / "pockettts_server"
 POCKETTTS_SERVER_INSTALL_DIR = AI_STATE_DIR / "pockettts-server"
 POCKETTTS_SERVER_BINARY_NAME = "pockettts_server"
 POCKETTTS_SERVER_INFER_SCRIPT_NAME = "pockettts_infer.py"
+POCKETTTS_REFERENCE_DIR = AI_STATE_DIR / "pockettts-references"
 AI_POPUP_LOG_FILE = AI_STATE_DIR / "ai_popup.log"
 AI_POPUP_CRASH_FILE = AI_STATE_DIR / "ai_popup.crash.log"
 KOKORO_SYNTH_LOG_FILE = AI_STATE_DIR / "kokoro_synth_worker.log"
@@ -1262,6 +1264,118 @@ def _pocket_required_files() -> list[str]:
     ]
 
 
+def _ensure_wav_reference(reference_path: Path) -> Path:
+    source = reference_path.expanduser()
+    if not source.exists():
+        raise RuntimeError(f"Reference audio file not found: {source}")
+    if source.suffix.lower() == ".wav":
+        return source
+    if shutil.which("ffmpeg") is None and shutil.which("sox") is None:
+        raise RuntimeError("Install ffmpeg (recommended) or sox to convert reference audio to WAV.")
+
+    POCKETTTS_REFERENCE_DIR.mkdir(parents=True, exist_ok=True)
+    key = f"{str(source.resolve())}|{int(source.stat().st_mtime)}|{int(source.stat().st_size)}".encode("utf-8", "ignore")
+    digest = hashlib.sha1(key).hexdigest()[:10]
+    out = POCKETTTS_REFERENCE_DIR / f"{source.stem}_{digest}.wav"
+    if out.exists():
+        return out
+
+    if shutil.which("ffmpeg") is not None:
+        cmd = [
+            "ffmpeg",
+            "-y",
+            "-i",
+            str(source),
+            "-ac",
+            "1",
+            "-ar",
+            "24000",
+            str(out),
+        ]
+    else:
+        cmd = [
+            "sox",
+            str(source),
+            "-c",
+            "1",
+            "-r",
+            "24000",
+            str(out),
+        ]
+    result = subprocess.run(cmd, capture_output=True, text=True, check=False, timeout=90)
+    if result.returncode != 0 or not out.exists():
+        detail = (result.stderr or result.stdout or "").strip().splitlines()[-8:]
+        raise RuntimeError(f"Audio conversion failed:\n" + "\n".join(detail).strip())
+    return out
+
+
+def _tts_venv_dir(profile_key: str) -> Path:
+    return AI_STATE_DIR / "tts-venvs" / profile_key
+
+
+def _tts_venv_python(profile_key: str) -> Path:
+    venv = _tts_venv_dir(profile_key)
+    return venv / "bin" / "python3"
+
+
+def _tts_engine_requirements(profile_key: str) -> list[str]:
+    if profile_key == "kokorotts":
+        return ["onnxruntime", "kokoro-onnx", "numpy"]
+    if profile_key == "pockettts":
+        return ["onnxruntime", "numpy", "sentencepiece", "soundfile", "scipy"]
+    return []
+
+
+def _ensure_tts_runtime_venv(
+    profile_key: str,
+    *,
+    progress_cb: callable | None = None,
+) -> Path:
+    requirements = _tts_engine_requirements(profile_key)
+    if not requirements:
+        raise RuntimeError(f"No runtime requirements declared for {profile_key}.")
+    venv_dir = _tts_venv_dir(profile_key)
+    python_bin = _tts_venv_python(profile_key)
+    venv_dir.parent.mkdir(parents=True, exist_ok=True)
+    if not python_bin.exists():
+        if callable(progress_cb):
+            progress_cb(5, 100, "Creating virtualenv")
+        result = subprocess.run(
+            [sys.executable, "-m", "venv", str(venv_dir)],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=120,
+        )
+        if result.returncode != 0 or not python_bin.exists():
+            detail = (result.stderr or result.stdout or "").strip().splitlines()[-10:]
+            raise RuntimeError("Failed to create virtualenv:\n" + "\n".join(detail).strip())
+    if callable(progress_cb):
+        progress_cb(20, 100, "Upgrading pip")
+    subprocess.run(
+        [str(python_bin), "-m", "pip", "install", "-U", "pip", "setuptools", "wheel"],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=240,
+    )
+    if callable(progress_cb):
+        progress_cb(35, 100, "Installing runtime dependencies")
+    result = subprocess.run(
+        [str(python_bin), "-m", "pip", "install", *requirements],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=900,
+    )
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "").strip().splitlines()[-12:]
+        raise RuntimeError("Runtime dependency install failed:\n" + "\n".join(detail).strip())
+    if callable(progress_cb):
+        progress_cb(100, 100, "Runtime ready")
+    return python_bin
+
+
 def _list_kokoro_voice_names(model_dir: Path) -> list[str]:
     voices_dir = model_dir / "voices"
     names: list[str] = []
@@ -1558,8 +1672,10 @@ def _generate_kokoro_audio_subprocess(
     output_path: Path,
 ) -> None:
     script_path = _ensure_kokoro_synth_script()
+    python_bin = _tts_venv_python("kokorotts")
+    python_exec = str(python_bin) if python_bin.exists() else sys.executable
     command = [
-        sys.executable,
+        python_exec,
         str(script_path),
         "--model-dir",
         str(model_dir),
@@ -1581,6 +1697,11 @@ def _generate_kokoro_audio_subprocess(
         stderr = (completed.stderr or "").strip()
         stdout = (completed.stdout or "").strip()
         detail = stderr or stdout or "no output"
+        if "No module named 'onnxruntime'" in detail or "No module named onnxruntime" in detail:
+            raise RuntimeError(
+                "Missing Kokoro runtime deps (onnxruntime). "
+                "In Backend Settings, click 'Install runtime deps' for KokoroTTS."
+            )
         if completed.returncode == -11:
             detail = (
                 f"{detail}. Native segmentation fault in Kokoro worker. "
@@ -1664,11 +1785,91 @@ def _generate_pocket_audio(
     output_path: Path,
     voice_reference: str,
 ) -> None:
-    import numpy as np
+    reference = (
+        Path(voice_reference).expanduser()
+        if voice_reference.strip()
+        else (model_dir / "reference_sample.wav")
+    )
+    reference = _ensure_wav_reference(reference)
+    script_path = _ensure_pocket_synth_script()
+    python_bin = _tts_venv_python("pockettts")
+    python_exec = str(python_bin) if python_bin.exists() else sys.executable
+    completed = subprocess.run(
+        [
+            python_exec,
+            str(script_path),
+            "--model-dir",
+            str(model_dir),
+            "--text",
+            text,
+            "--output",
+            str(output_path),
+            "--voice-reference",
+            str(reference),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=600,
+    )
+    if completed.returncode != 0:
+        stderr = (completed.stderr or "").strip()
+        stdout = (completed.stdout or "").strip()
+        detail = stderr or stdout or "no output"
+        if "No module named 'onnxruntime'" in detail or "No module named onnxruntime" in detail:
+            raise RuntimeError(
+                "Missing PocketTTS runtime deps (onnxruntime). "
+                "In Backend Settings, click 'Install runtime deps' for PocketTTS."
+            )
+        raise RuntimeError(f"PocketTTS synth failed (exit {completed.returncode}). Detail: {detail}")
+    if not output_path.exists() or output_path.stat().st_size <= 0:
+        raise RuntimeError("PocketTTS synth did not produce audio output.")
+
+
+def _pocket_synth_script_path() -> Path:
+    return AI_STATE_DIR / "pocket_synth_worker.py"
+
+
+def _ensure_pocket_synth_script() -> Path:
+    script_path = _pocket_synth_script_path()
+    script_path.parent.mkdir(parents=True, exist_ok=True)
+    script_text = """#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+import importlib.util
+from pathlib import Path
+import wave
+
+import numpy as np
+
+
+def _write_wav(path: Path, samples: np.ndarray, sample_rate: int = 24000) -> None:
+    audio = np.clip(samples.astype(np.float32), -1.0, 1.0)
+    pcm = (audio * 32767.0).astype(np.int16)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with wave.open(str(path), "wb") as wav:
+        wav.setnchannels(1)
+        wav.setsampwidth(2)
+        wav.setframerate(int(sample_rate))
+        wav.writeframes(pcm.tobytes())
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--model-dir", required=True)
+    parser.add_argument("--text", required=True)
+    parser.add_argument("--output", required=True)
+    parser.add_argument("--voice-reference", required=True)
+    args = parser.parse_args()
+
+    model_dir = Path(args.model_dir).expanduser()
+    output_path = Path(args.output).expanduser()
+    reference = Path(args.voice_reference).expanduser()
 
     script_path = model_dir / "pocket_tts_onnx.py"
     if not script_path.exists():
-        raise RuntimeError("PocketTTS ONNX script not found in model directory.")
+        raise RuntimeError(f"PocketTTS ONNX script not found: {script_path}")
     spec = importlib.util.spec_from_file_location("hanauta_pocket_tts_onnx", script_path)
     if spec is None or spec.loader is None:
         raise RuntimeError("Unable to load PocketTTS ONNX module.")
@@ -1680,13 +1881,22 @@ def _generate_pocket_audio(
         precision="int8",
         device="auto",
     )
-    reference = Path(voice_reference).expanduser() if voice_reference.strip() else (model_dir / "reference_sample.wav")
-    if not reference.exists():
-        raise RuntimeError(f"PocketTTS voice reference not found: {reference}")
-    audio = engine.generate(text, voice=str(reference))
+    audio = engine.generate(args.text, voice=str(reference))
     if not isinstance(audio, np.ndarray) or audio.size == 0:
-        raise RuntimeError("PocketTTS ONNX returned empty audio.")
-    _write_wav_from_float32_mono(output_path, audio.astype(np.float32), 24000)
+        raise RuntimeError("PocketTTS returned empty audio.")
+    _write_wav(output_path, audio.astype(np.float32), 24000)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+"""
+    script_path.write_text(script_text, encoding="utf-8")
+    try:
+        os.chmod(script_path, 0o700)
+    except Exception:
+        pass
+    return script_path
 
 
 def synthesize_tts(
@@ -2454,6 +2664,27 @@ class TtsModelDownloadWorker(QThread):
         self.progress.emit(self.profile.key, ratio, label)
 
 
+class TtsRuntimeInstallWorker(QThread):
+    progress = pyqtSignal(int, str)
+    finished_ok = pyqtSignal(str)
+    failed = pyqtSignal(str)
+
+    def __init__(self, profile_key: str) -> None:
+        super().__init__()
+        self.profile_key = profile_key
+
+    def run(self) -> None:
+        try:
+            _ensure_tts_runtime_venv(
+                self.profile_key,
+                progress_cb=lambda value, _total, label: self.progress.emit(int(value), str(label)),
+            )
+        except Exception as exc:
+            self.failed.emit(str(exc))
+            return
+        self.finished_ok.emit(self.profile_key)
+
+
 class TtsDownloadManager(QObject):
     progress_changed = pyqtSignal(str, int, str)
     download_finished = pyqtSignal(str, str)
@@ -2848,6 +3079,11 @@ class BackendSettingsDialog(QDialog):
         self.install_pocket_button.clicked.connect(self._install_pockettts)
         actions.addWidget(self.install_pocket_button)
 
+        self.install_runtime_button = QPushButton("Install runtime deps")
+        self.install_runtime_button.setToolTip("Install ONNX runtime dependencies in an isolated venv for this TTS engine")
+        self.install_runtime_button.clicked.connect(self._install_tts_runtime_clicked)
+        actions.addWidget(self.install_runtime_button)
+
         self.save_button = QPushButton("Save")
         self.save_button.clicked.connect(self._save_current_backend)
         self.save_button.setStyleSheet(
@@ -2880,6 +3116,9 @@ class BackendSettingsDialog(QDialog):
         _apply_antialias_font(self)
         self._download_manager = get_tts_download_manager()
         self._tts_preview_worker: TtsSynthesisWorker | None = None
+        self._preview_audio_output: QAudioOutput | None = None
+        self._preview_media_player: QMediaPlayer | None = None
+        self._runtime_worker: TtsRuntimeInstallWorker | None = None
         self._download_manager.progress_changed.connect(self._on_tts_download_progress)
         self._download_manager.download_finished.connect(self._on_tts_download_finished)
         self._download_manager.download_failed.connect(self._on_tts_download_failed)
@@ -3012,9 +3251,11 @@ class BackendSettingsDialog(QDialog):
         self.tts_auto_download_check.setVisible(is_tts and mode == "local_onnx")
         self.download_tts_button.setVisible(is_tts and mode == "local_onnx")
         self.install_pocket_button.setVisible(is_tts and profile.key == "pockettts" and mode == "local_onnx")
-        self.tts_test_label.setVisible(is_tts and profile.key == "kokorotts")
-        self.tts_test_input.setVisible(is_tts and profile.key == "kokorotts")
-        self.tts_test_button.setVisible(is_tts and profile.key == "kokorotts")
+        self.install_runtime_button.setVisible(is_tts and mode == "local_onnx")
+        supports_tts_preview = is_tts and profile.key in {"kokorotts", "pockettts"}
+        self.tts_test_label.setVisible(supports_tts_preview)
+        self.tts_test_input.setVisible(supports_tts_preview)
+        self.tts_test_button.setVisible(supports_tts_preview)
         self.gguf_path_input.setVisible(is_kobold)
         self.text_model_path_input.setVisible(is_kobold)
         self.mmproj_path_input.setVisible(is_kobold)
@@ -3060,6 +3301,9 @@ class BackendSettingsDialog(QDialog):
 
     def _test_current_backend(self) -> None:
         profile = self._selected_profile()
+        if profile.provider == "tts_local" and profile.key == "pockettts":
+            self._test_tts_synthesis()
+            return
         payload = self._current_payload()
         ok, message = validate_backend(profile, payload)
         payload["tested"] = ok
@@ -3115,6 +3359,43 @@ class BackendSettingsDialog(QDialog):
         self.status_label.setText("PocketTTS install started in background (server + model files).")
         self.status_label.setStyleSheet(f"color: {TEXT_MID};")
         self._refresh_download_progress(profile.key)
+
+    def _install_tts_runtime_clicked(self) -> None:
+        profile = self._selected_profile()
+        if profile.provider != "tts_local":
+            return
+        if self._runtime_worker is not None and self._runtime_worker.isRunning():
+            self.status_label.setText("A runtime install is already running.")
+            self.status_label.setStyleSheet(f"color: {TEXT_MID};")
+            return
+        worker = TtsRuntimeInstallWorker(profile.key)
+        self._runtime_worker = worker
+        self.download_progress.show()
+        self.download_progress_label.show()
+        self.download_progress.setValue(0)
+        self.download_progress_label.setText("Preparing runtime install…")
+        self.status_label.setText(f"Installing runtime deps for {profile.label}…")
+        self.status_label.setStyleSheet(f"color: {TEXT_MID};")
+
+        def _progress(value: int, message: str) -> None:
+            self.download_progress.setValue(max(0, min(100, int(value))))
+            self.download_progress_label.setText(str(message).strip())
+
+        def _done(_key: str) -> None:
+            self.download_progress.setValue(100)
+            self.download_progress_label.setText("Runtime ready")
+            self.status_label.setText("Runtime dependencies installed.")
+            self.status_label.setStyleSheet(f"color: {ACCENT};")
+
+        def _failed(message: str) -> None:
+            self.status_label.setText(f"Runtime install failed: {message}")
+            self.status_label.setStyleSheet(f"color: {ACCENT_ALT};")
+
+        worker.progress.connect(_progress)
+        worker.finished_ok.connect(_done)
+        worker.failed.connect(_failed)
+        worker.finished.connect(lambda: setattr(self, "_runtime_worker", None))
+        worker.start()
 
     def _download_tts_assets(self) -> None:
         profile = self._selected_profile()
@@ -3243,16 +3524,75 @@ class BackendSettingsDialog(QDialog):
             return
         current = self.tts_voice_ref_input.text().strip()
         start_dir = str(Path(current).expanduser().parent) if current else str(Path.home())
-        path, _ = QFileDialog.getOpenFileName(
-            self,
-            "Select PocketTTS voice reference WAV",
-            start_dir,
-            "WAV files (*.wav);;All files (*)",
-        )
+        path = self._select_reference_audio_file("Select PocketTTS reference audio", start_dir)
         if not path:
             return
-        self.tts_voice_ref_input.setText(path)
-        self._sync_pocket_voice_combo(path)
+        try:
+            wav_path = _ensure_wav_reference(Path(path))
+        except Exception as exc:
+            self.status_label.setText(f"Reference audio conversion failed: {exc}")
+            self.status_label.setStyleSheet(f"color: {ACCENT_ALT};")
+            return
+        self.tts_voice_ref_input.setText(str(wav_path))
+        self._sync_pocket_voice_combo(str(wav_path))
+
+    def _select_reference_audio_file(self, title: str, start_dir: str) -> str:
+        dialog = QFileDialog(self)
+        dialog.setWindowTitle(title)
+        dialog.setDirectory(start_dir)
+        dialog.setFileMode(QFileDialog.FileMode.ExistingFile)
+        dialog.setNameFilters(
+            [
+                "Audio files (*.wav *.mp3 *.ogg *.flac *.m4a *.aac *.opus)",
+                "WAV files (*.wav)",
+                "All files (*)",
+            ]
+        )
+        dialog.setAcceptMode(QFileDialog.AcceptMode.AcceptOpen)
+        dialog.setOption(QFileDialog.Option.DontUseNativeDialog, True)
+        dialog.setStyleSheet(
+            f"""
+            QFileDialog, QWidget {{
+                background: {CARD_BG};
+                color: {TEXT};
+            }}
+            QLineEdit, QComboBox {{
+                background: {INPUT_BG};
+                color: {TEXT};
+                border: 1px solid {BORDER_SOFT};
+                border-radius: 12px;
+                padding: 8px 10px;
+                selection-background-color: {ACCENT_SOFT};
+            }}
+            QListView, QTreeView {{
+                background: {rgba(PANEL_BG, 0.96)};
+                color: {TEXT};
+                border: 1px solid {BORDER_SOFT};
+                border-radius: 12px;
+            }}
+            QListView::item:selected, QTreeView::item:selected {{
+                background: {ACCENT_SOFT};
+                color: {TEXT};
+            }}
+            QPushButton {{
+                min-height: 34px;
+                background: {CARD_BG_SOFT};
+                color: {TEXT};
+                border: 1px solid {BORDER_SOFT};
+                border-radius: 16px;
+                padding: 0 12px;
+                font-weight: {_button_css_weight(self.ui_font)};
+            }}
+            QPushButton:hover {{
+                background: {HOVER_BG};
+                border: 1px solid {BORDER_ACCENT};
+            }}
+            """
+        )
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return ""
+        files = dialog.selectedFiles()
+        return files[0] if files else ""
 
     def _on_pocket_voice_selected(self) -> None:
         profile = self._selected_profile()
@@ -3406,13 +3746,32 @@ class BackendSettingsDialog(QDialog):
         self.status_label.setStyleSheet(f"color: {ACCENT if ok else ACCENT_ALT};")
         self._refresh_tts_server_status(payload)
 
+    def _play_tts_preview(self, audio_path: Path) -> None:
+        absolute = audio_path.expanduser().resolve()
+        if not absolute.exists():
+            send_desktop_notification("Audio not found", str(absolute))
+            return
+        if not QT_MULTIMEDIA_AVAILABLE:
+            _play_audio_file(absolute)
+            return
+        try:
+            if self._preview_audio_output is None or self._preview_media_player is None:
+                self._preview_audio_output = QAudioOutput(self)
+                self._preview_media_player = QMediaPlayer(self)
+                self._preview_media_player.setAudioOutput(self._preview_audio_output)
+            self._preview_media_player.stop()
+            self._preview_media_player.setSource(QUrl.fromLocalFile(str(absolute)))
+            self._preview_media_player.play()
+        except Exception:
+            _play_audio_file(absolute)
+
     def _test_tts_synthesis(self) -> None:
         profile = self._selected_profile()
-        if profile.key != "kokorotts":
+        if profile.key not in {"kokorotts", "pockettts"}:
             return
         text = self.tts_test_input.text().strip()
         if not text:
-            self.status_label.setText("Enter some text to test Kokoro TTS.")
+            self.status_label.setText("Digite um texto para testar o TTS.")
             self.status_label.setStyleSheet(f"color: {TEXT_MID};")
             return
         if self._tts_preview_worker is not None and self._tts_preview_worker.isRunning():
@@ -3422,12 +3781,14 @@ class BackendSettingsDialog(QDialog):
         payload = self._current_payload()
         worker = TtsSynthesisWorker(profile, payload, text)
         self._tts_preview_worker = worker
-        self.status_label.setText("Generating Kokoro preview...")
+        label = "PocketTTS" if profile.key == "pockettts" else "Kokoro"
+        self.status_label.setText(f"Gerando preview de {label}…")
         self.status_label.setStyleSheet(f"color: {TEXT_MID};")
 
         def _done(audio_path: str, _label: str, _source: str) -> None:
-            self.status_label.setText(f"Preview generated: {audio_path}")
+            self.status_label.setText("Preview gerado. Reproduzindo áudio…")
             self.status_label.setStyleSheet(f"color: {ACCENT};")
+            self._play_tts_preview(Path(audio_path))
 
         def _failed(message: str) -> None:
             self.status_label.setText(f"TTS preview failed: {message}")
