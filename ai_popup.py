@@ -44,17 +44,15 @@ for _flag in _extra_flags:
 os.environ["QTWEBENGINE_CHROMIUM_FLAGS"] = _chromium_flags
 
 from cryptography.fernet import Fernet, InvalidToken
-from PyQt6.QtCore import QEasingCurve, QObject, QPoint, QPropertyAnimation, QThread, Qt, QTimer, QUrl, pyqtProperty, pyqtSignal, qInstallMessageHandler
+from PyQt6.QtCore import QEasingCurve, QObject, QPoint, QPropertyAnimation, QLocale, QThread, Qt, QTimer, QUrl, pyqtProperty, pyqtSignal, qInstallMessageHandler
 from PyQt6.QtGui import QColor, QCursor, QFont, QFontDatabase, QGuiApplication, QIcon, QPainter, QPen, QPixmap
 from PyQt6.QtGui import QDesktopServices
 from PyQt6.QtNetwork import QHostAddress, QTcpServer, QTcpSocket
 from PyQt6.QtWidgets import (
     QApplication,
-    QButtonGroup,
     QCheckBox,
     QComboBox,
     QDialog,
-    QDialogButtonBox,
     QFrame,
     QGraphicsDropShadowEffect,
     QGraphicsOpacityEffect,
@@ -66,10 +64,10 @@ from PyQt6.QtWidgets import (
     QPlainTextEdit,
     QProgressBar,
     QPushButton,
-    QRadioButton,
     QMessageBox,
     QScrollArea,
     QSizePolicy,
+    QStyle,
     QTextBrowser,
     QToolButton,
     QMenu,
@@ -172,6 +170,27 @@ POCKETTTS_SERVER_INSTALL_DIR = AI_STATE_DIR / "pockettts-server"
 POCKETTTS_SERVER_BINARY_NAME = "pockettts_server"
 POCKETTTS_SERVER_INFER_SCRIPT_NAME = "pockettts_infer.py"
 POCKETTTS_REFERENCE_DIR = AI_STATE_DIR / "pockettts-references"
+POCKETTTS_VOICES_REPO = "kyutai/tts-voices"
+POCKETTTS_PRESET_VOICES: list[tuple[str, str]] = [
+    ("alba", "alba-mackenna/casual.wav"),
+    ("marius", "voice-donations/Selfie.wav"),
+    ("javert", "voice-donations/Butter.wav"),
+    ("jean", "ears/p010/freeform_speech_01.wav"),
+    ("fantine", "vctk/p244_023.wav"),
+    ("cosette", "expresso/ex04-ex02_confused_001_channel1_499s.wav"),
+    ("eponine", "vctk/p262_023.wav"),
+    ("azelma", "vctk/p303_023.wav"),
+]
+POCKETTTS_LANGUAGES: list[tuple[str, str]] = [
+    ("Auto", "auto"),
+    ("English", "english"),
+    ("Français", "french"),
+    ("Deutsch", "german"),
+    ("Português", "portuguese"),
+    ("Italiano", "italian"),
+    ("Español", "spanish"),
+]
+POCKETTTS_LANGUAGE_CODES = {code for _label, code in POCKETTTS_LANGUAGES}
 AI_POPUP_LOG_FILE = AI_STATE_DIR / "ai_popup.log"
 AI_POPUP_CRASH_FILE = AI_STATE_DIR / "ai_popup.crash.log"
 KOKORO_SYNTH_LOG_FILE = AI_STATE_DIR / "kokoro_synth_worker.log"
@@ -1326,6 +1345,45 @@ def _tts_engine_requirements(profile_key: str) -> list[str]:
     return []
 
 
+def _system_language_code() -> str:
+    try:
+        code = str(QLocale.system().name() or "").split("_", 1)[0].strip().lower()
+    except Exception:
+        code = ""
+    return code
+
+
+def _default_pocket_language(payload: dict[str, object]) -> str:
+    configured = str(payload.get("tts_language", "")).strip().lower()
+    legacy = {
+        "en": "english",
+        "fr": "french",
+        "de": "german",
+        "pt": "portuguese",
+        "it": "italian",
+        "es": "spanish",
+    }
+    if configured in legacy:
+        configured = legacy[configured]
+    if configured in POCKETTTS_LANGUAGE_CODES:
+        return configured
+    system_code = _system_language_code()
+    sys_map = {
+        "en": "english",
+        "fr": "french",
+        "de": "german",
+        "pt": "portuguese",
+        "it": "italian",
+        "es": "spanish",
+    }
+    mapped = sys_map.get(system_code, "")
+    if mapped in POCKETTTS_LANGUAGE_CODES:
+        return mapped
+    if "english" in POCKETTTS_LANGUAGE_CODES:
+        return "english"
+    return "auto"
+
+
 def _ensure_tts_runtime_venv(
     profile_key: str,
     *,
@@ -1405,8 +1463,13 @@ def _list_pocket_voice_references(model_dir: Path) -> list[tuple[str, str]]:
     voices: list[tuple[str, str]] = []
     voices_dir = model_dir / "voices"
     if voices_dir.exists():
-        for wav in sorted(voices_dir.glob("*.wav")):
-            voices.append((wav.stem, str(wav)))
+        for wav in sorted(voices_dir.rglob("*.wav")):
+            try:
+                rel = wav.relative_to(voices_dir).as_posix()
+            except Exception:
+                rel = wav.name
+            label = wav.stem if rel == wav.name else f"{wav.stem} ({rel})"
+            voices.append((label, str(wav)))
     reference = model_dir / "reference_sample.wav"
     if reference.exists():
         voices.insert(0, ("Default (reference_sample.wav)", str(reference)))
@@ -1416,6 +1479,73 @@ def _list_pocket_voice_references(model_dir: Path) -> list[tuple[str, str]]:
     if not voices:
         return [("Select a WAV…", "")]
     return voices
+
+
+def _pocket_preset_voice_path(model_dir: Path, preset_name: str) -> Path:
+    safe_name = _safe_slug(preset_name.strip().lower() or "voice")
+    return model_dir / "voices" / "kyutai" / f"{safe_name}.wav"
+
+
+def _ensure_pocket_preset_voice(
+    model_dir: Path,
+    preset_name: str,
+    *,
+    progress_cb: callable | None = None,
+) -> Path:
+    rel = next((path for name, path in POCKETTTS_PRESET_VOICES if name == preset_name), "")
+    if not rel:
+        raise RuntimeError(f"Unknown PocketTTS preset voice: {preset_name}")
+    target = _pocket_preset_voice_path(model_dir, preset_name)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if target.exists() and target.stat().st_size > 0:
+        return target
+    if callable(progress_cb):
+        progress_cb(0, 1, f"Downloading {preset_name}")
+    _download_hf_files(POCKETTTS_VOICES_REPO, [rel], target.parent, progress_cb=progress_cb)
+    downloaded_candidates = [
+        target.parent / rel,
+        target.parent / Path(rel).name,
+    ]
+    downloaded: Path | None = None
+    for candidate in downloaded_candidates:
+        if candidate.exists():
+            downloaded = candidate
+            break
+    if downloaded is None:
+        for found in sorted(target.parent.rglob(Path(rel).name)):
+            if found.is_file() and found.stat().st_size > 0:
+                downloaded = found
+                break
+    if downloaded is not None and downloaded.exists():
+        try:
+            shutil.move(str(downloaded), str(target))
+        except Exception:
+            try:
+                shutil.copy2(str(downloaded), str(target))
+            except Exception:
+                pass
+    if not target.exists():
+        # Fallback: keep original filename in-place (debuggability)
+        if downloaded is not None and downloaded.exists():
+            return downloaded
+        raise RuntimeError(f"Failed to download preset voice: {preset_name}")
+    return target
+
+
+def _ensure_all_pocket_preset_voices(
+    model_dir: Path,
+    *,
+    progress_cb: callable | None = None,
+) -> None:
+    total = max(1, len(POCKETTTS_PRESET_VOICES))
+    done = 0
+    for preset_name, _rel in POCKETTTS_PRESET_VOICES:
+        if callable(progress_cb):
+            progress_cb(done, total, f"{preset_name}")
+        _ensure_pocket_preset_voice(model_dir, preset_name)
+        done += 1
+        if callable(progress_cb):
+            progress_cb(done, total, f"{preset_name}")
 
 
 def _default_tts_mode(payload: dict[str, object]) -> str:
@@ -1700,7 +1830,7 @@ def _generate_kokoro_audio_subprocess(
         if "No module named 'onnxruntime'" in detail or "No module named onnxruntime" in detail:
             raise RuntimeError(
                 "Missing Kokoro runtime deps (onnxruntime). "
-                "In Backend Settings, click 'Install runtime deps' for KokoroTTS."
+                "In Backend Settings, click 'Download TTS model' (it also installs runtime deps)."
             )
         if completed.returncode == -11:
             detail = (
@@ -1784,29 +1914,34 @@ def _generate_pocket_audio(
     text: str,
     output_path: Path,
     voice_reference: str,
+    language: str,
+    voice_mode: str = "reference",
 ) -> None:
-    reference = (
-        Path(voice_reference).expanduser()
-        if voice_reference.strip()
-        else (model_dir / "reference_sample.wav")
-    )
-    reference = _ensure_wav_reference(reference)
     script_path = _ensure_pocket_synth_script()
     python_bin = _tts_venv_python("pockettts")
     python_exec = str(python_bin) if python_bin.exists() else sys.executable
+    command = [
+        python_exec,
+        str(script_path),
+        "--model-dir",
+        str(model_dir),
+        "--text",
+        text,
+        "--output",
+        str(output_path),
+        "--language",
+        str(language or "auto"),
+    ]
+    if str(voice_mode).strip().lower() != "none":
+        reference = (
+            Path(voice_reference).expanduser()
+            if voice_reference.strip()
+            else (model_dir / "reference_sample.wav")
+        )
+        reference = _ensure_wav_reference(reference)
+        command.extend(["--voice-reference", str(reference)])
     completed = subprocess.run(
-        [
-            python_exec,
-            str(script_path),
-            "--model-dir",
-            str(model_dir),
-            "--text",
-            text,
-            "--output",
-            str(output_path),
-            "--voice-reference",
-            str(reference),
-        ],
+        command,
         capture_output=True,
         text=True,
         check=False,
@@ -1819,7 +1954,7 @@ def _generate_pocket_audio(
         if "No module named 'onnxruntime'" in detail or "No module named onnxruntime" in detail:
             raise RuntimeError(
                 "Missing PocketTTS runtime deps (onnxruntime). "
-                "In Backend Settings, click 'Install runtime deps' for PocketTTS."
+                "In Backend Settings, click 'Install PocketTTS' (it also installs runtime deps)."
             )
         raise RuntimeError(f"PocketTTS synth failed (exit {completed.returncode}). Detail: {detail}")
     if not output_path.exists() or output_path.stat().st_size <= 0:
@@ -1860,12 +1995,13 @@ def main() -> int:
     parser.add_argument("--model-dir", required=True)
     parser.add_argument("--text", required=True)
     parser.add_argument("--output", required=True)
-    parser.add_argument("--voice-reference", required=True)
+    parser.add_argument("--voice-reference", default="")
+    parser.add_argument("--language", default="auto")
     args = parser.parse_args()
 
     model_dir = Path(args.model_dir).expanduser()
     output_path = Path(args.output).expanduser()
-    reference = Path(args.voice_reference).expanduser()
+    reference = Path(args.voice_reference).expanduser() if str(args.voice_reference or "").strip() else None
 
     script_path = model_dir / "pocket_tts_onnx.py"
     if not script_path.exists():
@@ -1881,7 +2017,17 @@ def main() -> int:
         precision="int8",
         device="auto",
     )
-    audio = engine.generate(args.text, voice=str(reference))
+    lang = str(args.language or "").strip() or "auto"
+    if reference is None:
+        try:
+            audio = engine.generate(args.text, language=lang)
+        except TypeError:
+            audio = engine.generate(args.text)
+    else:
+        try:
+            audio = engine.generate(args.text, voice=str(reference), language=lang)
+        except TypeError:
+            audio = engine.generate(args.text, voice=str(reference))
     if not isinstance(audio, np.ndarray) or audio.size == 0:
         raise RuntimeError("PocketTTS returned empty audio.")
     _write_wav(output_path, audio.astype(np.float32), 24000)
@@ -1918,9 +2064,18 @@ def synthesize_tts(
         if api_key:
             headers["Authorization"] = f"Bearer {api_key}"
         url = f"{_normalize_host_url(host)}/v1/audio/speech"
+        body_payload: dict[str, object] = {
+            "model": str(payload.get("tts_remote_model", payload.get("model", profile.model))).strip() or "tts-1",
+            "input": text,
+            "voice": voice,
+        }
+        if profile.key == "pockettts":
+            lang = _default_pocket_language(payload)
+            if lang and lang != "auto":
+                body_payload["language"] = lang
         body, content_type = _http_post_bytes(
             url,
-            {"model": str(payload.get("tts_remote_model", payload.get("model", profile.model))).strip() or "tts-1", "input": text, "voice": voice},
+            body_payload,
             headers=headers,
             timeout=240.0,
         )
@@ -1941,11 +2096,21 @@ def synthesize_tts(
         profile, payload, download_if_missing=bool(payload.get("tts_download_if_missing", True))
     )
     if profile.key == "pockettts":
+        voice_mode = str(payload.get("tts_voice_mode", "reference")).strip().lower()
+        preset = str(payload.get("tts_voice_preset", "")).strip().lower()
+        voice_reference = str(payload.get("tts_voice_reference", "")).strip()
+        if voice_mode != "none" and preset:
+            try:
+                voice_reference = str(_ensure_pocket_preset_voice(model_dir, preset))
+            except Exception as exc:
+                raise RuntimeError(f"Failed to fetch PocketTTS preset voice '{preset}': {exc}")
         _generate_pocket_audio(
             model_dir,
             text,
             output_path,
-            str(payload.get("tts_voice_reference", "")).strip(),
+            voice_reference,
+            _default_pocket_language(payload),
+            voice_mode=voice_mode,
         )
     else:
         if profile.key == "kokorotts":
@@ -2647,12 +2812,21 @@ class TtsModelDownloadWorker(QThread):
                 download_if_missing=True,
                 progress_cb=lambda done, total, label: self._emit_progress(done, total, f"Fetching {label}"),
             )
+            if self.profile.provider == "tts_local":
+                _ensure_tts_runtime_venv(
+                    self.profile.key,
+                    progress_cb=lambda done, total, label: self._emit_progress(done, total, f"Runtime: {label}"),
+                )
         except Exception as exc:
             self.failed.emit(self.profile.key, str(exc))
             return
         if self.install_server and self.profile.key == "pockettts":
             try:
                 _install_pockettts_server(progress_cb=lambda done, total, label: self._emit_progress(done, total, label))
+                _ensure_all_pocket_preset_voices(
+                    model_dir,
+                    progress_cb=lambda done, total, label: self._emit_progress(done, total, f"Voices: {label}"),
+                )
             except Exception as exc:
                 self.failed.emit(self.profile.key, str(exc))
                 return
@@ -2683,6 +2857,33 @@ class TtsRuntimeInstallWorker(QThread):
             self.failed.emit(str(exc))
             return
         self.finished_ok.emit(self.profile_key)
+
+
+class PocketPresetVoiceWorker(QThread):
+    progress = pyqtSignal(int, str)
+    finished_ok = pyqtSignal(str)
+    failed = pyqtSignal(str)
+
+    def __init__(self, model_dir: Path, preset: str) -> None:
+        super().__init__()
+        self.model_dir = model_dir
+        self.preset = preset
+
+    def run(self) -> None:
+        try:
+            voice_path = _ensure_pocket_preset_voice(
+                self.model_dir,
+                self.preset,
+                progress_cb=lambda done, total, label: self._emit(done, total, label),
+            )
+        except Exception as exc:
+            self.failed.emit(str(exc))
+            return
+        self.finished_ok.emit(str(voice_path))
+
+    def _emit(self, done: int, total: int, label: str) -> None:
+        value = 0 if total <= 0 else int(max(0.0, min(1.0, done / float(total))) * 100)
+        self.progress.emit(value, str(label).strip() or "Downloading voice…")
 
 
 class TtsDownloadManager(QObject):
@@ -2766,7 +2967,7 @@ class BackendSettingsDialog(QDialog):
 
         self.setWindowTitle("AI Backend Settings")
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
-        self.resize(620, 760)
+        self.resize(620, 680)
         self.setModal(True)
         self.setStyleSheet(
             f"""
@@ -2889,16 +3090,12 @@ class BackendSettingsDialog(QDialog):
         pocket_mode_layout = QHBoxLayout(self.pocket_mode_row)
         pocket_mode_layout.setContentsMargins(0, 0, 0, 0)
         pocket_mode_layout.setSpacing(10)
-        pocket_mode_layout.addWidget(QLabel("PocketTTS mode:"))
-        self.pocket_mode_group = QButtonGroup(self)
-        self.pocket_mode_local_radio = QRadioButton("Local PocketTTS")
-        self.pocket_mode_external_radio = QRadioButton("External API")
-        self.pocket_mode_group.addButton(self.pocket_mode_local_radio, 0)
-        self.pocket_mode_group.addButton(self.pocket_mode_external_radio, 1)
-        self.pocket_mode_local_radio.toggled.connect(self._on_pocket_mode_changed)
-        self.pocket_mode_external_radio.toggled.connect(self._on_pocket_mode_changed)
-        pocket_mode_layout.addWidget(self.pocket_mode_local_radio)
-        pocket_mode_layout.addWidget(self.pocket_mode_external_radio)
+        pocket_mode_layout.addWidget(QLabel("PocketTTS mode"))
+        self.pocket_mode_combo = QComboBox()
+        self.pocket_mode_combo.addItem("Local PocketTTS", "local_onnx")
+        self.pocket_mode_combo.addItem("External API", "external_api")
+        self.pocket_mode_combo.currentIndexChanged.connect(self._on_pocket_mode_changed)
+        pocket_mode_layout.addWidget(self.pocket_mode_combo, 1)
         pocket_mode_layout.addStretch(1)
         shell_layout.addWidget(self.pocket_mode_row)
 
@@ -2917,48 +3114,85 @@ class BackendSettingsDialog(QDialog):
         self.tts_server_command_input = QLineEdit()
         self.tts_server_command_input.setPlaceholderText("Optional local TTS server command (OpenAI-compatible)")
         shell_layout.addWidget(self.tts_server_command_input)
+        self.tts_server_row = QWidget()
+        tts_server_layout = QHBoxLayout(self.tts_server_row)
+        tts_server_layout.setContentsMargins(0, 0, 0, 0)
+        tts_server_layout.setSpacing(8)
         self.tts_server_status_label = QLabel("Server status: unknown")
         self.tts_server_status_label.setStyleSheet(f"color: {TEXT_DIM};")
-        shell_layout.addWidget(self.tts_server_status_label)
-        server_actions = QHBoxLayout()
-        server_actions.setContentsMargins(0, 0, 0, 0)
-        server_actions.setSpacing(8)
+        tts_server_layout.addWidget(self.tts_server_status_label, 1)
         self.kokoro_start_button = QPushButton("Start")
         self.kokoro_start_button.clicked.connect(self._start_tts_server_clicked)
-        server_actions.addWidget(self.kokoro_start_button)
+        tts_server_layout.addWidget(self.kokoro_start_button)
         self.kokoro_restart_button = QPushButton("Restart")
         self.kokoro_restart_button.clicked.connect(self._restart_tts_server_clicked)
-        server_actions.addWidget(self.kokoro_restart_button)
+        tts_server_layout.addWidget(self.kokoro_restart_button)
         self.kokoro_stop_button = QPushButton("Stop")
         self.kokoro_stop_button.clicked.connect(self._stop_tts_server_clicked)
-        server_actions.addWidget(self.kokoro_stop_button)
-        server_actions.addStretch(1)
-        shell_layout.addLayout(server_actions)
+        tts_server_layout.addWidget(self.kokoro_stop_button)
+        shell_layout.addWidget(self.tts_server_row)
         self.kokoro_autostart_check = QCheckBox("Auto-start local TTS server when Linux session boots")
         shell_layout.addWidget(self.kokoro_autostart_check)
+
+        self.pocket_language_combo = QComboBox()
+        self.pocket_language_combo.setToolTip("PocketTTS language")
+        for label, code in POCKETTTS_LANGUAGES:
+            self.pocket_language_combo.addItem(label, code)
+        self.pocket_preset_combo = QComboBox()
+        self.pocket_preset_combo.setToolTip("PocketTTS preset voices (downloaded from Kyutai voice repository)")
+        self.pocket_preset_combo.addItem("Voice cloning (custom reference)", "")
+        for name, _rel in POCKETTTS_PRESET_VOICES:
+            self.pocket_preset_combo.addItem(name, name)
+        self.pocket_preset_combo.currentIndexChanged.connect(self._on_pocket_preset_changed)
+
+        self.pocket_lang_preset_row = QWidget()
+        pocket_lang_layout = QHBoxLayout(self.pocket_lang_preset_row)
+        pocket_lang_layout.setContentsMargins(0, 0, 0, 0)
+        pocket_lang_layout.setSpacing(8)
+        self.pocket_language_label = QLabel("Language")
+        pocket_lang_layout.addWidget(self.pocket_language_label)
+        pocket_lang_layout.addWidget(self.pocket_language_combo, 1)
+        self.pocket_preset_label = QLabel("Voice")
+        pocket_lang_layout.addWidget(self.pocket_preset_label)
+        pocket_lang_layout.addWidget(self.pocket_preset_combo, 2)
+        shell_layout.addWidget(self.pocket_lang_preset_row)
 
         self.pocket_voice_combo = QComboBox()
         self.pocket_voice_combo.setToolTip("PocketTTS voice reference presets found in the model folder")
         self.pocket_voice_combo.currentIndexChanged.connect(self._on_pocket_voice_selected)
-        shell_layout.addWidget(self.pocket_voice_combo)
-
         self.tts_voice_ref_input = ClickableLineEdit()
-        self.tts_voice_ref_input.setPlaceholderText("PocketTTS voice reference WAV (click to browse)")
-        self.tts_voice_ref_input.setToolTip("Click to select a WAV file, or paste a path")
+        self.tts_voice_ref_input.setPlaceholderText("Reference audio (click to browse)")
+        self.tts_voice_ref_input.setToolTip("Click to select an audio file (WAV/MP3/OGG/etc), or paste a path")
         self.tts_voice_ref_input.clicked.connect(self._browse_pocket_voice_reference)
-        shell_layout.addWidget(self.tts_voice_ref_input)
+
+        self.pocket_voice_ref_row = QWidget()
+        pocket_ref_layout = QHBoxLayout(self.pocket_voice_ref_row)
+        pocket_ref_layout.setContentsMargins(0, 0, 0, 0)
+        pocket_ref_layout.setSpacing(8)
+        pocket_ref_layout.addWidget(QLabel("Reference"))
+        pocket_ref_layout.addWidget(self.pocket_voice_combo, 2)
+        pocket_ref_layout.addWidget(self.tts_voice_ref_input, 3)
+        shell_layout.addWidget(self.pocket_voice_ref_row)
 
         self.tts_auto_download_check = QCheckBox("Auto-download ONNX model files when missing")
         shell_layout.addWidget(self.tts_auto_download_check)
         self.tts_test_label = QLabel("Text to be spoken")
         self.tts_test_label.setStyleSheet(f"color: {TEXT_MID};")
         shell_layout.addWidget(self.tts_test_label)
+        self.tts_test_row = QWidget()
+        tts_test_layout = QHBoxLayout(self.tts_test_row)
+        tts_test_layout.setContentsMargins(0, 0, 0, 0)
+        tts_test_layout.setSpacing(8)
         self.tts_test_input = QLineEdit()
-        self.tts_test_input.setPlaceholderText("Enter the exact text Kokoro should speak")
-        shell_layout.addWidget(self.tts_test_input)
-        self.tts_test_button = QPushButton("Speak test text")
+        self.tts_test_input.setPlaceholderText("Enter the exact text to speak")
+        tts_test_layout.addWidget(self.tts_test_input, 1)
+        self.tts_test_button = QToolButton()
+        self.tts_test_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MediaPlay))
+        self.tts_test_button.setToolTip("Speak test text")
         self.tts_test_button.clicked.connect(self._test_tts_synthesis)
-        shell_layout.addWidget(self.tts_test_button)
+        self.tts_test_button.setFixedSize(44, 40)
+        tts_test_layout.addWidget(self.tts_test_button)
+        shell_layout.addWidget(self.tts_test_row)
 
         self.gguf_path_input = QLineEdit()
         self.gguf_path_input.setPlaceholderText("GGUF model path")
@@ -3039,18 +3273,21 @@ class BackendSettingsDialog(QDialog):
         self.status_label = QLabel("Configure um backend e clique em Test.")
         self.status_label.setWordWrap(True)
         self.status_label.setStyleSheet(f"color: {TEXT_MID};")
-        shell_layout.addWidget(self.status_label)
+        self.status_row = QWidget()
+        status_row_layout = QHBoxLayout(self.status_row)
+        status_row_layout.setContentsMargins(0, 0, 0, 0)
+        status_row_layout.setSpacing(8)
+        self.status_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        status_row_layout.addWidget(self.status_label, 1)
+        self.copy_status_button = QToolButton()
+        self.copy_status_button.setText("Copy errors")
+        self.copy_status_button.setToolTip("Copy the current status/error text to the clipboard")
+        self.copy_status_button.clicked.connect(self._copy_backend_errors)
+        status_row_layout.addWidget(self.copy_status_button)
+        shell_layout.addWidget(self.status_row)
         self.validation_badge = QLabel("○ Not validated")
         self.validation_badge.setStyleSheet(f"color: {TEXT_DIM}; font-weight: 600;")
         shell_layout.addWidget(self.validation_badge)
-        status_actions = QHBoxLayout()
-        status_actions.setContentsMargins(0, 0, 0, 0)
-        status_actions.addStretch(1)
-        self.copy_status_button = QPushButton("Copy errors")
-        self.copy_status_button.setToolTip("Copy the current status/error text to the clipboard")
-        self.copy_status_button.clicked.connect(self._copy_backend_errors)
-        status_actions.addWidget(self.copy_status_button)
-        shell_layout.addLayout(status_actions)
 
         self.download_progress = QProgressBar()
         self.download_progress.setRange(0, 100)
@@ -3075,14 +3312,11 @@ class BackendSettingsDialog(QDialog):
         self.download_tts_button.clicked.connect(self._download_tts_assets)
         actions.addWidget(self.download_tts_button)
 
-        self.install_pocket_button = QPushButton("Install PocketTTS (server + models)")
+        self.install_pocket_button = QPushButton("Install PocketTTS (server + models + runtime + voices)")
         self.install_pocket_button.clicked.connect(self._install_pockettts)
         actions.addWidget(self.install_pocket_button)
 
-        self.install_runtime_button = QPushButton("Install runtime deps")
-        self.install_runtime_button.setToolTip("Install ONNX runtime dependencies in an isolated venv for this TTS engine")
-        self.install_runtime_button.clicked.connect(self._install_tts_runtime_clicked)
-        actions.addWidget(self.install_runtime_button)
+        actions.addStretch(1)
 
         self.save_button = QPushButton("Save")
         self.save_button.clicked.connect(self._save_current_backend)
@@ -3104,14 +3338,10 @@ class BackendSettingsDialog(QDialog):
             """
         )
         actions.addWidget(self.save_button)
-        actions.addStretch(1)
+        self.close_button = QPushButton("Close")
+        self.close_button.clicked.connect(self.accept)
+        actions.addWidget(self.close_button)
         shell_layout.addLayout(actions)
-
-        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
-        buttons.button(QDialogButtonBox.StandardButton.Close).setText("Close")
-        buttons.rejected.connect(self.reject)
-        buttons.button(QDialogButtonBox.StandardButton.Close).clicked.connect(self.accept)
-        shell_layout.addWidget(buttons)
 
         _apply_antialias_font(self)
         self._download_manager = get_tts_download_manager()
@@ -3119,10 +3349,40 @@ class BackendSettingsDialog(QDialog):
         self._preview_audio_output: QAudioOutput | None = None
         self._preview_media_player: QMediaPlayer | None = None
         self._runtime_worker: TtsRuntimeInstallWorker | None = None
+        self._pocket_voice_worker: PocketPresetVoiceWorker | None = None
         self._download_manager.progress_changed.connect(self._on_tts_download_progress)
         self._download_manager.download_finished.connect(self._on_tts_download_finished)
         self._download_manager.download_failed.connect(self._on_tts_download_failed)
         self._load_selected_backend()
+
+    def showEvent(self, event) -> None:  # type: ignore[override]
+        super().showEvent(event)
+        if getattr(self, "_did_center", False):
+            return
+        setattr(self, "_did_center", True)
+        parent = self.parentWidget()
+        center = None
+        if parent is not None and parent.isVisible():
+            try:
+                center = parent.frameGeometry().center()
+            except Exception:
+                center = None
+        if center is None:
+            screen = None
+            try:
+                if parent is not None and parent.windowHandle() is not None:
+                    screen = parent.windowHandle().screen()
+            except Exception:
+                screen = None
+            if screen is None:
+                screen = QGuiApplication.primaryScreen()
+            if screen is not None:
+                center = screen.availableGeometry().center()
+        if center is None:
+            return
+        frame = self.frameGeometry()
+        frame.moveCenter(center)
+        self.move(frame.topLeft())
 
     def paintEvent(self, event) -> None:  # type: ignore[override]
         super().paintEvent(event)
@@ -3147,6 +3407,14 @@ class BackendSettingsDialog(QDialog):
             if profile.provider == "sdwebui"
             else self.model_input.text().strip()
         )
+        pocket_voice_data = str(self.pocket_voice_combo.currentData() or "").strip()
+        pocket_preset = str(self.pocket_preset_combo.currentData() or "").strip().lower()
+        if pocket_preset:
+            voice_mode = "preset"
+        elif pocket_voice_data == "__none__":
+            voice_mode = "none"
+        else:
+            voice_mode = "reference"
         existing.update(
             {
                 "enabled": bool(self.enabled_check.isChecked()),
@@ -3158,7 +3426,10 @@ class BackendSettingsDialog(QDialog):
                 "tts_model_repo": self.tts_repo_input.text().strip(),
                 "tts_bundle_url": self.tts_bundle_url_input.text().strip(),
                 "tts_server_command": self.tts_server_command_input.text().strip(),
-                "tts_voice_reference": self.tts_voice_ref_input.text().strip(),
+                "tts_voice_reference": self.tts_voice_ref_input.text().strip() if voice_mode == "reference" else "",
+                "tts_language": str(self.pocket_language_combo.currentData() or "").strip(),
+                "tts_voice_preset": pocket_preset if voice_mode == "preset" else "",
+                "tts_voice_mode": voice_mode,
                 "tts_download_if_missing": bool(self.tts_auto_download_check.isChecked()),
                 "tts_autostart": bool(self.kokoro_autostart_check.isChecked()),
                 "gguf_path": self.gguf_path_input.text().strip(),
@@ -3194,14 +3465,22 @@ class BackendSettingsDialog(QDialog):
         self.binary_path_input.setText(str(payload.get("binary_path", "")))
         self.tts_mode_combo.setCurrentIndex(1 if _default_tts_mode(payload) == "external_api" else 0)
         pocket_mode = _default_tts_mode(payload)
-        if pocket_mode == "external_api":
-            self.pocket_mode_external_radio.setChecked(True)
-        else:
-            self.pocket_mode_local_radio.setChecked(True)
+        self._set_combo_selected(self.pocket_mode_combo, pocket_mode)
         self.tts_repo_input.setText(_default_tts_repo(profile, payload))
         self.tts_bundle_url_input.setText(_default_tts_bundle_url(profile, payload))
         self.tts_server_command_input.setText(str(payload.get("tts_server_command", "")))
-        self.tts_voice_ref_input.setText(str(payload.get("tts_voice_reference", "")))
+        self._set_combo_selected(self.pocket_language_combo, _default_pocket_language(payload))
+        preset = str(payload.get("tts_voice_preset", "")).strip().lower()
+        self._set_combo_selected(self.pocket_preset_combo, preset)
+        voice_mode = str(payload.get("tts_voice_mode", "reference")).strip().lower()
+        effective_voice_mode = "preset" if profile.key == "pockettts" and preset else voice_mode
+        self.tts_voice_ref_input.setText(
+            ""
+            if profile.key == "pockettts" and effective_voice_mode in {"none", "preset"}
+            else str(payload.get("tts_voice_reference", ""))
+        )
+        if profile.key == "pockettts" and voice_mode == "none":
+            self._set_combo_selected(self.pocket_preset_combo, "")
         self.tts_auto_download_check.setChecked(bool(payload.get("tts_download_if_missing", True)))
         self.kokoro_autostart_check.setChecked(bool(payload.get("tts_autostart", False)))
         self.gguf_path_input.setText(str(payload.get("gguf_path", "")))
@@ -3241,21 +3520,17 @@ class BackendSettingsDialog(QDialog):
         self.tts_bundle_url_input.setVisible(is_tts and mode == "local_onnx")
         show_tts_server_controls = is_tts and profile.key in {"kokorotts", "pockettts"} and mode == "local_onnx"
         self.tts_server_command_input.setVisible(show_tts_server_controls)
-        self.tts_server_status_label.setVisible(show_tts_server_controls)
-        self.kokoro_start_button.setVisible(show_tts_server_controls)
-        self.kokoro_restart_button.setVisible(show_tts_server_controls)
-        self.kokoro_stop_button.setVisible(show_tts_server_controls)
+        self.tts_server_row.setVisible(show_tts_server_controls)
         self.kokoro_autostart_check.setVisible(show_tts_server_controls)
-        self.pocket_voice_combo.setVisible(is_tts and profile.key == "pockettts" and mode == "local_onnx")
+        self.pocket_lang_preset_row.setVisible(is_tts and profile.key == "pockettts")
+        self.pocket_voice_ref_row.setVisible(is_tts and profile.key == "pockettts" and mode == "local_onnx")
         self.tts_voice_ref_input.setVisible(is_tts and profile.key == "pockettts" and mode == "local_onnx")
         self.tts_auto_download_check.setVisible(is_tts and mode == "local_onnx")
         self.download_tts_button.setVisible(is_tts and mode == "local_onnx")
         self.install_pocket_button.setVisible(is_tts and profile.key == "pockettts" and mode == "local_onnx")
-        self.install_runtime_button.setVisible(is_tts and mode == "local_onnx")
         supports_tts_preview = is_tts and profile.key in {"kokorotts", "pockettts"}
         self.tts_test_label.setVisible(supports_tts_preview)
-        self.tts_test_input.setVisible(supports_tts_preview)
-        self.tts_test_button.setVisible(supports_tts_preview)
+        self.tts_test_row.setVisible(supports_tts_preview)
         self.gguf_path_input.setVisible(is_kobold)
         self.text_model_path_input.setVisible(is_kobold)
         self.mmproj_path_input.setVisible(is_kobold)
@@ -3290,6 +3565,8 @@ class BackendSettingsDialog(QDialog):
         if show_tts_server_controls:
             self._refresh_tts_server_status(payload)
         self._refresh_download_progress(profile.key if is_tts else "")
+        if is_tts:
+            self._apply_tts_mode_visibility()
         tested = bool(payload.get("tested", False))
         last_status = str(payload.get("last_status", "Configure um backend e clique em Test."))
         self.status_label.setText(last_status if last_status else "Configure um backend e clique em Test.")
@@ -3356,7 +3633,7 @@ class BackendSettingsDialog(QDialog):
             self.status_label.setStyleSheet(f"color: {TEXT_MID};")
             self._refresh_download_progress(profile.key)
             return
-        self.status_label.setText("PocketTTS install started in background (server + model files).")
+        self.status_label.setText("PocketTTS install started in background (server + model files + runtime + voices).")
         self.status_label.setStyleSheet(f"color: {TEXT_MID};")
         self._refresh_download_progress(profile.key)
 
@@ -3453,24 +3730,18 @@ class BackendSettingsDialog(QDialog):
             return
         if profile.key == "pockettts":
             mode = str(self.tts_mode_combo.currentData() or "").strip()
-            desired_external = mode == "external_api"
-            self.pocket_mode_local_radio.blockSignals(True)
-            self.pocket_mode_external_radio.blockSignals(True)
+            self.pocket_mode_combo.blockSignals(True)
             try:
-                if desired_external:
-                    self.pocket_mode_external_radio.setChecked(True)
-                else:
-                    self.pocket_mode_local_radio.setChecked(True)
+                self._set_combo_selected(self.pocket_mode_combo, mode)
             finally:
-                self.pocket_mode_local_radio.blockSignals(False)
-                self.pocket_mode_external_radio.blockSignals(False)
+                self.pocket_mode_combo.blockSignals(False)
         self._apply_tts_mode_visibility()
 
     def _on_pocket_mode_changed(self) -> None:
         profile = self._selected_profile()
         if profile.key != "pockettts":
             return
-        desired = "external_api" if self.pocket_mode_external_radio.isChecked() else "local_onnx"
+        desired = str(self.pocket_mode_combo.currentData() or "local_onnx").strip()
         self.tts_mode_combo.blockSignals(True)
         try:
             index = 1 if desired == "external_api" else 0
@@ -3505,15 +3776,19 @@ class BackendSettingsDialog(QDialog):
 
         show_server_controls = local_visible and profile.key in {"kokorotts", "pockettts"}
         self.tts_server_command_input.setVisible(show_server_controls)
-        self.tts_server_status_label.setVisible(show_server_controls)
-        self.kokoro_start_button.setVisible(show_server_controls)
-        self.kokoro_restart_button.setVisible(show_server_controls)
-        self.kokoro_stop_button.setVisible(show_server_controls)
+        self.tts_server_row.setVisible(show_server_controls)
         self.kokoro_autostart_check.setVisible(show_server_controls)
 
         show_pocket_voice = local_visible and profile.key == "pockettts"
-        self.pocket_voice_combo.setVisible(show_pocket_voice)
-        self.tts_voice_ref_input.setVisible(show_pocket_voice)
+        pocket_preset = str(self.pocket_preset_combo.currentData() or "").strip().lower()
+        pocket_voice_data = str(self.pocket_voice_combo.currentData() or "").strip()
+        show_pocket_reference = show_pocket_voice and not pocket_preset
+        show_pocket_reference_file = show_pocket_reference and pocket_voice_data not in {"", "__none__"}
+        self.pocket_lang_preset_row.setVisible(profile.key == "pockettts")
+        self.pocket_preset_label.setVisible(show_pocket_voice)
+        self.pocket_preset_combo.setVisible(show_pocket_voice)
+        self.pocket_voice_ref_row.setVisible(show_pocket_reference)
+        self.tts_voice_ref_input.setVisible(show_pocket_reference_file)
         self.install_pocket_button.setVisible(show_pocket_voice)
         if show_pocket_voice:
             self._reload_pocket_voice_list(payload)
@@ -3535,6 +3810,7 @@ class BackendSettingsDialog(QDialog):
             return
         self.tts_voice_ref_input.setText(str(wav_path))
         self._sync_pocket_voice_combo(str(wav_path))
+        self._apply_tts_mode_visibility()
 
     def _select_reference_audio_file(self, title: str, start_dir: str) -> str:
         dialog = QFileDialog(self)
@@ -3601,10 +3877,20 @@ class BackendSettingsDialog(QDialog):
         data = str(self.pocket_voice_combo.currentData() or "").strip()
         if not data:
             return
+        if data == "__none__":
+            self.tts_voice_ref_input.setText("")
+            self.pocket_preset_combo.blockSignals(True)
+            try:
+                self.pocket_preset_combo.setCurrentIndex(0)
+            finally:
+                self.pocket_preset_combo.blockSignals(False)
+            self._apply_tts_mode_visibility()
+            return
         if data == "__browse__":
             self._browse_pocket_voice_reference()
             return
         self.tts_voice_ref_input.setText(data)
+        self._apply_tts_mode_visibility()
 
     def _sync_pocket_voice_combo(self, voice_ref: str) -> None:
         target = str(Path(voice_ref).expanduser())
@@ -3617,20 +3903,72 @@ class BackendSettingsDialog(QDialog):
         if custom_idx >= 0:
             self.pocket_voice_combo.setCurrentIndex(custom_idx)
 
+    def _on_pocket_preset_changed(self) -> None:
+        profile = self._selected_profile()
+        if profile.key != "pockettts":
+            return
+        preset = str(self.pocket_preset_combo.currentData() or "").strip().lower()
+        self._apply_tts_mode_visibility()
+        if not preset:
+            return
+        if self._pocket_voice_worker is not None and self._pocket_voice_worker.isRunning():
+            self.status_label.setText("A PocketTTS voice download is already running.")
+            self.status_label.setStyleSheet(f"color: {TEXT_MID};")
+            return
+        payload = self._current_payload()
+        model_dir = _default_tts_model_dir(profile, payload)
+        self.download_progress.show()
+        self.download_progress_label.show()
+        self.download_progress.setValue(0)
+        self.download_progress_label.setText("Starting voice download…")
+        self.status_label.setText(f"Downloading PocketTTS voice: {preset}…")
+        self.status_label.setStyleSheet(f"color: {TEXT_MID};")
+        worker = PocketPresetVoiceWorker(model_dir, preset)
+        self._pocket_voice_worker = worker
+
+        def _progress(value: int, message: str) -> None:
+            self.download_progress.setValue(max(0, min(100, int(value))))
+            self.download_progress_label.setText(str(message).strip())
+
+        def _done(path_text: str) -> None:
+            self.download_progress.setValue(100)
+            self.download_progress_label.setText("Voice ready")
+            self.status_label.setText("PocketTTS voice downloaded.")
+            self.status_label.setStyleSheet(f"color: {ACCENT};")
+            del path_text
+            self.tts_voice_ref_input.setText("")
+            self._apply_tts_mode_visibility()
+
+        def _failed(message: str) -> None:
+            self.status_label.setText(f"Preset voice download failed: {message}")
+            self.status_label.setStyleSheet(f"color: {ACCENT_ALT};")
+
+        worker.progress.connect(_progress)
+        worker.finished_ok.connect(_done)
+        worker.failed.connect(_failed)
+        worker.finished.connect(lambda: setattr(self, "_pocket_voice_worker", None))
+        worker.start()
+
     def _reload_pocket_voice_list(self, payload: dict[str, object]) -> None:
         profile = self._selected_profile()
         if profile.key != "pockettts":
             return
         model_dir = _default_tts_model_dir(profile, payload)
         selected_ref = str(payload.get("tts_voice_reference", "")).strip()
+        voice_mode = str(payload.get("tts_voice_mode", "reference")).strip().lower()
         voices = _list_pocket_voice_references(model_dir)
         self.pocket_voice_combo.blockSignals(True)
         try:
             self.pocket_voice_combo.clear()
+            self.pocket_voice_combo.addItem("No voice cloning", "__none__")
             for label, path in voices:
                 self.pocket_voice_combo.addItem(label, path)
             self.pocket_voice_combo.addItem("Custom…", "__browse__")
-            if selected_ref:
+            if voice_mode == "none":
+                idx = self.pocket_voice_combo.findData("__none__")
+                if idx >= 0:
+                    self.pocket_voice_combo.setCurrentIndex(idx)
+            elif selected_ref:
                 idx = self.pocket_voice_combo.findData(selected_ref)
                 if idx >= 0:
                     self.pocket_voice_combo.setCurrentIndex(idx)
