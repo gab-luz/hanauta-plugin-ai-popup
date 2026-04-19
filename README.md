@@ -23,6 +23,11 @@ Install through Hanauta Marketplace or clone into your Hanauta plugins directory
 ### Local ONNX notes
 - Kokoro default model repo: `onnx-community/Kokoro-82M-ONNX`
 - PocketTTS ONNX default repo: `KevinAHM/pocket-tts-onnx` (community ONNX export for Kyutai PocketTTS)
+- PocketTTS optional local server:
+  - this repo ships a small local server wrapper under `onnx/cpp/pockettts_server/`
+  - it exposes an OpenAI-compatible `POST /v1/audio/speech` endpoint and calls the existing PocketTTS ONNX Python module
+  - it is **not** used by default; install it from the PocketTTS backend settings (button) and start it explicitly
+  - `language` is supported as an optional field in the request JSON (passed through to the Python engine when supported)
 - Optional fallback for CDN/timeout issues:
   - set `TTS bundle URL` to a ZIP release asset URL
   - downloader will fetch and extract the ZIP into the model folder, then validate required files
