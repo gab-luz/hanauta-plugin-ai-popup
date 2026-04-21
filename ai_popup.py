@@ -23,6 +23,7 @@ import threading
 import time
 import traceback
 import wave
+import re
 import zipfile
 import zlib
 from base64 import b64decode, b64encode
@@ -156,6 +157,7 @@ TTS_OUTPUT_DIR = AI_STATE_DIR / "tts-audio"
 VOICE_RECORDINGS_DIR = AI_STATE_DIR / "voice-recordings"
 CHARACTER_LIBRARY_FILE = AI_STATE_DIR / "characters.json"
 CHARACTER_AVATARS_DIR = AI_STATE_DIR / "characters-avatars"
+VOICE_PRIVACY_CODEBOOK_FILE = AI_STATE_DIR / "voice-privacy-codebook.txt"
 NOTIFICATION_CENTER_STATE_DIR = Path.home() / ".local" / "state" / "hanauta" / "notification-center"
 NOTIFICATION_CENTER_SETTINGS_FILE = NOTIFICATION_CENTER_STATE_DIR / "settings.json"
 KOKORO_ONNX_REPO = "onnx-community/Kokoro-82M-ONNX"
@@ -201,6 +203,120 @@ _WAVEFORM_CACHE: dict[str, list[int]] = {}
 
 
 LOGGER = logging.getLogger("hanauta.ai_popup")
+
+
+def _ansi(text: str, code: str) -> str:
+    stream = getattr(sys, "stderr", None)
+    if stream is not None and hasattr(stream, "isatty") and stream.isatty():
+        return f"\033[{code}m{text}\033[0m"
+    return text
+
+
+def _voice_log(kind: str, backend: str, model: str, message: str) -> None:
+    palette = {
+        "stt": ("38;5;117", "38;5;153"),
+        "llm": ("38;5;213", "38;5;219"),
+    }
+    backend_color, model_color = palette.get(kind, ("38;5;250", "38;5;255"))
+    title = "Voice STT transcript" if kind == "stt" else "Voice LLM reply"
+    pretty = (
+        f"{_ansi(title, '1;97')} "
+        f"({_ansi('backend', '38;5;245')}: {_ansi(backend, backend_color)}, "
+        f"{_ansi('model', '38;5;245')}: {_ansi(model, model_color)}): "
+        f"{message}"
+    )
+    LOGGER.info(pretty)
+
+
+VOICE_EMOTIONS = {
+    "neutral",
+    "happy",
+    "sad",
+    "angry",
+    "excited",
+    "shy",
+    "playful",
+    "calm",
+    "flirty",
+    "serious",
+    "embarrassed",
+    "teasing",
+    "affectionate",
+}
+
+
+def _emotion_prompt_suffix(enabled: bool) -> str:
+    if not enabled:
+        return ""
+    return (
+        "Before each assistant reply, add exactly one leading emotion tag like "
+        "[neutral], [happy], [sad], [angry], [excited], [shy], [playful], [calm], "
+        "[flirty], [serious], [embarrassed], [teasing], or [affectionate]. "
+        "Use one tag only, then continue with the reply text."
+    )
+
+
+def _extract_emotion_and_clean_text(text: str) -> tuple[str, str]:
+    clean = text.strip()
+    match = re.match(r"^\s*\[([a-zA-Z_ -]{2,24})\]\s*", clean)
+    if not match:
+        return "neutral", clean
+    emotion = match.group(1).strip().lower().replace(" ", "_")
+    emotion = emotion if emotion in VOICE_EMOTIONS else "neutral"
+    return emotion, clean[match.end():].strip()
+
+
+def _replace_sensitive_words(text: str, words: list[str]) -> tuple[str, dict[str, str]]:
+    masked = str(text)
+    mapping: dict[str, str] = {}
+    if not words:
+        return masked, mapping
+    for index, word in enumerate(words, start=1):
+        clean = word.strip()
+        if not clean:
+            continue
+        token = f"__HX_{index:03d}__"
+        mapping[token] = clean
+        masked = re.sub(re.escape(clean), token, masked, flags=re.IGNORECASE)
+    return masked, mapping
+
+
+def _restore_sensitive_words(text: str, mapping: dict[str, str]) -> str:
+    restored = str(text)
+    for token, value in mapping.items():
+        restored = restored.replace(token, value)
+    return restored
+
+
+def _privacy_word_list(config: dict[str, object]) -> list[str]:
+    raw = str(config.get("privacy_words", "")).replace(",", "\n")
+    words = [line.strip() for line in raw.splitlines() if line.strip()]
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for word in words:
+        lowered = word.lower()
+        if lowered in seen:
+            continue
+        seen.add(lowered)
+        deduped.append(word)
+    return deduped
+
+
+def _write_privacy_codebook(config: dict[str, object]) -> str:
+    if not bool(config.get("privacy_word_coding_enabled", False)):
+        if VOICE_PRIVACY_CODEBOOK_FILE.exists():
+            VOICE_PRIVACY_CODEBOOK_FILE.unlink(missing_ok=True)
+        return ""
+    words = _privacy_word_list(config)
+    if not words:
+        return ""
+    AI_STATE_DIR.mkdir(parents=True, exist_ok=True)
+    lines = ["# Hanauta AI voice privacy codebook", ""]
+    for index, word in enumerate(words, start=1):
+        lines.append(f"__HX_{index:03d}__ = {word}")
+    VOICE_PRIVACY_CODEBOOK_FILE.write_text("\n".join(lines).strip() + "\n", encoding="utf-8")
+    _chmod_private(VOICE_PRIVACY_CODEBOOK_FILE)
+    return str(VOICE_PRIVACY_CODEBOOK_FILE)
 
 
 def _setup_diagnostics() -> None:
@@ -1191,6 +1307,11 @@ def _voice_mode_defaults() -> dict[str, object]:
         "tts_external_api": False,
         "barge_in_enabled": True,
         "barge_in_threshold": "0.035",
+        "emotion_tags_enabled": True,
+        "privacy_word_coding_enabled": False,
+        "privacy_words": "",
+        "compaction_model_host": "",
+        "compaction_model_name": "",
         "enable_character": True,
         "hide_character_photo": False,
         "hide_answer_text": False,
@@ -1673,12 +1794,15 @@ def transcribe_voice_audio(audio_path: Path, config: dict[str, object]) -> str:
     return _transcribe_with_whisper(audio_path, config)
 
 
-def _chat_messages_for_prompt(prompt: str, character: CharacterCard | None) -> list[dict[str, str]]:
+def _chat_messages_for_prompt(prompt: str, character: CharacterCard | None, *, emotion_tags: bool = False) -> list[dict[str, str]]:
     system = "You are Hanauta AI. Keep spoken replies concise, natural, and easy to listen to."
     if character is not None:
         character_prompt = _character_compose_prompt(character).strip()
         if character_prompt:
             system = f"{system}\n\nActive character:\n{character_prompt}"
+    emotion_suffix = _emotion_prompt_suffix(emotion_tags)
+    if emotion_suffix:
+        system = f"{system}\n\n{emotion_suffix}"
     return [
         {"role": "system", "content": system},
         {"role": "user", "content": prompt},
@@ -1724,8 +1848,16 @@ def generate_voice_chat_reply(
     backend_settings: dict[str, dict[str, object]],
     prompt: str,
     character: CharacterCard | None,
-) -> tuple[str, str]:
-    messages = _chat_messages_for_prompt(prompt, character)
+) -> tuple[str, str, str, str]:
+    privacy_mapping: dict[str, str] = {}
+    masked_prompt = prompt
+    if bool(config.get("privacy_word_coding_enabled", False)):
+        masked_prompt, privacy_mapping = _replace_sensitive_words(prompt, _privacy_word_list(config))
+    messages = _chat_messages_for_prompt(
+        masked_prompt,
+        character,
+        emotion_tags=bool(config.get("emotion_tags_enabled", False)),
+    )
     if bool(config.get("llm_external_api", False)):
         host = str(config.get("llm_host", "")).strip()
         model = str(config.get("llm_model", "")).strip() or "gpt-4.1-mini"
@@ -1735,7 +1867,9 @@ def generate_voice_chat_reply(
             messages,
             secure_load_secret("voice_mode:llm_api_key").strip(),
         )
-        return text, model
+        restored = _restore_sensitive_words(text, privacy_mapping)
+        emotion, cleaned = _extract_emotion_and_clean_text(restored)
+        return cleaned, "OpenAI-compatible", model, emotion
 
     profile_key = str(config.get("llm_profile", "koboldcpp")).strip()
     profile = profiles.get(profile_key)
@@ -1754,14 +1888,22 @@ def generate_voice_chat_reply(
         if isinstance(message, dict):
             text = str(message.get("content", "")).strip()
             if text:
-                return text, profile.label
+                restored = _restore_sensitive_words(text, privacy_mapping)
+                emotion, cleaned = _extract_emotion_and_clean_text(restored)
+                return cleaned, profile.label, model, emotion
         raise RuntimeError("Ollama returned no assistant text.")
     if profile.provider in {"openai", "openai_compat"}:
         host = str(payload.get("host", profile.host)).strip()
         model = str(payload.get("model", profile.model)).strip() or profile.model
         api_key = secure_load_secret(f"{profile.key}:api_key").strip()
         text = _generate_openai_style_reply(host, model, messages, api_key)
-        return text, profile.label
+        if profile.key == "koboldcpp":
+            gguf_path = _existing_path(payload.get("gguf_path"))
+            if gguf_path is not None:
+                model = gguf_path.name
+        restored = _restore_sensitive_words(text, privacy_mapping)
+        emotion, cleaned = _extract_emotion_and_clean_text(restored)
+        return cleaned, profile.label, model, emotion
     raise RuntimeError("Voice mode supports KoboldCpp/OpenAI-compatible, OpenAI-style, and Ollama text backends.")
 
 
@@ -6035,6 +6177,42 @@ WEB_POPUP_HTML = r"""
       position: relative;
       overflow: hidden;
     }
+    .voice-topbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 10px;
+    }
+    .voice-topbar-left,
+    .voice-topbar-right {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .voice-nav-btn,
+    .voice-stop-btn-top {
+      min-height: 40px;
+      padding: 0 14px;
+      border-radius: 999px;
+      border: 1px solid rgba(214,195,255,.14);
+      color: var(--text);
+      cursor: pointer;
+      transition: transform .16s ease, background .16s ease, border-color .16s ease, box-shadow .16s ease;
+    }
+    .voice-nav-btn {
+      background: linear-gradient(180deg, rgba(255,255,255,.08), rgba(255,255,255,.04));
+      box-shadow: inset 0 1px 0 rgba(255,255,255,.10);
+    }
+    .voice-stop-btn-top {
+      background: linear-gradient(180deg, rgba(198,180,255,.22), rgba(198,180,255,.12));
+      box-shadow: inset 0 1px 0 rgba(255,255,255,.12), 0 10px 24px rgba(107,82,173,.18);
+    }
+    .voice-nav-btn:hover,
+    .voice-stop-btn-top:hover {
+      transform: translateY(-1px);
+      border-color: rgba(214,195,255,.24);
+    }
     .voice-top { text-align: center; }
     .voice-pill { display: inline-flex; padding: 8px 12px; border-radius: 999px; background: rgba(255,255,255,.04); border: 1px solid rgba(214,195,255,.12); font-size: 11px; color: #ddd6fe; }
     .voice-name { margin-top: 16px; font-size: 15px; font-weight: 700; }
@@ -6046,6 +6224,18 @@ WEB_POPUP_HTML = r"""
     }
     .orb-wrap.speaking { animation: scenePulse 2.6s ease-in-out infinite; }
     .orb-wrap.listening { animation: sceneFloat 3.0s ease-in-out infinite; }
+    .orb-wrap.emotion-angry { animation: sceneAngry 1.1s ease-in-out infinite; }
+    .orb-wrap.emotion-happy { animation: sceneHappy 2.2s ease-in-out infinite; }
+    .orb-wrap.emotion-sad { animation: sceneSad 3.2s ease-in-out infinite; }
+    .orb-wrap.emotion-excited { animation: sceneExcited 1.3s ease-in-out infinite; }
+    .orb-wrap.emotion-calm { animation: sceneCalm 3.8s ease-in-out infinite; }
+    .orb-wrap.emotion-playful,
+    .orb-wrap.emotion-teasing,
+    .orb-wrap.emotion-flirty { animation: scenePlayful 1.9s ease-in-out infinite; }
+    .orb-wrap.emotion-serious { animation: sceneSerious 2.7s ease-in-out infinite; }
+    .orb-wrap.emotion-embarrassed,
+    .orb-wrap.emotion-shy { animation: sceneShy 2.4s ease-in-out infinite; }
+    .orb-wrap.emotion-affectionate { animation: sceneAffectionate 2.6s ease-in-out infinite; }
     .orb-glow { inset: -16%; background: radial-gradient(circle at 50% 50%, rgba(196,181,253,0.30), rgba(129,140,248,0.16) 34%, transparent 68%); filter: blur(30px); animation: glowPulse 3.1s ease-in-out infinite; }
     .orb-aura { inset: -7%; background: radial-gradient(circle at 50% 50%, rgba(255,255,255,0.08), transparent 58%), conic-gradient(from 180deg, rgba(125,211,252,0.14), rgba(192,132,252,0.12), rgba(196,181,253,0.18), rgba(125,211,252,0.14)); animation: auraDrift 5.5s ease-in-out infinite; }
     .orb-core { background: radial-gradient(circle at 32% 24%, rgba(255,255,255,0.94) 0 6%, rgba(255,255,255,0.18) 10%, transparent 18%), radial-gradient(circle at 68% 70%, rgba(191,219,254,0.12), transparent 20%), radial-gradient(circle at 28% 72%, rgba(125,211,252,0.22), transparent 30%), radial-gradient(circle at 72% 34%, rgba(192,132,252,0.24), transparent 28%), linear-gradient(145deg, rgba(17,24,39,0.12), rgba(9,14,30,0.46)), conic-gradient(from 220deg at 50% 50%, #9de4ff, #a471ff, #7fb4ff, #7de2e8, #9de4ff); box-shadow: inset -26px -36px 70px rgba(0,0,0,0.44), inset 10px 16px 46px rgba(255,255,255,0.08), 0 0 0 1px rgba(255,255,255,0.06); overflow: hidden; animation: coreMorph 3.1s ease-in-out infinite; }
@@ -6059,10 +6249,89 @@ WEB_POPUP_HTML = r"""
     .orb-photo { inset: 1px; overflow: hidden; background: radial-gradient(circle at 35% 24%, rgba(255,255,255,0.10), transparent 16%), linear-gradient(180deg, rgba(255,255,255,0.10), rgba(255,255,255,0.03)), rgba(14,12,24,0.92); display: flex; align-items: center; justify-content: center; }
     .orb-photo img { width: 100%; height: 100%; object-fit: cover; display: block; }
     .orb-fallback { width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; font-size: 30px; font-weight: 700; }
-    .caption-wrap { min-height: 88px; display: flex; align-items: center; justify-content: center; margin-top: -8px; }
-    .caption { max-width: 680px; border-radius: 999px; border: 1px solid rgba(255,255,255,0.10); background: linear-gradient(135deg, rgba(255,255,255,0.16), rgba(255,255,255,0.03)), rgba(255,255,255,0.04); box-shadow: inset 0 1px 0 rgba(255,255,255,0.14), 0 18px 40px rgba(0,0,0,0.24); color: rgba(255,255,255,0.90); font-size: 15px; line-height: 1.55; padding: 14px 22px; text-align: center; }
-    .caption.idle { color: rgba(255,255,255,0.48); }
-    .voice-card { max-width: 620px; margin: 10px auto 0 auto; border-radius: 20px; background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08); padding: 14px 16px 16px 16px; }
+    .caption-stack {
+      max-width: 760px;
+      margin: 8px auto 0 auto;
+      display: grid;
+      gap: 12px;
+    }
+    .caption-card {
+      position: relative;
+      overflow: hidden;
+      border-radius: 22px;
+      border: 1px solid rgba(255,255,255,0.10);
+      background: linear-gradient(135deg, rgba(255,255,255,0.10), rgba(255,255,255,0.03));
+      box-shadow: inset 0 1px 0 rgba(255,255,255,0.14), 0 18px 40px rgba(0,0,0,0.24);
+      padding: 14px 16px 16px 16px;
+      backdrop-filter: blur(18px);
+    }
+    .caption-card::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      background: radial-gradient(circle at top left, rgba(255,255,255,.10), transparent 34%);
+      pointer-events: none;
+    }
+    .caption-card.you {
+      background: linear-gradient(135deg, rgba(143,223,255,0.14), rgba(255,255,255,0.03));
+      border-color: rgba(143,223,255,0.16);
+    }
+    .caption-card.ai {
+      background: linear-gradient(135deg, rgba(198,180,255,0.16), rgba(255,255,255,0.03));
+      border-color: rgba(198,180,255,0.16);
+    }
+    .caption-head {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 10px;
+    }
+    .caption-badge {
+      min-width: 38px;
+      height: 38px;
+      border-radius: 19px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 12px;
+      font-weight: 800;
+      letter-spacing: .02em;
+      box-shadow: inset 0 1px 0 rgba(255,255,255,.16);
+    }
+    .caption-card.you .caption-badge {
+      background: linear-gradient(180deg, rgba(143,223,255,.28), rgba(143,223,255,.14));
+      color: #dff8ff;
+    }
+    .caption-card.ai .caption-badge {
+      background: linear-gradient(180deg, rgba(198,180,255,.30), rgba(198,180,255,.14));
+      color: #f5eeff;
+    }
+    .caption-labels {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+    .caption-name {
+      font-size: 13px;
+      font-weight: 700;
+      color: #ffffff;
+    }
+    .caption-meta {
+      font-size: 11px;
+      color: var(--text-dim);
+    }
+    .caption-text {
+      color: rgba(255,255,255,0.92);
+      font-size: 15px;
+      line-height: 1.6;
+      text-shadow: 0 1px 14px rgba(255,255,255,0.03);
+      overflow-wrap: anywhere;
+      word-break: break-word;
+    }
+    .caption-card.idle .caption-text {
+      color: rgba(255,255,255,0.48);
+    }
+    .voice-card { max-width: 620px; margin: 14px auto 0 auto; border-radius: 20px; background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08); padding: 14px 16px 16px 16px; }
     .voice-card .label { color: #c4b5fd; font-size: 11px; font-weight: 700; text-transform: uppercase; margin-bottom: 8px; }
     .voice-card .value { color: #f8f7ff; font-size: 14px; line-height: 1.6; }
     .voice-controls { display: flex; justify-content: center; margin-top: 16px; }
@@ -6076,6 +6345,15 @@ WEB_POPUP_HTML = r"""
     @keyframes ringPulse { 0%,100% { transform: scale(1); opacity:.22;} 50% { transform: scale(1.08); opacity:.42;} }
     @keyframes sceneFloat { 0%,100% { transform: translateY(0) scale(1);} 50% { transform: translateY(-4px) scale(1.01);} }
     @keyframes scenePulse { 0%,100% { transform: translateY(0) scale(1);} 20% { transform: translateY(-4px) scale(1.02) rotate(-0.5deg);} 50% { transform: translateY(2px) scale(0.985) rotate(0.7deg);} 78% { transform: translateY(-6px) scale(1.04) rotate(-0.2deg);} }
+    @keyframes sceneAngry { 0%,100% { transform: translateX(0) scale(1.01) rotate(0deg);} 20% { transform: translateX(-6px) scale(1.03) rotate(-1.2deg);} 40% { transform: translateX(6px) scale(1.05) rotate(1.2deg);} 60% { transform: translateX(-5px) scale(1.03) rotate(-0.9deg);} 80% { transform: translateX(5px) scale(1.04) rotate(0.9deg);} }
+    @keyframes sceneHappy { 0%,100% { transform: translateY(0) scale(1);} 25% { transform: translateY(-10px) scale(1.04) rotate(-1deg);} 50% { transform: translateY(-2px) scale(1.07) rotate(1deg);} 75% { transform: translateY(-8px) scale(1.03) rotate(-0.6deg);} }
+    @keyframes sceneSad { 0%,100% { transform: translateY(0) scale(0.985);} 50% { transform: translateY(8px) scale(0.975);} }
+    @keyframes sceneExcited { 0%,100% { transform: translateY(0) scale(1);} 20% { transform: translateY(-12px) scale(1.06);} 40% { transform: translateY(2px) scale(0.99);} 60% { transform: translateY(-9px) scale(1.05);} 80% { transform: translateY(-2px) scale(1.02);} }
+    @keyframes sceneCalm { 0%,100% { transform: translateY(0) scale(1);} 50% { transform: translateY(-3px) scale(1.008);} }
+    @keyframes scenePlayful { 0%,100% { transform: translateY(0) rotate(0deg);} 25% { transform: translateY(-6px) rotate(-2deg);} 50% { transform: translateY(2px) rotate(2deg);} 75% { transform: translateY(-5px) rotate(-1.5deg);} }
+    @keyframes sceneSerious { 0%,100% { transform: translateY(0) scale(1);} 50% { transform: translateY(-2px) scale(1.015);} }
+    @keyframes sceneShy { 0%,100% { transform: translateY(0) translateX(0) scale(0.995);} 50% { transform: translateY(3px) translateX(-4px) scale(1.005);} }
+    @keyframes sceneAffectionate { 0%,100% { transform: translateY(0) scale(1);} 50% { transform: translateY(-7px) scale(1.03);} }
   </style>
 </head>
 <body>
@@ -6108,6 +6386,14 @@ WEB_POPUP_HTML = r"""
         </div>
         <div class="voice-page" id="voicePage" hidden>
           <div class="voice-shell">
+            <div class="voice-topbar">
+              <div class="voice-topbar-left">
+                <button class="voice-nav-btn" id="voiceBackBtn">← Back</button>
+              </div>
+              <div class="voice-topbar-right">
+                <button class="voice-stop-btn-top" id="voiceStopTopBtn">Stop</button>
+              </div>
+            </div>
             <div class="voice-top">
               <div class="voice-pill">Hands-free Voice Mode</div>
               <div class="voice-name" id="voiceName"></div>
@@ -6129,12 +6415,31 @@ WEB_POPUP_HTML = r"""
                 </div>
               </div>
             </div>
-            <div class="caption-wrap">
-              <div class="caption" id="voiceCaption"></div>
+            <div class="caption-stack">
+              <div class="caption-card you" id="voiceYouCard">
+                <div class="caption-head">
+                  <div class="caption-badge">YOU</div>
+                  <div class="caption-labels">
+                    <div class="caption-name">You</div>
+                    <div class="caption-meta">Speech to text</div>
+                  </div>
+                </div>
+                <div class="caption-text" id="voiceTranscript"></div>
+              </div>
+              <div class="caption-card ai" id="voiceAiCard">
+                <div class="caption-head">
+                  <div class="caption-badge">AI</div>
+                  <div class="caption-labels">
+                    <div class="caption-name" id="voiceAiName">Hanauta AI</div>
+                    <div class="caption-meta">Spoken reply</div>
+                  </div>
+                </div>
+                <div class="caption-text" id="voiceCaption"></div>
+              </div>
             </div>
             <div class="voice-card">
-              <div class="label">You</div>
-              <div class="value" id="voiceTranscript"></div>
+              <div class="label">Status</div>
+              <div class="value" id="voiceStatusNote">Voice mode is ready.</div>
             </div>
             <div class="voice-controls">
               <button class="voice-stop" id="voiceStopBtn">Return to chat</button>
@@ -6188,12 +6493,19 @@ WEB_POPUP_HTML = r"""
       const speaking = !!voice.speaking;
       const listening = !!voice.listening;
       document.getElementById('voiceName').textContent = voice.character_name || 'Hanauta AI';
+      document.getElementById('voiceAiName').textContent = voice.character_name || 'Hanauta AI';
       document.getElementById('voiceStatus').textContent = voice.status || 'Voice mode';
+      document.getElementById('voiceStatusNote').textContent =
+        speaking ? 'The reply below is the exact text being spoken.' :
+        listening ? 'Listening now. Start talking whenever you want.' :
+        (voice.status || 'Voice mode is ready.');
       document.getElementById('voiceTranscript').textContent = voice.transcript || "Say something whenever you're ready.";
-      document.getElementById('voiceCaption').textContent = speaking && voice.response ? voice.response : 'Captions appear here while the character is speaking.';
-      document.getElementById('voiceCaption').classList.toggle('idle', !(speaking && voice.response));
+      document.getElementById('voiceCaption').textContent = speaking && voice.response ? voice.response : 'The AI reply appears here while speech is playing.';
+      document.getElementById('voiceAiCard').classList.toggle('idle', !(speaking && voice.response));
+      document.getElementById('voiceYouCard').classList.toggle('idle', !voice.transcript);
       const orb = document.getElementById('orbWrap');
-      orb.className = `orb-wrap ${speaking ? 'speaking' : listening ? 'listening' : ''}`;
+      const emotion = (voice.emotion || 'neutral').toLowerCase().replace(/[^a-z_]/g, '');
+      orb.className = `orb-wrap ${speaking ? 'speaking' : listening ? 'listening' : ''} ${emotion ? 'emotion-' + emotion : ''}`;
       const photo = document.getElementById('orbPhoto');
       photo.innerHTML = voice.character_image_url ? `<img src="${esc(voice.character_image_url)}" alt="${esc(voice.character_name || 'Character')}" />` : '<div class="orb-fallback">AI</div>';
     }
@@ -6229,6 +6541,8 @@ WEB_POPUP_HTML = r"""
     document.getElementById('charactersBtn').addEventListener('click', () => bridge && bridge.openCharacters && bridge.openCharacters());
     document.getElementById('voiceBtn').addEventListener('click', () => bridge && bridge.toggleVoiceMode && bridge.toggleVoiceMode());
     document.getElementById('voiceStopBtn').addEventListener('click', () => bridge && bridge.toggleVoiceMode && bridge.toggleVoiceMode());
+    document.getElementById('voiceStopTopBtn').addEventListener('click', () => bridge && bridge.toggleVoiceMode && bridge.toggleVoiceMode());
+    document.getElementById('voiceBackBtn').addEventListener('click', () => bridge && bridge.toggleVoiceMode && bridge.toggleVoiceMode());
     document.getElementById('closeBtn').addEventListener('click', () => bridge && bridge.closeWindow && bridge.closeWindow());
     document.getElementById('composerInput').addEventListener('keydown', (event) => {
       if (event.key === 'Enter' && !event.shiftKey) {
@@ -6843,7 +7157,7 @@ class TtsSynthesisWorker(QThread):
 class VoiceConversationWorker(QThread):
     status_changed = pyqtSignal(str)
     transcript_ready = pyqtSignal(str)
-    response_ready = pyqtSignal(str, str, str, str)
+    response_ready = pyqtSignal(str, str, str, str, str, str)
     barge_in_detected = pyqtSignal()
     failed = pyqtSignal(str)
 
@@ -6917,7 +7231,7 @@ class VoiceConversationWorker(QThread):
                     continue
                 self.transcript_ready.emit(transcript)
                 self.status_changed.emit("Thinking")
-                answer, llm_label = generate_voice_chat_reply(
+                answer, llm_label, llm_model, emotion = generate_voice_chat_reply(
                     self.config,
                     self.profiles,
                     self.backend_settings,
@@ -6931,7 +7245,7 @@ class VoiceConversationWorker(QThread):
                 audio_out, source = synthesize_tts(tts_profile, self._tts_payload(tts_profile), answer)
                 if not self._running:
                     break
-                self.response_ready.emit(answer, str(audio_out), llm_label, source)
+                self.response_ready.emit(answer, str(audio_out), llm_label, llm_model, source, emotion)
                 pause_until = time.time() + min(45.0, max(1.0, _wav_duration_seconds(audio_out) + 0.6))
                 while self._running and time.time() < pause_until:
                     if not bool(self.config.get("barge_in_enabled", True)):
@@ -7567,6 +7881,9 @@ class VoiceModeDialog(QDialog):
         self.barge_in_threshold_input = QLineEdit(str(self.config.get("barge_in_threshold", "0.035")))
         self.barge_in_threshold_input.setPlaceholderText("Barge-in threshold, e.g. 0.035")
         form.addWidget(self._labeled("Barge-in threshold", self.barge_in_threshold_input))
+        self.emotion_tags_check = QCheckBox("Enable character emotion tags for orb motion")
+        self.emotion_tags_check.setChecked(bool(self.config.get("emotion_tags_enabled", True)))
+        form.addWidget(self.emotion_tags_check)
 
         form.addWidget(self._section_label("Character and notifications"))
         self.character_check = QCheckBox("Enable character")
@@ -7581,6 +7898,22 @@ class VoiceModeDialog(QDialog):
         self.generic_text_input = QLineEdit(str(self.config.get("generic_notification_text", "Notification received")))
         self.generic_text_input.setPlaceholderText("Generic notification text")
         form.addWidget(self._labeled("Generic notification", self.generic_text_input))
+
+        form.addWidget(self._section_label("Compaction and privacy"))
+        self.privacy_word_coding_check = QCheckBox("Enable private/NSFW word coding for compaction")
+        self.privacy_word_coding_check.setChecked(bool(self.config.get("privacy_word_coding_enabled", False)))
+        form.addWidget(self.privacy_word_coding_check)
+        self.privacy_words_input = QPlainTextEdit()
+        self.privacy_words_input.setPlaceholderText("One private or NSFW word per line")
+        self.privacy_words_input.setFixedHeight(96)
+        self.privacy_words_input.setPlainText(str(self.config.get("privacy_words", "")))
+        form.addWidget(self._labeled("Words to code", self.privacy_words_input))
+        self.compaction_host_input = QLineEdit(str(self.config.get("compaction_model_host", "")))
+        self.compaction_host_input.setPlaceholderText("Optional compaction model host")
+        form.addWidget(self._labeled("Compaction host", self.compaction_host_input))
+        self.compaction_model_input = QLineEdit(str(self.config.get("compaction_model_name", "")))
+        self.compaction_model_input.setPlaceholderText("Optional compaction model name")
+        form.addWidget(self._labeled("Compaction model", self.compaction_model_input))
 
         actions = QHBoxLayout()
         actions.addStretch(1)
@@ -7671,16 +8004,22 @@ class VoiceModeDialog(QDialog):
                 "tts_external_api": bool(self.tts_external_check.isChecked()),
                 "barge_in_enabled": bool(self.barge_in_check.isChecked()),
                 "barge_in_threshold": self.barge_in_threshold_input.text().strip() or "0.035",
+                "emotion_tags_enabled": bool(self.emotion_tags_check.isChecked()),
                 "enable_character": bool(self.character_check.isChecked()),
                 "hide_character_photo": bool(self.hide_photo_check.isChecked()),
                 "hide_answer_text": bool(self.hide_answer_check.isChecked()),
                 "generic_notification_text": self.generic_text_input.text().strip() or "Notification received",
+                "privacy_word_coding_enabled": bool(self.privacy_word_coding_check.isChecked()),
+                "privacy_words": self.privacy_words_input.toPlainText().strip(),
+                "compaction_model_host": self.compaction_host_input.text().strip(),
+                "compaction_model_name": self.compaction_model_input.text().strip(),
             }
         )
         self.settings["_voice_mode"] = config
         secure_store_secret("voice_mode:stt_api_key", self.stt_api_key_input.text().strip())
         secure_store_secret("voice_mode:llm_api_key", self.llm_api_key_input.text().strip())
         save_backend_settings(self.settings)
+        _write_privacy_codebook(config)
         self.config = config
         self.accept()
 
@@ -7704,6 +8043,7 @@ class SidebarPanel(QFrame):
         ]
         self.profile_by_key = {profile.key: profile for profile in self.profiles}
         self.backend_settings = load_backend_settings()
+        _write_privacy_codebook(_voice_mode_settings(self.backend_settings))
         self.current_profile: BackendProfile | None = None
         self._card_animations: list[QPropertyAnimation] = []
         self.chat_history = secure_load_chat_history()
@@ -7717,6 +8057,7 @@ class SidebarPanel(QFrame):
         self._voice_last_status = "Voice mode"
         self._voice_last_transcript = ""
         self._voice_last_response = ""
+        self._voice_last_emotion = "neutral"
         self._voice_listening = False
         self._voice_speaking = False
         self._web_mode = "chat"
@@ -8045,6 +8386,33 @@ class SidebarPanel(QFrame):
         active = self._active_character() if bool(config.get("enable_character", True)) else None
         return active.name if active is not None else "Hanauta AI"
 
+    def _voice_stt_backend_model(self) -> tuple[str, str]:
+        config = _voice_mode_settings(self.backend_settings)
+        if bool(config.get("stt_external_api", False)):
+            return "External STT", str(config.get("stt_remote_model", "whisper-1")).strip() or "whisper-1"
+        backend = str(config.get("stt_backend", "whisper")).strip().lower()
+        if backend == "vosk":
+            path = Path(str(config.get("stt_vosk_model_path", "")).strip()).expanduser()
+            return "VOSK", path.name or "english model"
+        model = str(config.get("stt_model", "small")).strip().lower() or "small"
+        return "Whisper", model.title()
+
+    def _voice_llm_backend_model(self) -> tuple[str, str]:
+        config = _voice_mode_settings(self.backend_settings)
+        if bool(config.get("llm_external_api", False)):
+            return "OpenAI-compatible", str(config.get("llm_model", "gpt-4.1-mini")).strip() or "gpt-4.1-mini"
+        profile_key = str(config.get("llm_profile", "koboldcpp")).strip()
+        profile = self.profile_by_key.get(profile_key)
+        if profile is None:
+            return "Unknown", "Unknown"
+        payload = dict(self.backend_settings.get(profile.key, {}))
+        model = str(payload.get("model", profile.model)).strip() or profile.model
+        if profile.key == "koboldcpp":
+            gguf_path = _existing_path(payload.get("gguf_path"))
+            if gguf_path is not None:
+                model = gguf_path.name
+        return profile.label, model
+
     def _voice_character_image_url(self) -> str:
         config = _voice_mode_settings(self.backend_settings)
         active = self._active_character() if bool(config.get("enable_character", True)) else None
@@ -8121,6 +8489,7 @@ class SidebarPanel(QFrame):
                 "status": self._voice_last_status,
                 "transcript": self._voice_last_transcript,
                 "response": self._voice_last_response,
+                "emotion": self._voice_last_emotion,
                 "character_name": self._voice_character_name(),
                 "character_image_url": self._voice_character_image_url(),
                 "listening": bool(getattr(self, "_voice_listening", False)),
@@ -8180,6 +8549,7 @@ class SidebarPanel(QFrame):
         self._voice_last_status = "Listening"
         self._voice_last_transcript = ""
         self._voice_last_response = ""
+        self._voice_last_emotion = "neutral"
         self.voice_button.setText("■")
         self.voice_button.setToolTip("Stop voice mode")
         self.header_status.setText("Voice mode listening.")
@@ -8206,6 +8576,7 @@ class SidebarPanel(QFrame):
         self.voice_button.setToolTip("Start voice mode")
         self.header_status.setText("Voice mode stopping.")
         self._voice_last_status = "Voice mode stopped"
+        self._voice_last_emotion = "neutral"
         self._set_voice_mode_screen(False)
 
     def _finish_voice_worker(self) -> None:
@@ -8225,8 +8596,10 @@ class SidebarPanel(QFrame):
         )
 
     def _handle_voice_transcript(self, transcript: str) -> None:
-        LOGGER.info("Voice STT transcript: %s", transcript.strip())
+        stt_backend, stt_model = self._voice_stt_backend_model()
+        _voice_log("stt", stt_backend, stt_model, transcript.strip())
         self._voice_last_transcript = transcript.strip()
+        self._voice_last_emotion = "neutral"
         self._update_voice_mode_view(listening=False, speaking=False)
         safe = html.escape(transcript).replace("\n", "<br>")
         chips: list[SourceChipData] = [SourceChipData("voice")]
@@ -8235,9 +8608,10 @@ class SidebarPanel(QFrame):
             chips.append(SourceChipData(f"character:{active_character.name}"))
         self.add_card(ChatItemData(role="user", title="You", body=f"<p>{safe}</p>", meta="voice prompt", chips=chips))
 
-    def _handle_voice_response(self, answer: str, audio_path_text: str, llm_label: str, source: str) -> None:
-        LOGGER.info("Voice LLM reply (%s): %s", llm_label, answer.strip())
+    def _handle_voice_response(self, answer: str, audio_path_text: str, llm_label: str, llm_model: str, source: str, emotion: str) -> None:
+        _voice_log("llm", llm_label, llm_model, answer.strip())
         self._voice_last_response = answer.strip()
+        self._voice_last_emotion = emotion.strip().lower() or "neutral"
         self._voice_last_status = "Speaking"
         self._update_voice_mode_view(speaking=True)
         resolved_audio = Path(audio_path_text).expanduser().resolve()
@@ -8280,6 +8654,7 @@ class SidebarPanel(QFrame):
 
     def _handle_voice_failed(self, message: str) -> None:
         self._voice_last_status = f"Voice mode: {message}"
+        self._voice_last_emotion = "neutral"
         self._update_voice_mode_view(listening=False, speaking=False)
         self.header_status.setText(f"Voice mode: {message}")
         self.add_card(

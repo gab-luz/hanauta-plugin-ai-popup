@@ -1,0 +1,16 @@
+# Hanauta AI voice privacy codebook sample
+#
+# Add one mapping per line using the format:
+# __HX_001__ = word or phrase
+#
+# The sample file is safe to keep in git.
+# The real file with your private replacements should be named:
+# voice-privacy-codebook.txt
+# and it is gitignored.
+
+__HX_001__ = Alice
+__HX_002__ = Bob
+__HX_003__ = Example Street
+__HX_004__ = my real surname
+__HX_005__ = explicit_word_example
+__HX_006__ = private nickname
