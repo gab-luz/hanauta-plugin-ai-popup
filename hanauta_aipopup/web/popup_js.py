@@ -6,8 +6,9 @@ POPUP_JS = r"""
     let lastDraftId = 0;
 
     function esc(s) {
+      const map = {"&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#39;"};
       return String(s || '').replace(/[&<>\"']/g, function(c) {
-        return ({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',\"'\":'&#39;'}[c] || c);
+        return map[c] || c;
       });
     }
 
