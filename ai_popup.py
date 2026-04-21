@@ -58,6 +58,7 @@ from PyQt6.QtWidgets import (
     QFrame,
     QGraphicsDropShadowEffect,
     QGraphicsOpacityEffect,
+    QGridLayout,
     QHBoxLayout,
     QFileDialog,
     QLabel,
@@ -4599,14 +4600,20 @@ class BackendSettingsDialog(QDialog):
         shell_layout.setSpacing(12)
         root.addWidget(shell)
 
+        header_row = QWidget()
+        header_layout = QVBoxLayout(header_row)
+        header_layout.setContentsMargins(0, 0, 0, 0)
+        header_layout.setSpacing(4)
         title = QLabel("Backend settings")
         title.setFont(QFont(ui_font, 14, QFont.Weight.DemiBold))
-        shell_layout.addWidget(title)
+        title.setStyleSheet("border: none;")
+        header_layout.addWidget(title)
 
         subtitle = QLabel("Teste e habilite os providers antes de expor os ícones na sidebar.")
         subtitle.setFont(QFont(ui_font, 10))
-        subtitle.setStyleSheet(f"color: {TEXT_DIM};")
-        shell_layout.addWidget(subtitle)
+        subtitle.setStyleSheet(f"color: {TEXT_DIM}; border: none;")
+        header_layout.addWidget(subtitle)
+        shell_layout.addWidget(header_row)
 
         self.backend_combo = QComboBox()
         for profile in profiles:
@@ -4617,9 +4624,20 @@ class BackendSettingsDialog(QDialog):
         self.enabled_check = QCheckBox("Mostrar backend na barra após teste bem-sucedido")
         shell_layout.addWidget(self.enabled_check)
 
+        url_binary_row = QWidget()
+        url_binary_layout = QHBoxLayout(url_binary_row)
+        url_binary_layout.setContentsMargins(0, 0, 0, 0)
+        url_binary_layout.setSpacing(10)
         self.host_input = QLineEdit()
         self.host_input.setPlaceholderText("Host")
-        shell_layout.addWidget(self.host_input)
+        url_binary_layout.addWidget(self.host_input, 1)
+        self.binary_path_input = ClickableLineEdit()
+        self.binary_path_input.setPlaceholderText("Local binary path")
+        self.binary_path_input.setToolTip("Click to browse for a local binary or model folder")
+        self.binary_path_input.clicked.connect(self._browse_binary_path)
+        url_binary_layout.addWidget(self.binary_path_input, 1)
+        shell_layout.addWidget(url_binary_row)
+
         self.sd_auth_user_input = QLineEdit()
         self.sd_auth_user_input.setPlaceholderText("SD WebUI username (optional)")
         shell_layout.addWidget(self.sd_auth_user_input)
@@ -4628,9 +4646,23 @@ class BackendSettingsDialog(QDialog):
         self.sd_auth_pass_input.setEchoMode(QLineEdit.EchoMode.Password)
         shell_layout.addWidget(self.sd_auth_pass_input)
 
+        model_device_row = QWidget()
+        model_device_layout = QHBoxLayout(model_device_row)
+        model_device_layout.setContentsMargins(0, 0, 0, 0)
+        model_device_layout.setSpacing(10)
         self.model_input = QLineEdit()
         self.model_input.setPlaceholderText("Model")
-        shell_layout.addWidget(self.model_input)
+        model_device_layout.addWidget(self.model_input, 1)
+        cpu_gpu_label = QLabel("CPU/GPU")
+        cpu_gpu_label.setStyleSheet("border: none;")
+        model_device_layout.addWidget(cpu_gpu_label)
+        self.device_combo = QComboBox()
+        self.device_combo.addItem("CPU", "cpu")
+        self.device_combo.addItem("GPU", "gpu")
+        self.device_combo.setToolTip("Execution device")
+        model_device_layout.addWidget(self.device_combo, 1)
+        shell_layout.addWidget(model_device_row)
+
         self.sd_model_combo = QComboBox()
         self.sd_model_combo.setEditable(True)
         if self.sd_model_combo.lineEdit() is not None:
@@ -4665,15 +4697,9 @@ class BackendSettingsDialog(QDialog):
         pocket_mode_layout.addStretch(1)
         shell_layout.addWidget(self.pocket_mode_row)
 
-        self.binary_path_input = ClickableLineEdit()
-        self.binary_path_input.setPlaceholderText("Local binary path")
-        self.binary_path_input.setToolTip("Click to browse for a local binary or model folder")
-        self.binary_path_input.clicked.connect(self._browse_binary_path)
-        shell_layout.addWidget(self.binary_path_input)
-
         self.binary_info_label = QLabel("")
         self.binary_info_label.setWordWrap(True)
-        self.binary_info_label.setStyleSheet(f"color: {TEXT_DIM};")
+        self.binary_info_label.setStyleSheet(f"color: {TEXT_DIM}; border: none;")
         shell_layout.addWidget(self.binary_info_label)
 
         self.tts_repo_input = QLineEdit()
@@ -4692,7 +4718,7 @@ class BackendSettingsDialog(QDialog):
         tts_server_layout.setContentsMargins(0, 0, 0, 0)
         tts_server_layout.setSpacing(8)
         self.tts_server_status_label = QLabel("Server status: unknown")
-        self.tts_server_status_label.setStyleSheet(f"color: {TEXT_DIM};")
+        self.tts_server_status_label.setStyleSheet(f"color: {TEXT_DIM}; border: none;")
         tts_server_layout.addWidget(self.tts_server_status_label, 1)
         self.kokoro_start_button = QPushButton("Start")
         self.kokoro_start_button.clicked.connect(self._start_tts_server_clicked)
@@ -4712,7 +4738,7 @@ class BackendSettingsDialog(QDialog):
         kobold_server_layout.setContentsMargins(0, 0, 0, 0)
         kobold_server_layout.setSpacing(8)
         self.kobold_server_status_label = QLabel("Server status: unknown")
-        self.kobold_server_status_label.setStyleSheet(f"color: {TEXT_DIM};")
+        self.kobold_server_status_label.setStyleSheet(f"color: {TEXT_DIM}; border: none;")
         kobold_server_layout.addWidget(self.kobold_server_status_label, 1)
         self.kobold_start_button = QPushButton("Start")
         self.kobold_start_button.clicked.connect(self._start_kobold_clicked)
@@ -4793,7 +4819,7 @@ class BackendSettingsDialog(QDialog):
 
         self.gguf_info_label = QLabel("")
         self.gguf_info_label.setWordWrap(True)
-        self.gguf_info_label.setStyleSheet(f"color: {TEXT_DIM};")
+        self.gguf_info_label.setStyleSheet(f"color: {TEXT_DIM}; border: none;")
         shell_layout.addWidget(self.gguf_info_label)
 
         self.gguf_download_progress = QProgressBar()
@@ -4808,7 +4834,7 @@ class BackendSettingsDialog(QDialog):
 
         self.gguf_gallery_title = QLabel("Model gallery (GGUF)")
         self.gguf_gallery_title.setFont(QFont(ui_font, 11, QFont.Weight.DemiBold))
-        self.gguf_gallery_title.setStyleSheet(f"color: {TEXT_MID};")
+        self.gguf_gallery_title.setStyleSheet(f"color: {TEXT_MID}; border: none;")
         shell_layout.addWidget(self.gguf_gallery_title)
         self.gguf_gallery_scroll = QScrollArea()
         self.gguf_gallery_scroll.setWidgetResizable(True)
@@ -4848,17 +4874,21 @@ class BackendSettingsDialog(QDialog):
         self.gguf_gallery_scroll.setWidget(self.gguf_gallery_body)
         shell_layout.addWidget(self.gguf_gallery_scroll)
 
+        text_mmproj_row = QWidget()
+        text_mmproj_layout = QHBoxLayout(text_mmproj_row)
+        text_mmproj_layout.setContentsMargins(0, 0, 0, 0)
+        text_mmproj_layout.setSpacing(10)
         self.text_model_path_input = ClickableLineEdit()
-        self.text_model_path_input.setPlaceholderText("Optional text model path for JoyCaption-style setups")
+        self.text_model_path_input.setPlaceholderText("Optional text model path")
         self.text_model_path_input.setToolTip("Click to browse for an optional text model path")
         self.text_model_path_input.clicked.connect(self._browse_text_model_path)
-        shell_layout.addWidget(self.text_model_path_input)
-
+        text_mmproj_layout.addWidget(self.text_model_path_input, 1)
         self.mmproj_path_input = ClickableLineEdit()
         self.mmproj_path_input.setPlaceholderText("Optional mmproj path")
         self.mmproj_path_input.setToolTip("Click to browse for an optional mmproj file")
         self.mmproj_path_input.clicked.connect(self._browse_mmproj_path)
-        shell_layout.addWidget(self.mmproj_path_input)
+        text_mmproj_layout.addWidget(self.mmproj_path_input, 1)
+        shell_layout.addWidget(text_mmproj_row)
 
         self.kobold_jinja_check = QCheckBox("Enable Jinja chat template support")
         self.kobold_jinja_check.setToolTip("Useful for Gemma 4 and other chat templates that expect Jinja support in KoboldCpp.")
@@ -4867,12 +4897,6 @@ class BackendSettingsDialog(QDialog):
         self.kobold_test_prompt_input.setPlaceholderText("Test prompt for KoboldCpp")
         self.kobold_test_prompt_input.setToolTip("This message is sent by the Test button to confirm the model is answering.")
         shell_layout.addWidget(self.kobold_test_prompt_input)
-
-        self.device_combo = QComboBox()
-        self.device_combo.addItem("CPU", "cpu")
-        self.device_combo.addItem("GPU", "gpu")
-        self.device_combo.setToolTip("Execution device")
-        shell_layout.addWidget(self.device_combo)
 
         self.negative_prompt_input = QLineEdit()
         self.negative_prompt_input.setPlaceholderText("Default negative prompt")
@@ -4936,26 +4960,44 @@ class BackendSettingsDialog(QDialog):
 
         self.status_label = QLabel("Configure um backend e clique em Test.")
         self.status_label.setWordWrap(True)
-        self.status_label.setStyleSheet(f"color: {TEXT_MID};")
+        self.status_label.setStyleSheet(f"color: {TEXT_MID}; border: none;")
         self.status_row = QWidget()
         status_row_layout = QHBoxLayout(self.status_row)
         status_row_layout.setContentsMargins(0, 0, 0, 0)
         status_row_layout.setSpacing(8)
         self.status_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         status_row_layout.addWidget(self.status_label, 1)
-        self.copy_status_button = QToolButton()
-        self.copy_status_button.setText("Copy status")
-        self.copy_status_button.setToolTip("Copy the current status/error text to the clipboard")
-        self.copy_status_button.clicked.connect(self._copy_backend_errors)
+
+        def _icon_button(label: str, tooltip: str, callback) -> QToolButton:
+            btn = QToolButton()
+            btn.setText(label)
+            btn.setFont(QFont(self.ui_font, 14))
+            btn.setToolTip(tooltip)
+            btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+            btn.setStyleSheet(
+                f"""
+                QToolButton {{
+                    border: none;
+                    background: transparent;
+                    color: {TEXT};
+                    padding: 4px;
+                    border-radius: 6px;
+                }}
+                QToolButton:hover {{
+                    background: {HOVER_BG};
+                }}
+                """
+            )
+            btn.clicked.connect(callback)
+            return btn
+
+        self.copy_status_button = _icon_button("\ue14d", "Copy status to clipboard", self._copy_backend_errors)
         status_row_layout.addWidget(self.copy_status_button)
-        self.copy_log_button = QToolButton()
-        self.copy_log_button.setText("Copy log")
-        self.copy_log_button.setToolTip("Copy the private-safe error log to the clipboard")
-        self.copy_log_button.clicked.connect(self._copy_error_log)
+        self.copy_log_button = _icon_button("\ueb50", "Copy error log", self._copy_error_log)
         status_row_layout.addWidget(self.copy_log_button)
         shell_layout.addWidget(self.status_row)
         self.validation_badge = QLabel("○ Not validated")
-        self.validation_badge.setStyleSheet(f"color: {TEXT_DIM}; font-weight: 600;")
+        self.validation_badge.setStyleSheet(f"color: {TEXT_DIM}; font-weight: 600; border: none;")
         shell_layout.addWidget(self.validation_badge)
 
         self.download_progress = QProgressBar()
@@ -4992,12 +5034,15 @@ class BackendSettingsDialog(QDialog):
         self.save_button.setStyleSheet(
             f"""
             QPushButton {{
-                min-height: 36px;
+                min-height: 42px;
+                min-width: 110px;
                 background: {ACCENT};
                 color: {THEME.active_text};
                 border: 1px solid {ACCENT};
-                border-radius: 18px;
-                padding: 0 14px;
+                border-radius: 21px;
+                padding: 0 20px;
+                font-family: {ui_font};
+                font-size: 15px;
                 font-weight: {_button_css_weight(ui_font)};
             }}
             QPushButton:hover {{
@@ -5008,6 +5053,26 @@ class BackendSettingsDialog(QDialog):
         )
         actions.addWidget(self.save_button)
         self.close_button = QPushButton("Close")
+        self.close_button.setStyleSheet(
+            f"""
+            QPushButton {{
+                min-height: 42px;
+                min-width: 110px;
+                background: {CARD_BG_SOFT};
+                color: {TEXT};
+                border: 1px solid {BORDER_SOFT};
+                border-radius: 21px;
+                padding: 0 20px;
+                font-family: {ui_font};
+                font-size: 15px;
+                font-weight: {_button_css_weight(ui_font)};
+            }}
+            QPushButton:hover {{
+                background: {HOVER_BG};
+                border: 1px solid {BORDER_ACCENT};
+            }}
+            """
+        )
         self.close_button.clicked.connect(self.accept)
         actions.addWidget(self.close_button)
         shell_layout.addLayout(actions)
@@ -5262,10 +5327,10 @@ class BackendSettingsDialog(QDialog):
         tested = bool(payload.get("tested", False))
         last_status = str(payload.get("last_status", "Configure um backend e clique em Test."))
         self.status_label.setText(last_status if last_status else "Configure um backend e clique em Test.")
-        self.status_label.setStyleSheet(f"color: {ACCENT if tested else TEXT_MID};")
+        self.status_label.setStyleSheet(f"color: {ACCENT if tested else TEXT_MID}; border: none;")
         self.validation_badge.setText("✓ Validated" if tested else "○ Not validated")
         self.validation_badge.setStyleSheet(
-            f"color: {ACCENT if tested else TEXT_DIM}; font-weight: 700;"
+            f"color: {ACCENT if tested else TEXT_DIM}; font-weight: 700; border: none;"
         )
 
     def _test_current_backend(self) -> None:
@@ -5300,7 +5365,7 @@ class BackendSettingsDialog(QDialog):
         self.status_label.setStyleSheet(f"color: {ACCENT if ok else ACCENT_ALT};")
         self.validation_badge.setText("✓ Validated" if ok else "○ Not validated")
         self.validation_badge.setStyleSheet(
-            f"color: {ACCENT if ok else ACCENT_ALT}; font-weight: 700;"
+            f"color: {ACCENT if ok else ACCENT_ALT}; font-weight: 700; border: none;"
         )
 
     def _save_current_backend(self) -> None:
@@ -5571,7 +5636,7 @@ class BackendSettingsDialog(QDialog):
     def _refresh_kobold_status(self, payload: dict[str, object]) -> None:
         active, message = _koboldcpp_status(payload)
         self.kobold_server_status_label.setText(f"Server status: {message}")
-        self.kobold_server_status_label.setStyleSheet(f"color: {ACCENT if active else TEXT_DIM};")
+        self.kobold_server_status_label.setStyleSheet(f"color: {ACCENT if active else TEXT_DIM}; border: none;")
 
     def _persist_selected_backend_payload(self, payload: dict[str, object]) -> None:
         profile = self._selected_profile()
@@ -5893,10 +5958,10 @@ class BackendSettingsDialog(QDialog):
                 self._reload_kokoro_voice_list(payload)
             self._refresh_download_progress(profile_key)
             self.status_label.setText(message)
-            self.status_label.setStyleSheet(f"color: {ACCENT if ok else ACCENT_ALT};")
+            self.status_label.setStyleSheet(f"color: {ACCENT if ok else ACCENT_ALT}; border: none;")
             self.validation_badge.setText("✓ Validated" if ok else "○ Not validated")
             self.validation_badge.setStyleSheet(
-                f"color: {ACCENT if ok else ACCENT_ALT}; font-weight: 700;"
+                f"color: {ACCENT if ok else ACCENT_ALT}; font-weight: 700; border: none;"
             )
         send_desktop_notification("TTS model ready", f"{profile_key} model files installed at {model_dir}.")
 
