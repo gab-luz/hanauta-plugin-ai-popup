@@ -1,19 +1,172 @@
 # -*- coding: utf-8 -*-
 
-# NOTE: Keep the HTML as a standalone module so agents and humans don't have to scroll through
-# a giant mixed Python+HTML file when changing backend logic.
+from __future__ import annotations
 
 from .popup_css import POPUP_CSS
 from .popup_js import POPUP_JS
 
-WEB_POPUP_HTML = (
-    '# -*- coding: utf-8 -*-\n\n# NOTE: Keep the HTML as a standalone module so agents and humans don\'t have to scroll through\n# a giant mixed Python+HTML file when changing backend logic.\n\nWEB_POPUP_HTML = r"""\n<!DOCTYPE html>\n<html lang="en">\n<head>\n  <meta charset="utf-8" />\n  <meta name="viewport" content="width=device-width, initial-scale=1.0" />\n  <title>Hanauta AI</title>\n  <script src="qrc:///qtwebchannel/qwebchannel.js"></script>\n  '
-    + '<style>\n'
-    + POPUP_CSS
-    + '\n</style>'
-    + '\n</head>\n<body>\n  <div class="window">\n    <div class="topbar">\n      <div class="brand">\n        <div class="logo">◉</div>\n        <div class="title-wrap">\n          <div style="display:flex; align-items:center; gap:8px;">\n            <div class="title">Hanauta AI</div>\n            <div class="info-pop" title="Info">\n              <div class="info-dot" aria-label="Information">i</div>\n              <div class="info-tip" id="infoTip"><div class="tip-title">Loaded Backends</div><div class="tip-line">Loading...</div></div>\n            </div>\n          </div>\n          <div class="status" id="headerStatus"></div>\n        </div>\n      </div>\n      <div class="actions">\n        <button class="icon-btn" id="modelsBtn" title="Start/Stop voice backends" aria-label="Start/Stop models">▶</button>\n        <button class="icon-btn" id="voiceBtn" title="Voice mode">🎙</button>\n        <button class="icon-btn" id="settingsBtn" title="Settings">⚙</button>\n        <button class="icon-btn" id="charactersBtn" title="Characters">☺</button>\n        <button class="icon-btn" id="closeBtn" title="Close">✕</button>\n      </div>\n    </div>\n    <div class="body">\n      <div class="chat-page" id="chatPage">\n        <div class="backend-row" id="backendRow"></div>\n        <div class="conversation" id="conversation"></div>\n        <div class="composer">\n          <textarea id="composerInput" placeholder="Message the model... Enter to send"></textarea>\n          <div class="composer-row">\n            <div class="provider" id="providerLabel"></div>\n            <button class="send-btn secondary" id="sttBtn" title="Dictate (speech to text)" aria-label="Dictate"><span class="btn-icon">🎤</span></button>\n            <button class="send-btn secondary" id="archiveBtn" title="Archive chat" aria-label="Archive chat"><span class="btn-icon">🗄</span></button>\n            <button class="send-btn secondary" id="exportBtn" title="Export chat" aria-label="Export chat"><span class="btn-icon">⤴</span></button>\n            <button class="send-btn secondary" id="clearBtn" title="Clear chat" aria-label="Clear chat"><span class="btn-icon">🧹</span></button>\n            <button class="send-btn" id="sendBtn" title="Send message" aria-label="Send message"><span class="btn-icon">➤</span></button>\n          </div>\n        </div>\n      </div>\n      <div class="voice-page" id="voicePage" hidden>\n        <div class="voice-shell">\n          <div class="voice-topbar">\n            <div class="voice-topbar-left">\n              <button class="voice-nav-btn" id="voiceBackBtn">← Back</button>\n            </div>\n            <div class="voice-topbar-right">\n              <button class="voice-stop-btn-top" id="voiceStopTopBtn">Stop</button>\n            </div>\n          </div>\n          <div class="voice-top">\n            <div class="voice-pill">Hands-free Voice Mode</div>\n            <div class="voice-name" id="voiceName"></div>\n            <div class="voice-status" id="voiceStatus"></div>\n            <div class="voice-sub">Stay in the conversation. Start talking anytime.</div>\n            <div class="orb-scene">\n              <div class="orb-wrap" id="orbWrap">\n                <div class="orb-glow"></div>\n                <div class="orb-aura"></div>\n                <div class="orb-core"></div>\n                <div class="orb-liquid"></div>\n                <div class="orb-ring"></div>\n                <div class="orb-ring-2"></div>\n                <div class="orb-ring-3"></div>\n                <div class="orb-glass"></div>\n                <div class="orb-photo-border">\n                  <div class="orb-photo" id="orbPhoto"></div>\n                </div>\n              </div>\n            </div>\n          </div>\n          <div class="caption-stack">\n            <div class="caption-card you" id="voiceYouCard">\n              <div class="caption-head">\n                <div class="caption-badge">YOU</div>\n                <div class="caption-labels">\n                  <div class="caption-name">You</div>\n                  <div class="caption-meta">Speech to text</div>\n                </div>\n              </div>\n              <div class="caption-text" id="voiceTranscript"></div>\n            </div>\n            <div class="caption-card ai" id="voiceAiCard">\n              <div class="caption-head">\n                <div class="caption-badge">AI</div>\n                <div class="caption-labels">\n                  <div class="caption-name" id="voiceAiName">Hanauta AI</div>\n                  <div class="caption-meta">Spoken reply</div>\n                </div>\n              </div>\n              <div class="caption-text" id="voiceCaption"></div>\n            </div>\n          </div>\n          <div class="voice-card">\n            <div class="label">Status</div>\n            <div class="value" id="voiceStatusNote">Voice mode is ready.</div>\n          </div>\n          <div class="voice-controls">\n            <button class="voice-stop" id="voiceStopBtn">Return to chat</button>\n          </div>\n        </div>\n      </div>\n      <div class="modal" id="modelModal" hidden>\n        <div class="sheet" role="dialog" aria-modal="true" aria-label="Voice backends">\n          <div class="sheet-head">\n            <div style="flex:1; min-width:0">\n              <div class="sheet-title">Voice Backends</div>\n              <div class="sheet-sub" id="modelModalSub">Preload models for hands-free voice mode.</div>\n            </div>\n            <button class="icon-btn" id="modelModalCloseBtn" title="Close">✕</button>\n          </div>\n          <div class="sheet-body">\n            <div class="sheet-warn" id="modelWarn" hidden></div>\n            <label class="check-row">\n              <input class="check" type="checkbox" id="modelCheckStt" />\n              <div class="check-main">\n                <div class="check-title">STT (Speech to Text)</div>\n                <div class="check-note" id="modelNoteStt">Configured: <b>…</b></div>\n              </div>\n            </label>\n            <label class="check-row">\n              <input class="check" type="checkbox" id="modelCheckLlm" />\n              <div class="check-main">\n                <div class="check-title">LLM (Text Model)</div>\n                <div class="check-note" id="modelNoteLlm">Configured: <b>…</b></div>\n              </div>\n            </label>\n            <label class="check-row">\n              <input class="check" type="checkbox" id="modelCheckTts" />\n              <div class="check-main">\n                <div class="check-title">TTS (Speech Output)</div>\n                <div class="check-note" id="modelNoteTts">Configured: <b>…</b></div>\n              </div>\n            </label>\n          </div>\n          <div class="sheet-actions">\n            <button class="sheet-btn" id="modelsRefreshBtn">Refresh</button>\n            <button class="sheet-btn primary" id="modelsStartBtn">Start Selected</button>\n            <button class="sheet-btn danger" id="modelsStopBtn">Stop Loaded</button>\n          </div>\n        </div>\n      </div>\n    </div>\n  </div>\n\n  '
-    + '<script>\n'
-    + POPUP_JS
-    + '\n</script>'
-    + '\n</body>\n</html>\n"""\n'
-)
+_TEMPLATE = r"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Hanauta AI</title>
+  <script src="qrc:///qtwebchannel/qwebchannel.js"></script>
+  <style>
+__POPUP_CSS__
+  </style>
+</head>
+<body>
+  <div class="window">
+    <div class="topbar">
+      <div class="brand">
+        <div class="logo">◉</div>
+        <div class="title-wrap">
+          <div style="display:flex; align-items:center; gap:8px;">
+            <div class="title">Hanauta AI</div>
+            <div class="info-pop" title="Info">
+              <div class="info-dot" aria-label="Information">i</div>
+              <div class="info-tip" id="infoTip"><div class="tip-title">Loaded Backends</div><div class="tip-line">Loading...</div></div>
+            </div>
+          </div>
+          <div class="status" id="headerStatus"></div>
+        </div>
+      </div>
+      <div class="actions">
+        <button class="icon-btn" id="modelsBtn" title="Start/Stop voice backends" aria-label="Start/Stop models">▶</button>
+        <button class="icon-btn" id="voiceBtn" title="Voice mode">🎙</button>
+        <button class="icon-btn" id="settingsBtn" title="Settings">⚙</button>
+        <button class="icon-btn" id="charactersBtn" title="Characters">☺</button>
+        <button class="icon-btn" id="closeBtn" title="Close">✕</button>
+      </div>
+    </div>
+    <div class="body">
+      <div class="chat-page" id="chatPage">
+        <div class="backend-row" id="backendRow"></div>
+        <div class="conversation" id="conversation"></div>
+        <div class="composer">
+          <textarea id="composerInput" placeholder="Message the model... Enter to send"></textarea>
+          <div class="composer-row">
+            <div class="provider" id="providerLabel"></div>
+            <button class="send-btn secondary" id="sttBtn" title="Dictate (speech to text)" aria-label="Dictate"><span class="btn-icon">🎤</span></button>
+            <button class="send-btn secondary" id="archiveBtn" title="Archive chat" aria-label="Archive chat"><span class="btn-icon">🗄</span></button>
+            <button class="send-btn secondary" id="exportBtn" title="Export chat" aria-label="Export chat"><span class="btn-icon">⤴</span></button>
+            <button class="send-btn secondary" id="clearBtn" title="Clear chat" aria-label="Clear chat"><span class="btn-icon">🧹</span></button>
+            <button class="send-btn" id="sendBtn" title="Send message" aria-label="Send message"><span class="btn-icon">➤</span></button>
+          </div>
+        </div>
+      </div>
+      <div class="voice-page" id="voicePage" hidden>
+        <div class="voice-shell">
+          <div class="voice-topbar">
+            <div class="voice-topbar-left">
+              <button class="voice-nav-btn" id="voiceBackBtn">← Back</button>
+            </div>
+            <div class="voice-topbar-right">
+              <button class="voice-stop-btn-top" id="voiceStopTopBtn">Stop</button>
+            </div>
+          </div>
+          <div class="voice-top">
+            <div class="voice-pill">Hands-free Voice Mode</div>
+            <div class="voice-name" id="voiceName"></div>
+            <div class="voice-status" id="voiceStatus"></div>
+            <div class="voice-sub">Stay in the conversation. Start talking anytime.</div>
+            <div class="orb-scene">
+              <div class="orb-wrap" id="orbWrap">
+                <div class="orb-glow"></div>
+                <div class="orb-aura"></div>
+                <div class="orb-core"></div>
+                <div class="orb-liquid"></div>
+                <div class="orb-ring"></div>
+                <div class="orb-ring-2"></div>
+                <div class="orb-ring-3"></div>
+                <div class="orb-glass"></div>
+                <div class="orb-photo-border">
+                  <div class="orb-photo" id="orbPhoto"></div>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="caption-stack">
+            <div class="caption-card you" id="voiceYouCard">
+              <div class="caption-head">
+                <div class="caption-badge">YOU</div>
+                <div class="caption-labels">
+                  <div class="caption-name">You</div>
+                  <div class="caption-meta">Speech to text</div>
+                </div>
+              </div>
+              <div class="caption-text" id="voiceTranscript"></div>
+            </div>
+            <div class="caption-card ai" id="voiceAiCard">
+              <div class="caption-head">
+                <div class="caption-badge">AI</div>
+                <div class="caption-labels">
+                  <div class="caption-name" id="voiceAiName">Hanauta AI</div>
+                  <div class="caption-meta">Spoken reply</div>
+                </div>
+              </div>
+              <div class="caption-text" id="voiceCaption"></div>
+            </div>
+          </div>
+          <div class="voice-card">
+            <div class="label">Status</div>
+            <div class="value" id="voiceStatusNote">Voice mode is ready.</div>
+          </div>
+          <div class="voice-controls">
+            <button class="voice-stop" id="voiceStopBtn">Return to chat</button>
+          </div>
+        </div>
+      </div>
+      <div class="modal" id="modelModal" hidden>
+        <div class="sheet" role="dialog" aria-modal="true" aria-label="Voice backends">
+          <div class="sheet-head">
+            <div style="flex:1; min-width:0">
+              <div class="sheet-title">Voice Backends</div>
+              <div class="sheet-sub" id="modelModalSub">Preload models for hands-free voice mode.</div>
+            </div>
+            <button class="icon-btn" id="modelModalCloseBtn" title="Close">✕</button>
+          </div>
+          <div class="sheet-body">
+            <div class="sheet-warn" id="modelWarn" hidden></div>
+            <label class="check-row">
+              <input class="check" type="checkbox" id="modelCheckStt" />
+              <div class="check-main">
+                <div class="check-title">STT (Speech to Text)</div>
+                <div class="check-note" id="modelNoteStt">Configured: <b>…</b></div>
+              </div>
+            </label>
+            <label class="check-row">
+              <input class="check" type="checkbox" id="modelCheckLlm" />
+              <div class="check-main">
+                <div class="check-title">LLM (Text Model)</div>
+                <div class="check-note" id="modelNoteLlm">Configured: <b>…</b></div>
+              </div>
+            </label>
+            <label class="check-row">
+              <input class="check" type="checkbox" id="modelCheckTts" />
+              <div class="check-main">
+                <div class="check-title">TTS (Speech Output)</div>
+                <div class="check-note" id="modelNoteTts">Configured: <b>…</b></div>
+              </div>
+            </label>
+          </div>
+          <div class="sheet-actions">
+            <button class="sheet-btn" id="modelsRefreshBtn">Refresh</button>
+            <button class="sheet-btn primary" id="modelsStartBtn">Start Selected</button>
+            <button class="sheet-btn danger" id="modelsStopBtn">Stop Loaded</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+__POPUP_JS__
+  </script>
+</body>
+</html>
+"""
+
+WEB_POPUP_HTML = _TEMPLATE.replace("__POPUP_CSS__", POPUP_CSS).replace("__POPUP_JS__", POPUP_JS)
+

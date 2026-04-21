@@ -53,6 +53,7 @@ POPUP_CSS = r"""
       justify-content: space-between;
       gap: 12px;
       padding: 12px 12px;
+      flex-wrap: nowrap;
       border-radius: 26px;
       border: 1px solid rgba(214,195,255,.10);
       background:
@@ -81,6 +82,7 @@ POPUP_CSS = r"""
       align-items: center;
       gap: 10px;
       min-width: 0;
+      flex: 1 1 auto;
       position: relative;
       z-index: 1;
     }
@@ -97,8 +99,8 @@ POPUP_CSS = r"""
       box-shadow: inset 0 1px 0 rgba(255,255,255,.10);
     }
     .brand .title-wrap { min-width: 0; }
-    .brand .title { font-size: 15px; font-weight: 900; line-height: 1.15; }
-    .brand .status { font-size: 12px; font-weight: 700; color: var(--text-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 260px; }
+    .brand .title { font-size: 13px; font-weight: 950; line-height: 1.05; letter-spacing: 0; }
+    .brand .status { font-size: 11px; font-weight: 800; color: var(--text-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 210px; }
 
     .info-pop {
       position: relative;
@@ -148,6 +150,7 @@ POPUP_CSS = r"""
       gap: 8px;
       position: relative;
       z-index: 1;
+      flex: 0 0 auto;
     }
     .icon-btn {
       width: 38px;
