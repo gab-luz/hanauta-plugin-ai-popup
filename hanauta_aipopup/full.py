@@ -4580,6 +4580,10 @@ class BackendSettingsDialog(QDialog):
         self.token_saver_check.setToolTip("Voice mode only: reduces prompt tokens by compressing STT transcripts before sending to this backend.")
         shell_layout.addWidget(self.token_saver_check)
 
+        self.voice_barge_in_check = QCheckBox("Voice barge-in fadeout (interrupt TTS when you speak)")
+        self.voice_barge_in_check.setToolTip("Voice mode only: if you start talking during TTS, fade out speech and let you speak immediately.")
+        shell_layout.addWidget(self.voice_barge_in_check)
+
         self.sd_model_combo = QComboBox()
         self.sd_model_combo.setEditable(True)
         if self.sd_model_combo.lineEdit() is not None:
@@ -5097,6 +5101,7 @@ class BackendSettingsDialog(QDialog):
                 "test_prompt": self.kobold_test_prompt_input.text().strip(),
                 "device": str(self.device_combo.currentData()),
                 "token_saver_enabled": bool(self.token_saver_check.isChecked()),
+                "voice_barge_in_enabled": bool(self.voice_barge_in_check.isChecked()),
                 "negative_prompt": self.negative_prompt_input.text().strip(),
                 "sampler_name": str(
                     self.sampler_combo.currentData() or self.sampler_combo.currentText()
@@ -5150,6 +5155,7 @@ class BackendSettingsDialog(QDialog):
         self.kobold_jinja_check.setChecked(bool(payload.get("jinja", False)))
         self.kobold_test_prompt_input.setText(str(payload.get("test_prompt", "Tell me that KoboldCpp is working.")))
         self.token_saver_check.setChecked(bool(payload.get("token_saver_enabled", True)))
+        self.voice_barge_in_check.setChecked(bool(payload.get("voice_barge_in_enabled", True)))
         device = str(payload.get("device", "cpu")).lower()
         self.device_combo.setCurrentIndex(1 if device == "gpu" else 0)
         self.negative_prompt_input.setText(str(payload.get("negative_prompt", "")))
@@ -5230,6 +5236,7 @@ class BackendSettingsDialog(QDialog):
             self.model_input.setPlaceholderText("Model")
         self.model_input.setVisible(not (is_tts and profile.key == "kokorotts") and not is_sd)
         self.token_saver_check.setVisible(is_text)
+        self.voice_barge_in_check.setVisible(is_tts)
         self.sd_model_combo.setVisible(is_sd)
         self.kokoro_voice_combo.setVisible(is_tts and profile.key == "kokorotts")
         if is_sd:
@@ -9131,6 +9138,7 @@ class VoiceConversationWorker(QThread):
     status_changed = pyqtSignal(str)
     transcript_partial = pyqtSignal(str)
     transcript_ready = pyqtSignal(str)
+    llm_started = pyqtSignal(str, str)
     response_partial = pyqtSignal(str, str, str, str)
     tts_chunk_ready = pyqtSignal(str, str)
     response_ready = pyqtSignal(str, str, str, str, str, str)
@@ -9189,6 +9197,18 @@ class VoiceConversationWorker(QThread):
             return int(float(str(self.config.get("tts_streaming_max_chars", "180"))))
         except Exception:
             return 180
+
+    def _tts_barge_in_enabled(self, profile: BackendProfile | None, payload: dict[str, object]) -> bool:
+        if not bool(self.config.get("barge_in_enabled", True)):
+            return False
+        try:
+            if profile is None:
+                return True
+            if profile.provider != "tts_local":
+                return True
+            return bool(payload.get("voice_barge_in_enabled", True))
+        except Exception:
+            return True
 
     def _whisper_stream_start(self) -> subprocess.Popen[str] | None:
         if bool(self.config.get("stt_external_api", False)):
@@ -9446,6 +9466,11 @@ class VoiceConversationWorker(QThread):
                         transcript,
                         self.character if bool(self.config.get("enable_character", True)) else None,
                     )
+                    try:
+                        # Non-streaming: emit after generation returns so we log the final chosen backend/model.
+                        self.llm_started.emit(str(llm_label), str(llm_model))
+                    except Exception:
+                        pass
                 else:
                     privacy_mapping: dict[str, str] = {}
                     masked_prompt = transcript
@@ -9495,12 +9520,15 @@ class VoiceConversationWorker(QThread):
                     raw_accum = ""
                     clean_accum = ""
                     tag_parsed = False
+                    llm_started_emitted = False
                     speak_cursor = 0
                     total_audio = 0.0
                     tts_profile = self._tts_profile()
                     tts_payload = self._tts_payload(tts_profile)
                     min_chars = max(12, self._tts_streaming_min_chars())
                     max_chars = max(min_chars + 10, self._tts_streaming_max_chars())
+                    interrupted = False
+                    last_barge_check = 0.0
 
                     def _flush_tts(force: bool = False) -> None:
                         nonlocal speak_cursor, total_audio
@@ -9547,6 +9575,12 @@ class VoiceConversationWorker(QThread):
                     for delta in _stream_openai_style_reply(host, model, messages, api_key):
                         if not self._running:
                             break
+                        if not llm_started_emitted:
+                            llm_started_emitted = True
+                            try:
+                                self.llm_started.emit(str(llm_label), str(llm_model))
+                            except Exception:
+                                pass
                         raw_accum += delta
                         if not tag_parsed:
                             m = re.match(r"^\s*\[([a-zA-Z_ -]{2,24})\]\s*", raw_accum)
@@ -9561,8 +9595,26 @@ class VoiceConversationWorker(QThread):
                         self.response_partial.emit(clean_accum, emotion, llm_label, llm_model)
                         # Try to speak progressively.
                         _flush_tts(force=False)
+                        # Barge-in: if the user starts talking while TTS is speaking, interrupt the reply.
+                        if (
+                            speak_cursor > 0
+                            and self._tts_barge_in_enabled(tts_profile, tts_payload)
+                            and (time.time() - last_barge_check) >= 0.85
+                        ):
+                            last_barge_check = time.time()
+                            try:
+                                sample = _record_microphone_wav(0.40)
+                                if _voice_recording_rms(sample) >= self._barge_in_threshold():
+                                    interrupted = True
+                                    self.barge_in_detected.emit()
+                                    self.status_changed.emit("Listening")
+                                    break
+                            except Exception:
+                                pass
                     if not self._running:
                         break
+                    if interrupted:
+                        continue
                     # Flush remaining.
                     _flush_tts(force=True)
                     answer = clean_accum.strip()
@@ -9574,7 +9626,7 @@ class VoiceConversationWorker(QThread):
                     self.status_changed.emit("Speaking")
                     pause_until = time.time() + min(60.0, max(1.0, total_audio + 0.8))
                     while self._running and time.time() < pause_until:
-                        if not bool(self.config.get("barge_in_enabled", True)):
+                        if not self._tts_barge_in_enabled(tts_profile, tts_payload):
                             time.sleep(0.1)
                             continue
                         try:
@@ -9596,14 +9648,15 @@ class VoiceConversationWorker(QThread):
                     break
                 self.status_changed.emit("Speaking")
                 tts_profile = self._tts_profile()
+                tts_payload = self._tts_payload(tts_profile)
                 spoken_answer = _strip_simple_markdown(answer).strip()
-                audio_out, source = synthesize_tts(tts_profile, self._tts_payload(tts_profile), spoken_answer or answer)
+                audio_out, source = synthesize_tts(tts_profile, tts_payload, spoken_answer or answer)
                 if not self._running:
                     break
                 self.response_ready.emit(answer, str(audio_out), llm_label, llm_model, source, emotion)
                 pause_until = time.time() + min(45.0, max(1.0, _wav_duration_seconds(audio_out) + 0.6))
                 while self._running and time.time() < pause_until:
-                    if not bool(self.config.get("barge_in_enabled", True)):
+                    if not self._tts_barge_in_enabled(tts_profile, tts_payload):
                         time.sleep(0.1)
                         continue
                     try:
@@ -10681,6 +10734,10 @@ class SidebarPanel(QFrame):
         self._voice_last_transcript = ""
         self._voice_last_response = ""
         self._voice_last_emotion = "neutral"
+        self._voice_llm_started: bool = False
+        self._voice_tts_in_progress: bool = False
+        self._voice_llm_log_last_ts: float = 0.0
+        self._voice_llm_log_last_len: int = 0
         self._voice_listening = False
         self._voice_speaking = False
         self._web_mode = "chat"
@@ -10741,6 +10798,7 @@ class SidebarPanel(QFrame):
         self._hidden_backend_strip = self._build_backend_strip()
         self.chat_view = ChatWebView()
         self.chat_view.audio_state_changed.connect(self._sync_web_ui)
+        self.chat_view.audio_state_changed.connect(self._handle_audio_state_changed)
         self.composer = ComposerBar(ui_font)
         self.composer.send_requested.connect(self.add_user_message)
         self.composer.character_requested.connect(self._open_character_library)
@@ -11687,6 +11745,7 @@ class SidebarPanel(QFrame):
         worker.status_changed.connect(self._handle_voice_status)
         worker.transcript_partial.connect(self._handle_voice_transcript_partial)
         worker.transcript_ready.connect(self._handle_voice_transcript)
+        worker.llm_started.connect(self._handle_voice_llm_started)
         worker.response_partial.connect(self._handle_voice_response_partial)
         worker.tts_chunk_ready.connect(self._handle_voice_tts_chunk)
         worker.response_ready.connect(self._handle_voice_response)
@@ -11743,6 +11802,12 @@ class SidebarPanel(QFrame):
         self._voice_last_status = clean
         self.header_status.setText(clean)
         lowered = clean.lower()
+        if lowered == "listening":
+            # Reset per-turn flags so audio end detection can flip us back to listening cleanly.
+            self._voice_llm_started = False
+            self._voice_tts_in_progress = False
+            self._voice_llm_log_last_ts = 0.0
+            self._voice_llm_log_last_len = 0
         if lowered == "transcribing":
             backend, model = self._voice_stt_backend_model()
             self._add_runtime_status_card("Loading STT", f"Preparing {backend} ({model}) for transcription.", chips=["voice", "stt"])
@@ -11761,6 +11826,30 @@ class SidebarPanel(QFrame):
             listening=(clean.lower() == "listening"),
             speaking=(clean.lower() == "speaking"),
         )
+
+    def _handle_voice_llm_started(self, llm_label: str, llm_model: str) -> None:
+        self._voice_llm_started = True
+        self._voice_llm_log_last_ts = 0.0
+        self._voice_llm_log_last_len = 0
+        # Surface this immediately so it doesn't look like the TTS is "ahead" of the UI/logs.
+        _voice_log("llm", str(llm_label).strip() or "LLM", str(llm_model).strip() or "model", "started generating…")
+
+    def _handle_audio_state_changed(self) -> None:
+        # When TTS stops and the LLM had started, flip back to Listening right away.
+        worker = self._voice_worker
+        if worker is None or not worker.isRunning():
+            return
+        config = _voice_mode_settings(self.backend_settings)
+        if not bool(config.get("enabled", False)):
+            return
+        playing = bool(getattr(self.chat_view, "_audio_playing", False))
+        pending = bool(getattr(self.chat_view, "_pending_play_path", ""))
+        queued = len(getattr(self.chat_view, "_audio_queue", []) or []) > 0
+        audio_idle = (not playing) and (not pending) and (not queued)
+        if audio_idle and self._voice_tts_in_progress and self._voice_llm_started:
+            self._voice_last_status = "Listening"
+            self.header_status.setText("Listening")
+            self._update_voice_mode_view(listening=True, speaking=False)
 
     def _handle_voice_transcript_partial(self, transcript: str) -> None:
         clean = str(transcript).strip()
@@ -11793,6 +11882,13 @@ class SidebarPanel(QFrame):
         self._voice_last_emotion = str(emotion).strip().lower() or "neutral"
         self._voice_last_status = f"{llm_label}"
         self._update_voice_mode_view(listening=False, speaking=True)
+        # Stream logs to terminal (throttled) so the UI/logs keep pace with PocketTTS audio.
+        now = time.time()
+        if (now - self._voice_llm_log_last_ts) >= 1.0 and len(clean) >= (self._voice_llm_log_last_len + 60):
+            self._voice_llm_log_last_ts = now
+            self._voice_llm_log_last_len = len(clean)
+            preview = clean[-260:].strip()
+            _voice_log("llm", str(llm_label), str(llm_model), preview)
 
     def _handle_voice_tts_chunk(self, audio_path_text: str, chunk_text: str) -> None:
         try:
@@ -11804,9 +11900,11 @@ class SidebarPanel(QFrame):
         try:
             # Queue chunked audio so it speaks continuously.
             self.chat_view.enqueue_audio(path)
+            self._voice_tts_in_progress = True
         except Exception:
             try:
                 self.chat_view.autoplay_audio(path)
+                self._voice_tts_in_progress = True
             except Exception:
                 pass
 
@@ -11844,6 +11942,7 @@ class SidebarPanel(QFrame):
             self._add_runtime_status_card("TTS Ready", f"{source} finished audio synthesis and playback started.", tone="success", chips=["voice", "tts"])
             try:
                 self.chat_view.autoplay_audio(resolved_audio)
+                self._voice_tts_in_progress = True
             except Exception:
                 LOGGER.exception("voice mode autoplay failed for %s", resolved_audio)
         body = str(config.get("generic_notification_text", "Notification received")).strip() or "Notification received"
