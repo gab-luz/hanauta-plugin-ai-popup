@@ -208,6 +208,55 @@ AI_POPUP_CRASH_FILE = AI_STATE_DIR / "ai_popup.crash.log"
 KOKORO_SYNTH_LOG_FILE = AI_STATE_DIR / "kokoro_synth_worker.log"
 KOBOLDCPP_RELEASE_STATE_FILE = AI_STATE_DIR / "koboldcpp-release-state.json"
 _WAVEFORM_CACHE: dict[str, list[int]] = {}
+MODEL_CATALOG_FILE = PLUGIN_ROOT / "model_catalog.json"
+GGUF_GALLERY_DIR = AI_STATE_DIR / "gguf-gallery"
+
+
+def _format_bytes(value: int) -> str:
+    size = float(max(0, int(value)))
+    units = ["B", "KB", "MB", "GB", "TB"]
+    idx = 0
+    while size >= 1024.0 and idx < (len(units) - 1):
+        size /= 1024.0
+        idx += 1
+    if idx == 0:
+        return f"{int(size)} {units[idx]}"
+    return f"{size:.2f} {units[idx]}"
+
+
+def _dir_size_bytes(root: Path) -> int:
+    try:
+        total = 0
+        for path in root.rglob("*"):
+            try:
+                if path.is_file():
+                    total += int(path.stat().st_size)
+            except Exception:
+                continue
+        return total
+    except Exception:
+        return 0
+
+
+def _load_model_catalog() -> dict[str, list[dict[str, object]]]:
+    try:
+        raw = json.loads(MODEL_CATALOG_FILE.read_text(encoding="utf-8"))
+        if isinstance(raw, dict):
+            out: dict[str, list[dict[str, object]]] = {}
+            for key, value in raw.items():
+                if isinstance(value, list):
+                    cleaned: list[dict[str, object]] = []
+                    for entry in value:
+                        if isinstance(entry, dict):
+                            cleaned.append(dict(entry))
+                    out[str(key)] = cleaned
+            return out
+    except Exception:
+        pass
+    return {"llm_gguf": []}
+
+
+MODEL_CATALOG = _load_model_catalog()
 
 
 LOGGER = logging.getLogger("hanauta.ai_popup")
@@ -1514,6 +1563,9 @@ def _voice_mode_defaults() -> dict[str, object]:
         "stt_backend": "whisper",
         "stt_model": "small",
         "stt_device": "cpu",
+        # Optional WhisperLive server (collabora/WhisperLive) using its OpenAI REST interface.
+        "stt_whisperlive_host": "127.0.0.1:9090",
+        "stt_whisperlive_model": "small",
         "stt_external_api": False,
         "stt_host": "api.openai.com",
         "stt_remote_model": "whisper-1",
@@ -1764,6 +1816,31 @@ def _transcribe_with_external_api(audio_path: Path, config: dict[str, object]) -
     text = str(payload.get("text", "")).strip()
     if not text:
         raise RuntimeError("STT endpoint returned no text.")
+    return text
+
+
+def _transcribe_with_whisperlive(audio_path: Path, config: dict[str, object], *, prompt: str = "") -> str:
+    """
+    WhisperLive (collabora/WhisperLive) can expose an OpenAI-compatible REST endpoint when launched
+    with --enable_rest. We talk to it as a local STT provider.
+    """
+    host = str(config.get("stt_whisperlive_host", "")).strip()
+    if not host:
+        raise RuntimeError("WhisperLive STT requires a host.")
+    model = str(config.get("stt_whisperlive_model", "small")).strip() or "small"
+    fields: dict[str, str] = {"model": model, "response_format": "json"}
+    if prompt.strip():
+        fields["prompt"] = prompt.strip()
+    payload = _http_post_multipart(
+        f"{_api_url_from_host(host)}/v1/audio/transcriptions",
+        fields=fields,
+        files={"file": (audio_path.name, audio_path.read_bytes(), "audio/wav")},
+        headers={},
+        timeout=240.0,
+    )
+    text = str(payload.get("text", "")).strip()
+    if not text:
+        raise RuntimeError("WhisperLive STT returned no text.")
     return text
 
 
@@ -2143,9 +2220,10 @@ if __name__ == "__main__":
 
 
 def _transcribe_with_whisper(audio_path: Path, config: dict[str, object]) -> str:
-    model_name = str(config.get("stt_model", "small")).strip().lower() or "small"
-    if model_name not in {"tiny", "small", "medium", "large"}:
-        model_name = "small"
+    raw_model = str(config.get("stt_model", "small")).strip()
+    lowered = raw_model.lower()
+    # Allow Hugging Face repo IDs or local paths in addition to built-in size aliases.
+    model_name = lowered if lowered in {"tiny", "small", "medium", "large"} else (raw_model or "small")
     device = "gpu" if str(config.get("stt_device", "cpu")).lower() == "gpu" else "cpu"
     python_bin = _ensure_voice_venv("whisper", model_name, device, ["faster-whisper", "huggingface-hub"], "faster_whisper")
     script_path = _ensure_voice_whisper_script()
@@ -2235,6 +2313,8 @@ def transcribe_voice_audio(audio_path: Path, config: dict[str, object]) -> str:
     backend = str(config.get("stt_backend", "whisper")).strip().lower()
     if backend == "vosk":
         return _transcribe_with_vosk(audio_path, config)
+    if backend == "whisperlive":
+        return _transcribe_with_whisperlive(audio_path, config)
     return _transcribe_with_whisper(audio_path, config)
 
 
@@ -4302,6 +4382,99 @@ def get_tts_download_manager() -> TtsDownloadManager:
     return _TTS_DOWNLOAD_MANAGER
 
 
+class GgufModelDownloadWorker(QThread):
+    progress = pyqtSignal(str, int, str)
+    finished_ok = pyqtSignal(str, str)
+    failed = pyqtSignal(str, str)
+
+    def __init__(self, entry_id: str, repo_id: str, filename: str, destination: Path) -> None:
+        super().__init__()
+        self.entry_id = entry_id
+        self.repo_id = repo_id
+        self.filename = filename
+        self.destination = destination
+
+    def run(self) -> None:
+        try:
+            url = _hf_resolve_url(self.repo_id, self.filename)
+
+            def _emit(written: int, total: int) -> None:
+                if total > 0:
+                    value = int(max(0.0, min(1.0, written / float(total))) * 100)
+                    message = f"{_format_bytes(written)} / {_format_bytes(total)}"
+                else:
+                    value = 30 if written > 0 else 0
+                    message = f"{_format_bytes(written)}"
+                self.progress.emit(self.entry_id, value, message)
+
+            self.progress.emit(self.entry_id, 0, "Starting download…")
+            _download_file(url, self.destination, timeout=1800.0, progress_cb=_emit)
+        except Exception as exc:
+            self.failed.emit(self.entry_id, str(exc).strip() or "Download failed.")
+            return
+        self.progress.emit(self.entry_id, 100, "Download complete")
+        self.finished_ok.emit(self.entry_id, str(self.destination))
+
+
+class GgufDownloadManager(QObject):
+    progress_changed = pyqtSignal(str, int, str)
+    download_finished = pyqtSignal(str, str)
+    download_failed = pyqtSignal(str, str)
+
+    def __init__(self) -> None:
+        super().__init__(None)
+        self._workers: dict[str, GgufModelDownloadWorker] = {}
+        self._status: dict[str, dict[str, object]] = {}
+
+    def status(self, entry_id: str) -> dict[str, object]:
+        return dict(self._status.get(entry_id, {}))
+
+    def is_running(self, entry_id: str) -> bool:
+        worker = self._workers.get(entry_id)
+        return worker is not None and worker.isRunning()
+
+    def start(self, entry: dict[str, object]) -> bool:
+        entry_id = str(entry.get("id", "")).strip()
+        repo_id = str(entry.get("repo_id", "")).strip()
+        filename = str(entry.get("file", "")).strip()
+        if not entry_id or not repo_id or not filename:
+            return False
+        if self.is_running(entry_id):
+            return False
+        destination = GGUF_GALLERY_DIR / filename
+        worker = GgufModelDownloadWorker(entry_id, repo_id, filename, destination)
+        self._workers[entry_id] = worker
+        self._status[entry_id] = {"running": True, "progress": 0, "message": "Starting download"}
+        worker.progress.connect(self._on_progress)
+        worker.finished_ok.connect(self._on_finished)
+        worker.failed.connect(self._on_failed)
+        worker.finished.connect(lambda key=entry_id: self._workers.pop(key, None))
+        worker.start()
+        return True
+
+    def _on_progress(self, entry_id: str, value: int, message: str) -> None:
+        self._status[entry_id] = {"running": True, "progress": int(value), "message": message}
+        self.progress_changed.emit(entry_id, int(value), str(message))
+
+    def _on_finished(self, entry_id: str, path: str) -> None:
+        self._status[entry_id] = {"running": False, "progress": 100, "message": "Download complete", "path": path}
+        self.download_finished.emit(entry_id, path)
+
+    def _on_failed(self, entry_id: str, message: str) -> None:
+        self._status[entry_id] = {"running": False, "progress": 0, "message": message}
+        self.download_failed.emit(entry_id, message)
+
+
+_GGUF_DOWNLOAD_MANAGER: GgufDownloadManager | None = None
+
+
+def get_gguf_download_manager() -> GgufDownloadManager:
+    global _GGUF_DOWNLOAD_MANAGER
+    if _GGUF_DOWNLOAD_MANAGER is None:
+        _GGUF_DOWNLOAD_MANAGER = GgufDownloadManager()
+    return _GGUF_DOWNLOAD_MANAGER
+
+
 class BackendSettingsDialog(QDialog):
     def __init__(
         self,
@@ -4456,6 +4629,11 @@ class BackendSettingsDialog(QDialog):
         self.binary_path_input.clicked.connect(self._browse_binary_path)
         shell_layout.addWidget(self.binary_path_input)
 
+        self.binary_info_label = QLabel("")
+        self.binary_info_label.setWordWrap(True)
+        self.binary_info_label.setStyleSheet(f"color: {TEXT_DIM};")
+        shell_layout.addWidget(self.binary_info_label)
+
         self.tts_repo_input = QLineEdit()
         self.tts_repo_input.setPlaceholderText("Model repo (owner/repo)")
         shell_layout.addWidget(self.tts_repo_input)
@@ -4570,6 +4748,63 @@ class BackendSettingsDialog(QDialog):
         self.gguf_path_input.setToolTip("Click to browse for a GGUF model file")
         self.gguf_path_input.clicked.connect(self._browse_gguf_path)
         shell_layout.addWidget(self.gguf_path_input)
+
+        self.gguf_info_label = QLabel("")
+        self.gguf_info_label.setWordWrap(True)
+        self.gguf_info_label.setStyleSheet(f"color: {TEXT_DIM};")
+        shell_layout.addWidget(self.gguf_info_label)
+
+        self.gguf_download_progress = QProgressBar()
+        self.gguf_download_progress.setRange(0, 100)
+        self.gguf_download_progress.setValue(0)
+        self.gguf_download_progress.hide()
+        shell_layout.addWidget(self.gguf_download_progress)
+        self.gguf_download_progress_label = QLabel("")
+        self.gguf_download_progress_label.setStyleSheet(f"color: {TEXT_DIM};")
+        self.gguf_download_progress_label.hide()
+        shell_layout.addWidget(self.gguf_download_progress_label)
+
+        self.gguf_gallery_title = QLabel("Model gallery (GGUF)")
+        self.gguf_gallery_title.setFont(QFont(ui_font, 11, QFont.Weight.DemiBold))
+        self.gguf_gallery_title.setStyleSheet(f"color: {TEXT_MID};")
+        shell_layout.addWidget(self.gguf_gallery_title)
+        self.gguf_gallery_scroll = QScrollArea()
+        self.gguf_gallery_scroll.setWidgetResizable(True)
+        self.gguf_gallery_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self.gguf_gallery_scroll.setFixedHeight(230)
+        self.gguf_gallery_scroll.setStyleSheet(
+            f"""
+            QScrollArea {{
+                background: transparent;
+            }}
+            QScrollBar:vertical {{
+                background: transparent;
+                width: 10px;
+                margin: 0px 0px 0px 0px;
+            }}
+            QScrollBar::handle:vertical {{
+                background: {mix(ACCENT, CARD_BG, 0.35)};
+                border-radius: 5px;
+                min-height: 28px;
+            }}
+            QScrollBar::handle:vertical:hover {{
+                background: {mix(ACCENT, CARD_BG, 0.50)};
+            }}
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
+                height: 0px;
+            }}
+            QScrollBar:horizontal {{
+                height: 0px;
+            }}
+            """
+        )
+        self.gguf_gallery_body = QWidget()
+        self.gguf_gallery_grid = QGridLayout(self.gguf_gallery_body)
+        self.gguf_gallery_grid.setContentsMargins(0, 0, 0, 0)
+        self.gguf_gallery_grid.setHorizontalSpacing(10)
+        self.gguf_gallery_grid.setVerticalSpacing(10)
+        self.gguf_gallery_scroll.setWidget(self.gguf_gallery_body)
+        shell_layout.addWidget(self.gguf_gallery_scroll)
 
         self.text_model_path_input = ClickableLineEdit()
         self.text_model_path_input.setPlaceholderText("Optional text model path for JoyCaption-style setups")
@@ -4737,6 +4972,7 @@ class BackendSettingsDialog(QDialog):
 
         _apply_antialias_font(self)
         self._download_manager = get_tts_download_manager()
+        self._gguf_download_manager = get_gguf_download_manager()
         self._tts_preview_worker: TtsSynthesisWorker | None = None
         self._preview_audio_output: QAudioOutput | None = None
         self._preview_media_player: QMediaPlayer | None = None
@@ -4745,6 +4981,12 @@ class BackendSettingsDialog(QDialog):
         self._download_manager.progress_changed.connect(self._on_tts_download_progress)
         self._download_manager.download_finished.connect(self._on_tts_download_finished)
         self._download_manager.download_failed.connect(self._on_tts_download_failed)
+        self._gguf_download_manager.progress_changed.connect(self._on_gguf_download_progress)
+        self._gguf_download_manager.download_finished.connect(self._on_gguf_download_finished)
+        self._gguf_download_manager.download_failed.connect(self._on_gguf_download_failed)
+        self.gguf_path_input.textChanged.connect(lambda _=None: self._refresh_gguf_info())
+        self.binary_path_input.textChanged.connect(lambda _=None: self._refresh_binary_info())
+        self._populate_gguf_gallery()
         self._load_selected_backend()
 
     def showEvent(self, event) -> None:  # type: ignore[override]
@@ -4910,6 +5152,7 @@ class BackendSettingsDialog(QDialog):
         self.sd_auth_user_input.setVisible(is_sd)
         self.sd_auth_pass_input.setVisible(is_sd)
         self.binary_path_input.setVisible(is_kobold or (is_tts and mode == "local_onnx"))
+        self.binary_info_label.setVisible(self.binary_path_input.isVisible())
         self.tts_mode_combo.setVisible(is_tts and profile.key != "pockettts")
         self.pocket_mode_row.setVisible(is_tts and profile.key == "pockettts")
         self.tts_repo_input.setVisible(is_tts and mode == "local_onnx")
@@ -4930,6 +5173,11 @@ class BackendSettingsDialog(QDialog):
         self.tts_test_label.setVisible(supports_tts_preview)
         self.tts_test_row.setVisible(supports_tts_preview)
         self.gguf_path_input.setVisible(is_kobold)
+        self.gguf_info_label.setVisible(is_kobold)
+        self.gguf_download_progress.setVisible(False if not is_kobold else self.gguf_download_progress.isVisible())
+        self.gguf_download_progress_label.setVisible(False if not is_kobold else self.gguf_download_progress_label.isVisible())
+        self.gguf_gallery_title.setVisible(is_kobold)
+        self.gguf_gallery_scroll.setVisible(is_kobold)
         self.text_model_path_input.setVisible(is_kobold)
         self.mmproj_path_input.setVisible(is_kobold)
         self.kobold_jinja_check.setVisible(is_kobold)
@@ -5616,6 +5864,198 @@ class BackendSettingsDialog(QDialog):
             self._refresh_download_progress(profile_key)
             self.status_label.setText(f"Model download failed: {message}")
             self.status_label.setStyleSheet(f"color: {ACCENT_ALT};")
+
+    def _refresh_binary_info(self) -> None:
+        """
+        Show basic size/info for the binary/model-folder field (KoboldCpp binary or local ONNX folder).
+        """
+        current = self.binary_path_input.text().strip()
+        if not current:
+            self.binary_info_label.setText("")
+            return
+        path = Path(current).expanduser()
+        if not path.exists():
+            self.binary_info_label.setText("Not found on disk.")
+            return
+        if path.is_dir():
+            total = _dir_size_bytes(path)
+            self.binary_info_label.setText(f"Folder size: {_format_bytes(total)}")
+            return
+        try:
+            size = int(path.stat().st_size)
+        except Exception:
+            size = 0
+        self.binary_info_label.setText(f"File size: {_format_bytes(size)}")
+
+    def _refresh_gguf_info(self) -> None:
+        current = self.gguf_path_input.text().strip()
+        if not current:
+            self.gguf_info_label.setText("")
+            return
+        path = Path(current).expanduser()
+        if not path.exists():
+            self.gguf_info_label.setText("GGUF not found on disk.")
+            return
+        try:
+            size = int(path.stat().st_size)
+        except Exception:
+            size = 0
+        name = path.name
+        quant = ""
+        lowered = name.lower()
+        for token in ("q2_k", "q3_k_s", "q3_k_m", "q3_k_l", "q4_0", "q4_k_m", "q5_0", "q5_k_m", "q6_k", "q8_0", "fp16"):
+            if token in lowered:
+                quant = token.upper()
+                break
+        catalog = MODEL_CATALOG.get("llm_gguf", [])
+        matched = next((row for row in catalog if str(row.get("file", "")).strip() == name), None)
+        extra = ""
+        if isinstance(matched, dict):
+            bits = []
+            title = str(matched.get("title", "")).strip()
+            if title:
+                bits.append(title)
+            params = str(matched.get("params", "")).strip()
+            if params:
+                bits.append(f"params {params}")
+            ctx = matched.get("context", "")
+            if isinstance(ctx, (int, float, str)) and str(ctx).strip():
+                bits.append(f"context {ctx}")
+            if bits:
+                extra = " • " + " • ".join(bits)
+        suffix = f" • {quant}" if quant else ""
+        self.gguf_info_label.setText(f"{name} — {_format_bytes(size)}{suffix}{extra}")
+
+    def _populate_gguf_gallery(self) -> None:
+        # Clear previous widgets.
+        while self.gguf_gallery_grid.count():
+            item = self.gguf_gallery_grid.takeAt(0)
+            widget = item.widget() if item is not None else None
+            if widget is not None:
+                widget.setParent(None)
+                widget.deleteLater()
+        entries = MODEL_CATALOG.get("llm_gguf", [])
+        if not isinstance(entries, list) or not entries:
+            empty = QLabel("No bundled models found. (model_catalog.json missing?)")
+            empty.setStyleSheet(f"color: {TEXT_DIM};")
+            self.gguf_gallery_grid.addWidget(empty, 0, 0)
+            return
+        col_count = 2
+        for idx, entry in enumerate(entries):
+            if not isinstance(entry, dict):
+                continue
+            card = SurfaceFrame(bg=rgba(CARD_BG_SOFT, 0.88), border=BORDER_SOFT, radius=18)
+            lay = QVBoxLayout(card)
+            lay.setContentsMargins(12, 10, 12, 10)
+            lay.setSpacing(6)
+            title = QLabel(str(entry.get("title", "")).strip() or str(entry.get("id", "")).strip() or "Model")
+            title.setWordWrap(True)
+            title.setStyleSheet(f"color: {TEXT}; font-weight: 700;")
+            lay.addWidget(title)
+            meta_bits = []
+            params = str(entry.get("params", "")).strip()
+            if params:
+                meta_bits.append(params)
+            quant = str(entry.get("quant", "")).strip()
+            if quant:
+                meta_bits.append(quant)
+            ctx = entry.get("context", "")
+            if isinstance(ctx, (int, float, str)) and str(ctx).strip():
+                meta_bits.append(f"ctx {ctx}")
+            size_bytes = entry.get("size_bytes", 0)
+            try:
+                meta_bits.append(_format_bytes(int(size_bytes)))
+            except Exception:
+                pass
+            license_name = str(entry.get("license", "")).strip()
+            if license_name:
+                meta_bits.append(license_name)
+            meta = QLabel(" • ".join(meta_bits))
+            meta.setWordWrap(True)
+            meta.setStyleSheet(f"color: {TEXT_DIM};")
+            lay.addWidget(meta)
+            notes = QLabel(str(entry.get("notes", "")).strip())
+            notes.setWordWrap(True)
+            notes.setStyleSheet(f"color: {TEXT_MID};")
+            if notes.text().strip():
+                lay.addWidget(notes)
+            actions = QHBoxLayout()
+            actions.setContentsMargins(0, 6, 0, 0)
+            actions.setSpacing(8)
+            download_btn = QToolButton()
+            download_btn.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_ArrowDown))
+            download_btn.setToolTip("Download this GGUF into Hanauta cache and select it")
+            download_btn.setFixedSize(44, 38)
+
+            def _clicked(_checked: bool = False, payload: dict[str, object] = dict(entry)) -> None:
+                self._download_gguf(payload)
+                del _checked
+
+            download_btn.clicked.connect(_clicked)
+            actions.addWidget(download_btn)
+            repo_id = str(entry.get("repo_id", "")).strip()
+            filename = str(entry.get("file", "")).strip()
+            link = QLabel(f"{repo_id} / {filename}".strip(" /"))
+            link.setWordWrap(True)
+            link.setStyleSheet(f"color: {TEXT_DIM};")
+            actions.addWidget(link, 1)
+            lay.addLayout(actions)
+            row = idx // col_count
+            col = idx % col_count
+            self.gguf_gallery_grid.addWidget(card, row, col)
+        self.gguf_gallery_grid.setColumnStretch(0, 1)
+        self.gguf_gallery_grid.setColumnStretch(1, 1)
+
+    def _download_gguf(self, entry: dict[str, object]) -> None:
+        profile = self._selected_profile()
+        if profile.key != "koboldcpp":
+            self.status_label.setText("GGUF gallery is only available for KoboldCpp.")
+            self.status_label.setStyleSheet(f"color: {TEXT_MID};")
+            return
+        entry_id = str(entry.get("id", "")).strip() or str(entry.get("file", "")).strip()
+        if not entry_id:
+            return
+        started = self._gguf_download_manager.start(entry)
+        if not started:
+            self.status_label.setText("A download is already running for this model.")
+            self.status_label.setStyleSheet(f"color: {TEXT_MID};")
+            return
+        self.gguf_download_progress.show()
+        self.gguf_download_progress_label.show()
+        self.gguf_download_progress.setValue(0)
+        self.gguf_download_progress_label.setText("Starting download…")
+        self.status_label.setText(f"Downloading: {str(entry.get('title', entry_id)).strip()}")
+        self.status_label.setStyleSheet(f"color: {TEXT_MID};")
+
+    def _on_gguf_download_progress(self, entry_id: str, value: int, message: str) -> None:
+        profile = self._selected_profile()
+        if profile.key != "koboldcpp":
+            return
+        self.gguf_download_progress.show()
+        self.gguf_download_progress_label.show()
+        self.gguf_download_progress.setValue(max(0, min(100, int(value))))
+        self.gguf_download_progress_label.setText(str(message).strip())
+        self.status_label.setText(f"Downloading GGUF ({entry_id})… {value}%")
+        self.status_label.setStyleSheet(f"color: {TEXT_MID};")
+
+    def _on_gguf_download_finished(self, entry_id: str, path: str) -> None:
+        profile = self._selected_profile()
+        if profile.key == "koboldcpp":
+            self.gguf_path_input.setText(path)
+            self.gguf_download_progress.setValue(100)
+            self.gguf_download_progress_label.setText("Download complete")
+            self.status_label.setText(f"GGUF downloaded: {Path(path).name}")
+            self.status_label.setStyleSheet(f"color: {ACCENT};")
+        send_desktop_notification("GGUF ready", f"Downloaded {entry_id} to {path}.")
+
+    def _on_gguf_download_failed(self, entry_id: str, message: str) -> None:
+        profile = self._selected_profile()
+        if profile.key != "koboldcpp":
+            return
+        self.gguf_download_progress.hide()
+        self.gguf_download_progress_label.hide()
+        self.status_label.setText(f"GGUF download failed ({entry_id}): {message}")
+        self.status_label.setStyleSheet(f"color: {ACCENT_ALT};")
 
     def _reload_kokoro_voice_list(self, payload: dict[str, object]) -> None:
         profile = self._selected_profile()
@@ -8578,8 +9018,18 @@ class VoiceModelsWarmupWorker(QThread):
             _ensure_voice_venv("vosk", "warmup", "cpu", ["vosk"], "vosk")
             return
 
+        if backend == "whisperlive":
+            host = str(self.config.get("stt_whisperlive_host", "")).strip()
+            if not host:
+                raise RuntimeError("WhisperLive host is not configured.")
+            if not _host_reachable(host):
+                raise RuntimeError(f"Unable to reach WhisperLive: {_normalize_host_url(host)}")
+            return
+
         # Whisper (faster-whisper): ensure venv and do one short transcribe to warm model cache.
-        model_name = str(self.config.get("stt_model", "small")).strip().lower() or "small"
+        raw_model = str(self.config.get("stt_model", "small")).strip()
+        lowered = raw_model.lower()
+        model_name = lowered if lowered in {"tiny", "small", "medium", "large"} else (raw_model or "small")
         device = "gpu" if str(self.config.get("stt_device", "cpu")).lower() == "gpu" else "cpu"
         _ensure_voice_venv("whisper", model_name, device, ["faster-whisper", "huggingface-hub"], "faster_whisper")
         _ensure_voice_whisper_script()
@@ -8718,9 +9168,9 @@ class VoiceConversationWorker(QThread):
         backend = str(self.config.get("stt_backend", "whisper")).strip().lower()
         if backend != "whisper":
             return None
-        model_name = str(self.config.get("stt_model", "small")).strip().lower() or "small"
-        if model_name not in {"tiny", "small", "medium", "large"}:
-            model_name = "small"
+        raw_model = str(self.config.get("stt_model", "small")).strip()
+        lowered = raw_model.lower()
+        model_name = lowered if lowered in {"tiny", "small", "medium", "large"} else (raw_model or "small")
         device = "gpu" if str(self.config.get("stt_device", "cpu")).lower() == "gpu" else "cpu"
         python_bin = _ensure_voice_venv("whisper", model_name, device, ["faster-whisper", "huggingface-hub"], "faster_whisper")
         script_path = _ensure_voice_whisper_stream_script()
@@ -8885,9 +9335,10 @@ class VoiceConversationWorker(QThread):
                 if (
                     self._stt_streaming_enabled()
                     and (not bool(self.config.get("stt_external_api", False)))
-                    and str(self.config.get("stt_backend", "whisper")).strip().lower() == "whisper"
+                    and str(self.config.get("stt_backend", "whisper")).strip().lower() in {"whisper", "whisperlive"}
                 ):
                     # Live transcription while recording chunks. (Best-effort; depends on recorder chunk cadence.)
+                    stt_backend = str(self.config.get("stt_backend", "whisper")).strip().lower()
                     max_seconds = float(max(1.0, min(30.0, float(self._record_seconds()))))
                     stop_silence_ms = max(0, int(self._speech_end_silence_ms()))
                     chunk = float(max(0.25, min(3.0, self._listen_chunk_seconds())))
@@ -8910,7 +9361,10 @@ class VoiceConversationWorker(QThread):
                             if speech_seen:
                                 silence_ms += int(dur * 1000.0)
                         if rms >= threshold:
-                            piece = self._whisper_stream_transcribe(part, partial[-240:])
+                            if stt_backend == "whisper":
+                                piece = self._whisper_stream_transcribe(part, partial[-240:])
+                            else:
+                                piece = _transcribe_with_whisperlive(part, self.config, prompt=partial[-240:])
                             if piece:
                                 if partial and not partial.endswith((" ", "\n")):
                                     partial += " "
@@ -9805,17 +10259,36 @@ class VoiceModeDialog(QDialog):
         form.addWidget(self.stt_external_check)
         self.stt_backend_combo = QComboBox()
         self.stt_backend_combo.addItem("Faster Whisper local", "whisper")
+        self.stt_backend_combo.addItem("WhisperLive (OpenAI REST)", "whisperlive")
         self.stt_backend_combo.addItem("VOSK English local", "vosk")
         self._set_combo_selected(self.stt_backend_combo, str(self.config.get("stt_backend", "whisper")))
         self.stt_backend_combo.currentIndexChanged.connect(self._refresh_visibility)
         form.addWidget(self._labeled("Local STT engine", self.stt_backend_combo))
         self.stt_model_combo = QComboBox()
+        self.stt_model_combo.setEditable(True)
+        if self.stt_model_combo.lineEdit() is not None:
+            self.stt_model_combo.lineEdit().setPlaceholderText("tiny/small/… or HF repo id or local path")
         for name in ("tiny", "small", "medium", "large"):
             self.stt_model_combo.addItem(f"Whisper {name}", name)
-        self._set_combo_selected(self.stt_model_combo, str(self.config.get("stt_model", "small")))
+        # Helpful HF repo suggestions (still routed through faster-whisper / CTranslate2).
+        self.stt_model_combo.addItem("Systran/faster-whisper-small", "Systran/faster-whisper-small")
+        self.stt_model_combo.addItem("Systran/faster-whisper-large-v3", "Systran/faster-whisper-large-v3")
+        # Distil-Whisper family (may require a CTranslate2-converted repo to work with faster-whisper).
+        self.stt_model_combo.addItem("distil-whisper/distil-small.en", "distil-whisper/distil-small.en")
+        self.stt_model_combo.addItem("distil-whisper/distil-medium.en", "distil-whisper/distil-medium.en")
+        configured_model = str(self.config.get("stt_model", "small")).strip()
+        if configured_model and self.stt_model_combo.findData(configured_model) < 0:
+            self.stt_model_combo.addItem(configured_model, configured_model)
+        self._set_combo_selected(self.stt_model_combo, configured_model or "small")
         form.addWidget(self._labeled("Whisper model", self.stt_model_combo))
         self.stt_device_combo = self._device_combo(str(self.config.get("stt_device", "cpu")))
         form.addWidget(self._labeled("STT device", self.stt_device_combo))
+        self.whisperlive_host_input = QLineEdit(str(self.config.get("stt_whisperlive_host", "127.0.0.1:9090")))
+        self.whisperlive_host_input.setPlaceholderText("WhisperLive host, e.g. 127.0.0.1:9090")
+        form.addWidget(self._labeled("WhisperLive host", self.whisperlive_host_input))
+        self.whisperlive_model_input = QLineEdit(str(self.config.get("stt_whisperlive_model", "small")))
+        self.whisperlive_model_input.setPlaceholderText("small / medium / … or HF repo id")
+        form.addWidget(self._labeled("WhisperLive model", self.whisperlive_model_input))
         self.stt_vosk_model_input = QLineEdit(str(self.config.get("stt_vosk_model_path", "")))
         self.stt_vosk_model_input.setPlaceholderText("VOSK English model folder")
         form.addWidget(self._labeled("VOSK model folder", self.stt_vosk_model_input))
@@ -9979,14 +10452,28 @@ class VoiceModeDialog(QDialog):
     def _refresh_visibility(self) -> None:
         stt_external = self.stt_external_check.isChecked()
         stt_is_vosk = str(self.stt_backend_combo.currentData() or "") == "vosk"
-        for widget in (self.stt_backend_combo, self.stt_model_combo, self.stt_device_combo, self.stt_vosk_model_input):
+        stt_is_whisperlive = str(self.stt_backend_combo.currentData() or "") == "whisperlive"
+        for widget in (
+            self.stt_backend_combo,
+            self.stt_model_combo,
+            self.stt_device_combo,
+            self.whisperlive_host_input,
+            self.whisperlive_model_input,
+            self.stt_vosk_model_input,
+        ):
             wrapper = widget.parentWidget()
             if wrapper is not None:
                 wrapper.setVisible(not stt_external)
         if self.stt_model_combo.parentWidget() is not None:
-            self.stt_model_combo.parentWidget().setVisible((not stt_external) and not stt_is_vosk)
+            self.stt_model_combo.parentWidget().setVisible((not stt_external) and (not stt_is_vosk) and (not stt_is_whisperlive))
+        if self.stt_device_combo.parentWidget() is not None:
+            self.stt_device_combo.parentWidget().setVisible((not stt_external) and (not stt_is_whisperlive))
         if self.stt_vosk_model_input.parentWidget() is not None:
             self.stt_vosk_model_input.parentWidget().setVisible((not stt_external) and stt_is_vosk)
+        if self.whisperlive_host_input.parentWidget() is not None:
+            self.whisperlive_host_input.parentWidget().setVisible((not stt_external) and stt_is_whisperlive)
+        if self.whisperlive_model_input.parentWidget() is not None:
+            self.whisperlive_model_input.parentWidget().setVisible((not stt_external) and stt_is_whisperlive)
         for widget in (self.stt_host_input, self.stt_remote_model_input, self.stt_api_key_input):
             wrapper = widget.parentWidget()
             if wrapper is not None:
@@ -10003,6 +10490,12 @@ class VoiceModeDialog(QDialog):
                 wrapper.setVisible(llm_external)
 
     def _save(self) -> None:
+        stt_model = str(self.stt_model_combo.currentData() or "").strip()
+        typed_model = str(self.stt_model_combo.currentText() or "").strip()
+        if typed_model:
+            stt_model = typed_model
+        if not stt_model:
+            stt_model = "small"
         config = dict(_voice_mode_defaults())
         config.update(
             {
@@ -10013,8 +10506,10 @@ class VoiceModeDialog(QDialog):
                 "listen_chunk_seconds": self.listen_chunk_input.text().strip() or "0.75",
                 "min_speech_ms": self.min_speech_input.text().strip() or "260",
                 "stt_backend": str(self.stt_backend_combo.currentData() or "whisper"),
-                "stt_model": str(self.stt_model_combo.currentData() or "small"),
+                "stt_model": stt_model,
                 "stt_device": str(self.stt_device_combo.currentData() or "cpu"),
+                "stt_whisperlive_host": self.whisperlive_host_input.text().strip(),
+                "stt_whisperlive_model": self.whisperlive_model_input.text().strip() or "small",
                 "stt_external_api": bool(self.stt_external_check.isChecked()),
                 "stt_host": self.stt_host_input.text().strip(),
                 "stt_remote_model": self.stt_remote_model_input.text().strip() or "whisper-1",
@@ -10445,8 +10940,12 @@ class SidebarPanel(QFrame):
         if backend == "vosk":
             path = Path(str(config.get("stt_vosk_model_path", "")).strip()).expanduser()
             return "VOSK", path.name or "english model"
-        model = str(config.get("stt_model", "small")).strip().lower() or "small"
-        return "Whisper", model.title()
+        if backend == "whisperlive":
+            model = str(config.get("stt_whisperlive_model", "small")).strip() or "small"
+            return "WhisperLive", model
+        model = str(config.get("stt_model", "small")).strip() or "small"
+        lowered = model.lower()
+        return "Whisper", lowered.title() if lowered in {"tiny", "small", "medium", "large"} else model
 
     def _voice_llm_backend_model(self) -> tuple[str, str]:
         config = _voice_mode_settings(self.backend_settings)
