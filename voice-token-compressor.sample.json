@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "notes": "Caveman token compressor for voice-mode prompts. This file is copied to ~/.local/state/hanauta/ai-popup/voice-token-compressor.json on first run. Edit the state copy to customize.",
+  "collapse_whitespace": true,
+  "filler_words": [
+    "um",
+    "uh",
+    "erm",
+    "like",
+    "you know",
+    "i mean"
+  ],
+  "replace_phrases": {
+    "could you please": "",
+    "can you please": "",
+    "could you": "",
+    "can you": "",
+    "please": ""
+  },
+  "drop_sentences_containing": [
+    "like and subscribe"
+  ],
+  "max_words": 90,
+  "max_chars": 560
+}
+
