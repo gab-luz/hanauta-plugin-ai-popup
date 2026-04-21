@@ -16,7 +16,7 @@ for _flag in _extra_flags:
         _chromium_flags = f"{_chromium_flags} {_flag}".strip()
 os.environ["QTWEBENGINE_CHROMIUM_FLAGS"] = _chromium_flags
 
-from hanauta_ai_popup.full import main
+from hanauta_aipopup.full import main
 
 
 if __name__ == "__main__":
