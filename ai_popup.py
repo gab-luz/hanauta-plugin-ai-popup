@@ -6584,7 +6584,54 @@ WEB_POPUP_HTML = r"""
       gap: 12px;
     }
     .brand { flex: 1; min-width: 0; }
+    .title-row { display: flex; align-items: center; gap: 8px; }
     .title { font-size: 16px; font-weight: 800; color: var(--text); }
+    .info-pop { position: relative; display: inline-flex; align-items: center; }
+    .info-dot {
+      width: 18px;
+      height: 18px;
+      border-radius: 999px;
+      border: 1px solid rgba(214, 195, 255, 0.22);
+      background: rgba(255,255,255,0.04);
+      color: rgba(244,239,253,0.82);
+      font-weight: 900;
+      font-size: 12px;
+      line-height: 1;
+      cursor: default;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      box-shadow: inset 0 0 0 1px rgba(0,0,0,0.25);
+      transition: transform .14s ease, background .14s ease, border-color .14s ease;
+    }
+    .info-pop:hover .info-dot { transform: translateY(-1px); border-color: rgba(143,223,255,0.34); background: rgba(143,223,255,0.08); }
+    .info-tip {
+      position: absolute;
+      top: 24px;
+      left: 0;
+      min-width: 260px;
+      max-width: min(360px, 70vw);
+      padding: 10px 12px;
+      border-radius: 14px;
+      background: rgba(17, 14, 26, 0.92);
+      border: 1px solid rgba(214,195,255,0.16);
+      box-shadow: 0 24px 60px rgba(0,0,0,.42);
+      backdrop-filter: blur(10px);
+      color: rgba(244,239,253,0.90);
+      font-size: 12px;
+      font-weight: 600;
+      line-height: 1.45;
+      pointer-events: none;
+      opacity: 0;
+      transform: translateY(-4px) scale(0.98);
+      transition: opacity .12s ease, transform .12s ease;
+      z-index: 80;
+      white-space: normal;
+    }
+    .info-pop:hover .info-tip { opacity: 1; transform: translateY(0) scale(1); }
+    .info-tip .tip-title { font-weight: 900; color: rgba(244,239,253,0.96); margin-bottom: 6px; }
+    .info-tip .tip-line { color: rgba(244,239,253,0.78); }
+    .info-tip .tip-line b { color: rgba(198,180,255,0.95); font-weight: 900; }
     .status { font-size: 12px; font-weight: 600; color: var(--text-dim); margin-top: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .actions { display: flex; gap: 8px; }
     .icon-btn, .pill, .send-btn, .voice-stop {
@@ -6597,6 +6644,12 @@ WEB_POPUP_HTML = r"""
     }
     .icon-btn:hover, .pill:hover, .send-btn:hover, .voice-stop:hover { transform: translateY(-1px); }
     .icon-btn { width: 34px; height: 34px; font-size: 14px; }
+    .icon-btn.magic-ready {
+      border-color: rgba(57, 255, 136, 0.70);
+      box-shadow:
+        0 0 0 2px rgba(57, 255, 136, 0.14),
+        0 0 22px rgba(57, 255, 136, 0.24);
+    }
     .body { flex: 1; min-height: 0; display: flex; flex-direction: column; }
     .chat-page { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 12px; padding: 14px 14px 14px 14px; }
     .backend-row { display: flex; flex-wrap: wrap; gap: 8px; }
@@ -6909,6 +6962,85 @@ WEB_POPUP_HTML = r"""
     .voice-card .value { color: #f8f7ff; font-size: 14px; line-height: 1.6; }
     .voice-controls { display: flex; justify-content: center; margin-top: 16px; }
     .voice-stop { padding: 10px 16px; }
+    .modal {
+      position: absolute;
+      inset: 0;
+      background: rgba(0,0,0,0.42);
+      display: flex;
+      align-items: flex-end;
+      justify-content: center;
+      padding: 14px;
+      z-index: 70;
+    }
+    .modal[hidden] { display: none !important; }
+    .sheet {
+      width: 100%;
+      max-width: 520px;
+      border-radius: 22px;
+      border: 1px solid rgba(214,195,255,0.16);
+      background: linear-gradient(180deg, rgba(27,22,40,.98), rgba(16,13,24,.98));
+      box-shadow: 0 34px 90px rgba(0,0,0,.55);
+      overflow: hidden;
+    }
+    .sheet-head {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 12px 14px;
+      border-bottom: 1px solid rgba(214,195,255,0.12);
+      background: rgba(255,255,255,0.03);
+    }
+    .sheet-title { font-size: 13px; font-weight: 950; letter-spacing: 0; }
+    .sheet-sub { font-size: 12px; font-weight: 650; color: rgba(244,239,253,0.70); }
+    .sheet-body { padding: 12px 14px 14px 14px; display: flex; flex-direction: column; gap: 10px; }
+    .check-row {
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
+      padding: 12px 12px;
+      border-radius: 16px;
+      border: 1px solid rgba(214,195,255,0.10);
+      background: rgba(255,255,255,0.03);
+    }
+    .check-row:hover { border-color: rgba(143,223,255,0.22); background: rgba(143,223,255,0.05); }
+    .check { margin-top: 2px; width: 16px; height: 16px; accent-color: rgb(198,180,255); }
+    .check-main { flex: 1; min-width: 0; }
+    .check-title { font-weight: 950; font-size: 12px; color: rgba(244,239,253,0.94); }
+    .check-note { margin-top: 4px; font-size: 12px; font-weight: 650; color: rgba(244,239,253,0.70); overflow-wrap: anywhere; word-break: break-word; }
+    .check-note b { color: rgba(143,223,255,0.90); font-weight: 950; }
+    .sheet-actions {
+      display: flex;
+      gap: 10px;
+      padding: 12px 14px 14px 14px;
+      border-top: 1px solid rgba(214,195,255,0.12);
+      background: rgba(255,255,255,0.02);
+    }
+    .sheet-actions .spacer { flex: 1; }
+    .sheet-btn {
+      padding: 9px 12px;
+      border-radius: 999px;
+      border: 1px solid rgba(214,195,255,0.16);
+      background: rgba(255,255,255,0.04);
+      color: rgba(244,239,253,0.92);
+      font-weight: 900;
+      font-size: 12px;
+      cursor: pointer;
+      transition: transform .14s ease, background .14s ease, border-color .14s ease;
+    }
+    .sheet-btn:hover { transform: translateY(-1px); border-color: rgba(143,223,255,0.26); background: rgba(143,223,255,0.07); }
+    .sheet-btn.primary { border-color: rgba(198,180,255,0.30); background: linear-gradient(180deg, rgba(198,180,255,0.20), rgba(143,223,255,0.10)); }
+    .sheet-btn.danger { border-color: rgba(255, 120, 120, 0.30); background: rgba(255,120,120,0.10); }
+    .sheet-warn {
+      padding: 10px 12px;
+      border-radius: 16px;
+      border: 1px solid rgba(255, 196, 0, 0.28);
+      background: rgba(255, 196, 0, 0.08);
+      color: rgba(255, 236, 198, 0.92);
+      font-weight: 700;
+      font-size: 12px;
+      line-height: 1.45;
+    }
+    .sheet-warn b { color: rgba(255, 232, 166, 1.0); font-weight: 950; }
     @keyframes glowPulse { 0%,100% { transform: scale(.96); opacity:.58; } 50% { transform: scale(1.14); opacity:.96; } }
     @keyframes auraDrift { 0%,100% { transform: scale(1) rotate(0deg);} 30% { transform: scale(1.05) rotate(8deg);} 65% { transform: scale(1.02) rotate(-10deg);} }
     @keyframes coreMorph { 0%,100% { border-radius:50%; } 25% { border-radius:46% 54% 48% 52% / 52% 44% 56% 48%; } 60% { border-radius:53% 47% 55% 45% / 47% 57% 43% 53%; } }
@@ -6934,10 +7066,17 @@ WEB_POPUP_HTML = r"""
     <div class="window">
       <div class="header">
         <div class="brand">
-          <div class="title">Hanauta AI</div>
+          <div class="title-row">
+            <div class="title">Hanauta AI</div>
+            <div class="info-pop" title="Info">
+              <div class="info-dot" aria-label="Information">i</div>
+              <div class="info-tip" id="infoTip"><div class="tip-title">Loaded Backends</div><div class="tip-line">Loading...</div></div>
+            </div>
+          </div>
           <div class="status" id="headerStatus"></div>
         </div>
         <div class="actions">
+          <button class="icon-btn" id="modelsBtn" title="Start/Stop voice backends" aria-label="Start/Stop models">▶</button>
           <button class="icon-btn" id="voiceBtn" title="Voice mode">🎙</button>
           <button class="icon-btn" id="settingsBtn" title="Settings">⚙</button>
           <button class="icon-btn" id="charactersBtn" title="Characters">☺</button>
@@ -7021,6 +7160,47 @@ WEB_POPUP_HTML = r"""
             </div>
           </div>
         </div>
+        <div class="modal" id="modelModal" hidden>
+          <div class="sheet" role="dialog" aria-modal="true" aria-label="Voice backends">
+            <div class="sheet-head">
+              <div style="flex:1; min-width:0">
+                <div class="sheet-title">Voice Backends</div>
+                <div class="sheet-sub" id="modelModalSub">Preload models for hands-free voice mode.</div>
+              </div>
+              <button class="icon-btn" id="modelModalCloseBtn" title="Close">✕</button>
+            </div>
+            <div class="sheet-body">
+              <div class="sheet-warn" id="modelWarn" hidden></div>
+              <label class="check-row">
+                <input class="check" type="checkbox" id="modelCheckStt" />
+                <div class="check-main">
+                  <div class="check-title">STT (Speech to Text)</div>
+                  <div class="check-note" id="modelNoteStt">Configured: <b>…</b></div>
+                </div>
+              </label>
+              <label class="check-row">
+                <input class="check" type="checkbox" id="modelCheckLlm" />
+                <div class="check-main">
+                  <div class="check-title">LLM (Brain)</div>
+                  <div class="check-note" id="modelNoteLlm">Configured: <b>…</b></div>
+                </div>
+              </label>
+              <label class="check-row">
+                <input class="check" type="checkbox" id="modelCheckTts" />
+                <div class="check-main">
+                  <div class="check-title">TTS (Text to Speech)</div>
+                  <div class="check-note" id="modelNoteTts">Configured: <b>…</b></div>
+                </div>
+              </label>
+            </div>
+            <div class="sheet-actions">
+              <button class="sheet-btn danger" id="modelsStopBtn">Stop Loaded</button>
+              <div class="spacer"></div>
+              <button class="sheet-btn" id="modelsRefreshBtn">Refresh</button>
+              <button class="sheet-btn primary" id="modelsStartBtn">Start Selected</button>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
   </div>
@@ -7086,6 +7266,85 @@ WEB_POPUP_HTML = r"""
       photo.innerHTML = voice.character_image_url ? `<img src="${esc(voice.character_image_url)}" alt="${esc(voice.character_name || 'Character')}" />` : '<div class="orb-fallback">AI</div>';
     }
 
+    function _fmtModelLine(obj) {
+      if (!obj) return 'Not configured';
+      const backend = (obj.backend || '').trim();
+      const model = (obj.model || '').trim();
+      const device = (obj.device || '').trim();
+      const mode = (obj.mode || '').trim();
+      let bits = [];
+      if (backend) bits.push(backend);
+      if (model) bits.push(model);
+      if (device) bits.push(device);
+      if (mode) bits.push(mode);
+      return bits.join(' • ') || 'Not configured';
+    }
+
+    function renderInfoTip(info) {
+      const tip = document.getElementById('infoTip');
+      if (!tip) return;
+      const lines = (info && Array.isArray(info.lines)) ? info.lines : [];
+      const title = (info && info.title) ? String(info.title) : 'Loaded Backends';
+      const body = lines.length ? lines.map((l) => `<div class="tip-line">${esc(String(l))}</div>`).join('') :
+        '<div class="tip-line">No info yet.</div>';
+      tip.innerHTML = `<div class="tip-title">${esc(title)}</div>${body}`;
+    }
+
+    function _modelModalSelection() {
+      return {
+        stt: !!document.getElementById('modelCheckStt')?.checked,
+        llm: !!document.getElementById('modelCheckLlm')?.checked,
+        tts: !!document.getElementById('modelCheckTts')?.checked,
+      };
+    }
+
+    function openModelModal(open) {
+      const modal = document.getElementById('modelModal');
+      if (!modal) return;
+      modal.hidden = !open;
+    }
+
+    function renderModelLauncher(models, voice) {
+      const btn = document.getElementById('modelsBtn');
+      if (!btn) return;
+      const active = !!(models && models.active);
+      const ready = !!(voice && voice.stack_ready);
+      btn.textContent = active ? '■' : '▶';
+      btn.classList.toggle('magic-ready', ready);
+
+      const warnBox = document.getElementById('modelWarn');
+      if (warnBox) {
+        const warn = models && models.warning ? String(models.warning) : '';
+        warnBox.hidden = !warn;
+        warnBox.textContent = warn;
+      }
+      const busy = !!(models && models.busy);
+      const startBtn = document.getElementById('modelsStartBtn');
+      const stopBtn = document.getElementById('modelsStopBtn');
+      if (startBtn) {
+        startBtn.disabled = busy;
+        startBtn.textContent = (models && models.needs_confirm) ? 'Start Anyway' : 'Start Selected';
+      }
+      if (stopBtn) stopBtn.disabled = busy || !active;
+
+      const noteStt = document.getElementById('modelNoteStt');
+      const noteLlm = document.getElementById('modelNoteLlm');
+      const noteTts = document.getElementById('modelNoteTts');
+      if (noteStt) noteStt.innerHTML = `Configured: <b>${esc(_fmtModelLine(models && models.stt))}</b>` + ((models && models.stt && models.stt.loaded) ? ' <span style="color:rgba(57,255,136,.92); font-weight:950">loaded</span>' : '');
+      if (noteLlm) noteLlm.innerHTML = `Configured: <b>${esc(_fmtModelLine(models && models.llm))}</b>` + ((models && models.llm && models.llm.loaded) ? ' <span style="color:rgba(57,255,136,.92); font-weight:950">loaded</span>' : '');
+      if (noteTts) noteTts.innerHTML = `Configured: <b>${esc(_fmtModelLine(models && models.tts))}</b>` + ((models && models.tts && models.tts.loaded) ? ' <span style="color:rgba(57,255,136,.92); font-weight:950">loaded</span>' : '');
+
+      if (models && models.selection) {
+        const sel = models.selection;
+        const cStt = document.getElementById('modelCheckStt');
+        const cLlm = document.getElementById('modelCheckLlm');
+        const cTts = document.getElementById('modelCheckTts');
+        if (cStt) cStt.checked = !!sel.stt;
+        if (cLlm) cLlm.checked = !!sel.llm;
+        if (cTts) cTts.checked = !!sel.tts;
+      }
+    }
+
     function render(payload) {
       state = payload || {};
       const inVoice = state.mode === 'voice';
@@ -7096,9 +7355,12 @@ WEB_POPUP_HTML = r"""
       renderBackends(state.backends || []);
       renderMessages(state.messages || []);
       renderVoice(state.voice || {});
+      renderInfoTip(state.info || {});
+      renderModelLauncher(state.models || {}, state.voice || {});
       document.getElementById('chatPage').hidden = inVoice;
       document.getElementById('voicePage').hidden = !inVoice;
       document.getElementById('voiceBtn').textContent = inVoice ? '■' : '🎙';
+      document.getElementById('voiceBtn').classList.toggle('magic-ready', !!(state.voice && state.voice.stack_ready));
     }
 
     function sendNow() {
@@ -7118,6 +7380,25 @@ WEB_POPUP_HTML = r"""
     document.getElementById('settingsBtn').addEventListener('click', () => bridge && bridge.openSettings && bridge.openSettings());
     document.getElementById('charactersBtn').addEventListener('click', () => bridge && bridge.openCharacters && bridge.openCharacters());
     document.getElementById('voiceBtn').addEventListener('click', () => bridge && bridge.toggleVoiceMode && bridge.toggleVoiceMode());
+    document.getElementById('modelsBtn').addEventListener('click', () => {
+      const active = !!(state && state.models && state.models.active);
+      if (active) {
+        if (bridge && bridge.stopVoiceModels) bridge.stopVoiceModels();
+        return;
+      }
+      openModelModal(true);
+    });
+    document.getElementById('modelModalCloseBtn').addEventListener('click', () => openModelModal(false));
+    document.getElementById('modelsRefreshBtn').addEventListener('click', () => bridge && bridge.refreshState && bridge.refreshState());
+    document.getElementById('modelsStartBtn').addEventListener('click', () => {
+      const sel = _modelModalSelection();
+      if (!bridge || !bridge.startVoiceModels) return;
+      bridge.startVoiceModels(JSON.stringify(sel));
+    });
+    document.getElementById('modelsStopBtn').addEventListener('click', () => bridge && bridge.stopVoiceModels && bridge.stopVoiceModels());
+    document.getElementById('modelModal').addEventListener('click', (ev) => {
+      if (ev.target && ev.target.id === 'modelModal') openModelModal(false);
+    });
     document.getElementById('voiceStopBtn').addEventListener('click', () => bridge && bridge.toggleVoiceMode && bridge.toggleVoiceMode());
     document.getElementById('voiceStopTopBtn').addEventListener('click', () => bridge && bridge.toggleVoiceMode && bridge.toggleVoiceMode());
     document.getElementById('voiceBackBtn').addEventListener('click', () => bridge && bridge.toggleVoiceMode && bridge.toggleVoiceMode());
@@ -7168,6 +7449,18 @@ class PopupWebBridge(QObject):
     @pyqtSlot()
     def toggleVoiceMode(self) -> None:
         self.owner._toggle_voice_mode()
+
+    @pyqtSlot()
+    def refreshState(self) -> None:
+        self.owner._sync_web_ui()
+
+    @pyqtSlot(str)
+    def startVoiceModels(self, selection_json: str) -> None:
+        self.owner._web_request_start_voice_models(selection_json)
+
+    @pyqtSlot()
+    def stopVoiceModels(self) -> None:
+        self.owner._web_stop_voice_models()
 
     @pyqtSlot()
     def clearChat(self) -> None:
@@ -7738,6 +8031,146 @@ class TtsSynthesisWorker(QThread):
             self.failed.emit(details)
             return
         self.finished_ok.emit(str(audio_path), self.profile.label, source)
+
+
+class VoiceModelsWarmupWorker(QThread):
+    progress = pyqtSignal(str, str)
+    finished_ok = pyqtSignal(str)
+    failed = pyqtSignal(str)
+
+    def __init__(
+        self,
+        config: dict[str, object],
+        profiles: dict[str, BackendProfile],
+        backend_settings: dict[str, dict[str, object]],
+        selection: dict[str, bool],
+    ) -> None:
+        super().__init__()
+        self.config = dict(config)
+        self.profiles = dict(profiles)
+        self.backend_settings = json.loads(json.dumps(backend_settings))
+        self.selection = dict(selection)
+
+    def _emit(self, title: str, detail: str) -> None:
+        self.progress.emit(str(title).strip() or "Models", str(detail).strip())
+
+    def run(self) -> None:
+        try:
+            updates: dict[str, dict[str, object]] = {}
+            loaded: dict[str, bool] = {"stt": False, "llm": False, "tts": False}
+
+            if self.selection.get("stt", False):
+                self._emit("Starting STT", "Preparing speech-to-text backend.")
+                self._warm_stt()
+                loaded["stt"] = True
+
+            if self.selection.get("llm", False):
+                self._emit("Starting LLM", "Preparing the chat backend for voice mode.")
+                llm_updates = self._warm_llm()
+                if llm_updates:
+                    updates.update(llm_updates)
+                loaded["llm"] = True
+
+            if self.selection.get("tts", False):
+                self._emit("Starting TTS", "Preparing speech synthesis backend.")
+                self._warm_tts()
+                loaded["tts"] = True
+
+            payload = {
+                "loaded": loaded,
+                "updates": updates,
+            }
+            self.finished_ok.emit(json.dumps(payload, ensure_ascii=False))
+        except Exception as exc:
+            message = str(exc).strip() or exc.__class__.__name__
+            self.failed.emit(message)
+
+    def _warm_stt(self) -> None:
+        if bool(self.config.get("stt_external_api", False)):
+            host = str(self.config.get("stt_host", "")).strip()
+            if not host:
+                raise RuntimeError("STT external API host is not configured.")
+            if not _host_reachable(host):
+                raise RuntimeError(f"Unable to reach STT host: {_normalize_host_url(host)}")
+            return
+        backend = str(self.config.get("stt_backend", "whisper")).strip().lower()
+        if backend == "vosk":
+            model_path = Path(str(self.config.get("stt_vosk_model_path", "")).strip()).expanduser()
+            if not model_path.exists():
+                raise RuntimeError("Set a valid VOSK model folder in Voice Mode settings.")
+            # Ensure venv and import; do not transcribe in warmup (fast feedback).
+            _ensure_voice_venv("vosk", "warmup", "cpu", ["vosk"], "vosk")
+            return
+
+        # Whisper (faster-whisper): ensure venv and do one short transcribe to warm model cache.
+        model_name = str(self.config.get("stt_model", "small")).strip().lower() or "small"
+        device = "gpu" if str(self.config.get("stt_device", "cpu")).lower() == "gpu" else "cpu"
+        _ensure_voice_venv("whisper", model_name, device, ["faster-whisper", "huggingface-hub"], "faster_whisper")
+        _ensure_voice_whisper_script()
+
+        try:
+            import wave
+            import struct
+        except Exception:
+            raise RuntimeError("Python wave module is unavailable.")
+        warmup_wav = AI_STATE_DIR / "voice-runtime" / "warmup_silence.wav"
+        warmup_wav.parent.mkdir(parents=True, exist_ok=True)
+        sample_rate = 16000
+        frames = int(sample_rate * 0.35)
+        with wave.open(str(warmup_wav), "wb") as wav:
+            wav.setnchannels(1)
+            wav.setsampwidth(2)
+            wav.setframerate(sample_rate)
+            wav.writeframes(struct.pack("<" + "h" * frames, *([0] * frames)))
+        _transcribe_with_whisper(warmup_wav, self.config)
+
+    def _warm_llm(self) -> dict[str, dict[str, object]]:
+        updates: dict[str, dict[str, object]] = {}
+        if bool(self.config.get("llm_external_api", False)):
+            host = str(self.config.get("llm_host", "")).strip()
+            if not host:
+                raise RuntimeError("LLM external API host is not configured.")
+            if not _host_reachable(host):
+                raise RuntimeError(f"Unable to reach LLM host: {_normalize_host_url(host)}")
+            return updates
+        profile_key = str(self.config.get("llm_profile", "koboldcpp")).strip()
+        profile = self.profiles.get(profile_key)
+        if profile is None:
+            raise RuntimeError("Select an LLM backend in Voice Mode settings.")
+        payload = dict(self.backend_settings.get(profile.key, {}))
+        if profile.key == "koboldcpp":
+            ok, message = _start_koboldcpp(payload)
+            if not ok:
+                raise RuntimeError(message)
+            updates[profile.key] = payload
+            return updates
+        host = str(payload.get("host", profile.host)).strip()
+        if not host:
+            raise RuntimeError(f"{profile.label} host is not configured.")
+        if not _host_reachable(host):
+            raise RuntimeError(f"Unable to reach {profile.label}: {_normalize_host_url(host)}")
+        return updates
+
+    def _warm_tts(self) -> None:
+        profile_key = str(self.config.get("tts_profile", "kokorotts")).strip()
+        profile = self.profiles.get(profile_key)
+        if profile is None:
+            raise RuntimeError("Select a TTS backend in Voice Mode settings.")
+        payload = dict(self.backend_settings.get(profile.key, {}))
+        mode = _default_tts_mode(payload)
+        if mode == "external_api":
+            host = str(payload.get("host", profile.host)).strip()
+            if not host:
+                raise RuntimeError("TTS external API host is not configured.")
+            if not _host_reachable(host):
+                raise RuntimeError(f"Unable to reach TTS host: {_normalize_host_url(host)}")
+            return
+        # Local ONNX warmup: run a tiny synth and delete the output file.
+        audio, _src = synthesize_tts(profile, payload, "Warmup.")
+        try:
+            audio.unlink(missing_ok=True)
+        except Exception:
+            pass
 
 
 class VoiceConversationWorker(QThread):
@@ -8701,6 +9134,12 @@ class SidebarPanel(QFrame):
         self._voice_listening = False
         self._voice_speaking = False
         self._web_mode = "chat"
+        self._voice_models_loaded: dict[str, bool] = {"stt": False, "llm": False, "tts": False}
+        self._voice_models_busy: bool = False
+        self._voice_models_warning: str = ""
+        self._voice_models_needs_confirm: bool = False
+        self._voice_models_last_selection: dict[str, bool] = {"stt": True, "llm": True, "tts": True}
+        self._voice_models_worker: VoiceModelsWarmupWorker | None = None
         self._pending_kobold_ready_profile: str = ""
         self._pending_kobold_ready_host: str = ""
         self._text_response_timer = QTimer(self)
@@ -9062,6 +9501,22 @@ class SidebarPanel(QFrame):
                 model = gguf_path.name
         return profile.label, model
 
+    def _voice_tts_backend_model(self) -> tuple[str, str, str, str]:
+        config = _voice_mode_settings(self.backend_settings)
+        profile_key = str(config.get("tts_profile", "kokorotts")).strip() or "kokorotts"
+        profile = self.profile_by_key.get(profile_key)
+        if profile is None:
+            return "TTS", "Unknown", "", ""
+        payload = dict(self.backend_settings.get(profile.key, {}))
+        mode = _default_tts_mode(payload)
+        device = str(payload.get("tts_device", payload.get("device", "cpu"))).strip().lower() or "cpu"
+        if mode == "external_api":
+            host = str(payload.get("host", profile.host)).strip()
+            model = str(payload.get("tts_remote_model", payload.get("model", profile.model))).strip() or profile.model
+            return profile.label, model, device, f"external • {host or profile.host}"
+        model = str(payload.get("model", profile.model)).strip() or profile.model
+        return profile.label, model, device, "local"
+
     def _voice_character_image_url(self) -> str:
         config = _voice_mode_settings(self.backend_settings)
         active = self._active_character() if bool(config.get("enable_character", True)) else None
@@ -9114,6 +9569,55 @@ class SidebarPanel(QFrame):
                 model_dir = _default_tts_model_dir(tts_profile, payload)
                 tts_ready = model_dir.exists()
         return bool(stt_ready and llm_ready and tts_ready)
+
+    def _voice_models_payload(self) -> dict[str, object]:
+        config = _voice_mode_settings(self.backend_settings)
+        stt_backend, stt_model = self._voice_stt_backend_model()
+        llm_backend, llm_model = self._voice_llm_backend_model()
+        tts_backend, tts_model, tts_device, tts_mode = self._voice_tts_backend_model()
+        stt_device = "gpu" if str(config.get("stt_device", "cpu")).strip().lower() == "gpu" else "cpu"
+        llm_device = "gpu" if str(config.get("llm_device", "cpu")).strip().lower() == "gpu" else "cpu"
+        selection = dict(self._voice_models_last_selection or {})
+        return {
+            "active": bool(any(self._voice_models_loaded.values())),
+            "busy": bool(self._voice_models_busy),
+            "warning": str(self._voice_models_warning or ""),
+            "needs_confirm": bool(self._voice_models_needs_confirm),
+            "selection": selection,
+            "stt": {"backend": stt_backend, "model": stt_model, "device": stt_device, "mode": "external" if bool(config.get("stt_external_api", False)) else "local", "loaded": bool(self._voice_models_loaded.get("stt", False))},
+            "llm": {"backend": llm_backend, "model": llm_model, "device": llm_device, "mode": "external" if bool(config.get("llm_external_api", False)) else "local", "loaded": bool(self._voice_models_loaded.get("llm", False))},
+            "tts": {"backend": tts_backend, "model": tts_model, "device": tts_device, "mode": tts_mode, "loaded": bool(self._voice_models_loaded.get("tts", False))},
+        }
+
+    def _web_info_payload(self) -> dict[str, object]:
+        config = _voice_mode_settings(self.backend_settings)
+        lines: list[str] = []
+        if self.current_profile is not None:
+            lines.append(f"Chat backend: {self.current_profile.label}")
+        header = self.header_status.text().strip() if hasattr(self, "header_status") else ""
+        if header:
+            lines.append(header)
+        if bool(config.get("enabled", False)):
+            stt_backend, stt_model = self._voice_stt_backend_model()
+            llm_backend, llm_model = self._voice_llm_backend_model()
+            tts_backend, tts_model, _tts_device, tts_mode = self._voice_tts_backend_model()
+            ready = "ready" if self._voice_stack_ready() else "not ready"
+            lines.append(f"Voice stack: {ready}")
+            lines.append(f"STT: {stt_backend} • {stt_model}")
+            lines.append(f"LLM: {llm_backend} • {llm_model}")
+            lines.append(f"TTS: {tts_backend} • {tts_model} • {tts_mode}")
+        else:
+            lines.append("Voice mode: disabled")
+        loaded_bits = []
+        if self._voice_models_loaded.get("stt", False):
+            loaded_bits.append("STT")
+        if self._voice_models_loaded.get("llm", False):
+            loaded_bits.append("LLM")
+        if self._voice_models_loaded.get("tts", False):
+            loaded_bits.append("TTS")
+        if loaded_bits:
+            lines.append("Loaded: " + ", ".join(loaded_bits))
+        return {"title": "Information", "lines": lines}
 
     def _apply_voice_button_state(self) -> None:
         active = self._voice_worker is not None and self._voice_worker.isRunning()
@@ -9261,6 +9765,8 @@ class SidebarPanel(QFrame):
             "mode": getattr(self, "_web_mode", "chat"),
             "header_status": header_status,
             "provider_label": provider_label,
+            "info": self._web_info_payload(),
+            "models": self._voice_models_payload(),
             "backends": available_backends,
             "messages": [self._html_message_payload(item) for item in history],
             "voice": {
@@ -9272,6 +9778,7 @@ class SidebarPanel(QFrame):
                 "character_image_url": self._voice_character_image_url(),
                 "listening": bool(getattr(self, "_voice_listening", False)),
                 "speaking": bool(getattr(self, "_voice_speaking", False)),
+                "stack_ready": bool(self._voice_stack_ready()),
             },
         }
 
@@ -9305,6 +9812,211 @@ class SidebarPanel(QFrame):
         if not bool(config.get("enabled", False)):
             return
         self._start_voice_mode(config)
+
+    def _voice_models_preflight_warning(self, selection: dict[str, bool]) -> str:
+        config = _voice_mode_settings(self.backend_settings)
+        warnings: list[str] = []
+        if not bool(config.get("enabled", False)):
+            warnings.append("Voice mode is disabled. Enable it in Settings first.")
+
+        # Heuristic memory warning: compare model weight/file sizes to available memory.
+        ram_avail = 0
+        try:
+            import psutil  # type: ignore
+
+            ram_avail = int(getattr(psutil.virtual_memory(), "available", 0) or 0)
+        except Exception:
+            ram_avail = 0
+
+        def _fmt_bytes(n: int) -> str:
+            if n <= 0:
+                return ""
+            for unit in ("B", "KB", "MB", "GB", "TB"):
+                if n < 1024:
+                    return f"{n:.0f}{unit}"
+                n = n / 1024
+            return f"{n:.0f}PB"
+
+        # STT estimate
+        stt_est = 0
+        if selection.get("stt", False) and not bool(config.get("stt_external_api", False)):
+            backend = str(config.get("stt_backend", "whisper")).strip().lower()
+            if backend != "vosk":
+                model = str(config.get("stt_model", "small")).strip().lower() or "small"
+                stt_est = {
+                    "tiny": 180 * 1024 * 1024,
+                    "small": 640 * 1024 * 1024,
+                    "medium": 1700 * 1024 * 1024,
+                    "large": 3300 * 1024 * 1024,
+                }.get(model, 700 * 1024 * 1024)
+
+        # LLM estimate (GGUF file size when local koboldcpp)
+        llm_est = 0
+        if selection.get("llm", False) and not bool(config.get("llm_external_api", False)):
+            profile_key = str(config.get("llm_profile", "koboldcpp")).strip()
+            profile = self.profile_by_key.get(profile_key)
+            if profile is not None and profile.key == "koboldcpp":
+                payload = dict(self.backend_settings.get(profile.key, {}))
+                gguf_path = _existing_path(payload.get("gguf_path"))
+                if gguf_path is not None:
+                    try:
+                        llm_est = int(gguf_path.stat().st_size)
+                    except Exception:
+                        llm_est = 0
+
+        # TTS estimate (small constant; local ONNX)
+        tts_est = 0
+        if selection.get("tts", False):
+            tts_est = 450 * 1024 * 1024
+
+        est_total = int(stt_est + llm_est + tts_est)
+        if ram_avail and est_total and est_total > int(ram_avail * 0.80):
+            warnings.append(
+                f"Estimated model footprint is about {_fmt_bytes(est_total)} but available RAM is about {_fmt_bytes(ram_avail)}. "
+                "This may stutter or fail."
+            )
+
+        # Optional VRAM warning for GPU paths.
+        if selection.get("llm", False) and str(config.get("llm_device", "cpu")).strip().lower() == "gpu":
+            try:
+                completed = subprocess.run(
+                    ["nvidia-smi", "--query-gpu=memory.free", "--format=csv,noheader,nounits"],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                    timeout=2,
+                )
+                if completed.returncode == 0:
+                    first = (completed.stdout or "").strip().splitlines()[:1]
+                    if first:
+                        free_mb = int(float(first[0].strip() or "0"))
+                        if free_mb and free_mb < 1200:
+                            warnings.append(f"Free VRAM looks low ({free_mb} MB). GPU loading may fail.")
+            except Exception:
+                pass
+
+        # Guard: don't start while already busy.
+        if self._voice_models_worker is not None and self._voice_models_worker.isRunning():
+            warnings.append("Models are already starting. Wait for the current start to finish.")
+
+        return " ".join(warnings).strip()
+
+    def _web_request_start_voice_models(self, selection_json: str) -> None:
+        try:
+            raw = json.loads(selection_json or "{}")
+        except Exception:
+            raw = {}
+        selection = {
+            "stt": bool(raw.get("stt", False)) if isinstance(raw, dict) else False,
+            "llm": bool(raw.get("llm", False)) if isinstance(raw, dict) else False,
+            "tts": bool(raw.get("tts", False)) if isinstance(raw, dict) else False,
+        }
+        if not any(selection.values()):
+            self._voice_models_warning = "Select at least one model to start."
+            self._voice_models_needs_confirm = False
+            self._voice_models_last_selection = selection
+            self._sync_web_ui()
+            return
+
+        warning = self._voice_models_preflight_warning(selection)
+        if warning and not (self._voice_models_needs_confirm and self._voice_models_last_selection == selection):
+            self._voice_models_warning = f"{warning} Click Start Selected again to continue."
+            self._voice_models_needs_confirm = True
+            self._voice_models_last_selection = selection
+            self._sync_web_ui()
+            return
+
+        self._voice_models_warning = ""
+        self._voice_models_needs_confirm = False
+        self._voice_models_last_selection = selection
+
+        config = _voice_mode_settings(self.backend_settings)
+        self._voice_models_busy = True
+        self._sync_web_ui()
+
+        self._add_runtime_status_card(
+            "Model Warmup",
+            "Starting selected voice backends. This may take a moment on first run.",
+            chips=["voice", "models"],
+        )
+        worker = VoiceModelsWarmupWorker(config, self.profile_by_key, self.backend_settings, selection)
+        self._voice_models_worker = worker
+
+        def _on_progress(title: str, detail: str) -> None:
+            self._add_runtime_status_card(str(title), str(detail), chips=["voice", "models"])
+
+        def _on_ok(raw_payload: str) -> None:
+            self._voice_models_busy = False
+            self._voice_models_worker = None
+            try:
+                payload = json.loads(raw_payload or "{}")
+            except Exception:
+                payload = {}
+            updates = payload.get("updates", {}) if isinstance(payload, dict) else {}
+            loaded = payload.get("loaded", {}) if isinstance(payload, dict) else {}
+            if isinstance(updates, dict):
+                for key, value in updates.items():
+                    if isinstance(key, str) and isinstance(value, dict):
+                        self.backend_settings[key] = dict(value)
+                if updates:
+                    save_backend_settings(self.backend_settings)
+            if isinstance(loaded, dict):
+                for k in ("stt", "llm", "tts"):
+                    if k in loaded:
+                        self._voice_models_loaded[k] = bool(loaded.get(k, False))
+            self._apply_voice_button_state()
+            self._sync_web_ui()
+            self._add_runtime_status_card(
+                "Model Warmup Complete",
+                "Selected backends are ready.",
+                tone="success",
+                chips=["voice", "models", "ready"],
+            )
+
+        def _on_fail(message: str) -> None:
+            self._voice_models_busy = False
+            self._voice_models_worker = None
+            clean = str(message).strip() or "Model warmup failed."
+            self._voice_models_warning = clean
+            self._sync_web_ui()
+            self._add_runtime_status_card(
+                "Model Warmup Failed",
+                clean,
+                tone="warn",
+                chips=["voice", "models", "error"],
+            )
+
+        worker.progress.connect(_on_progress)
+        worker.finished_ok.connect(_on_ok)
+        worker.failed.connect(_on_fail)
+        worker.start()
+
+    def _web_stop_voice_models(self) -> None:
+        if self._voice_models_worker is not None and self._voice_models_worker.isRunning():
+            self._voice_models_warning = "Models are busy starting; stop is disabled until warmup finishes."
+            self._sync_web_ui()
+            return
+        if self._voice_worker is not None and self._voice_worker.isRunning():
+            self._stop_voice_mode()
+        config = _voice_mode_settings(self.backend_settings)
+        if not bool(config.get("llm_external_api", False)):
+            profile = self.profile_by_key.get(str(config.get("llm_profile", "koboldcpp")).strip())
+            if profile is not None and profile.key == "koboldcpp":
+                payload = dict(self.backend_settings.get(profile.key, {}))
+                ok, message = _stop_koboldcpp(payload)
+                self.backend_settings[profile.key] = dict(payload)
+                save_backend_settings(self.backend_settings)
+                self._add_runtime_status_card(
+                    "Stop LLM",
+                    message,
+                    tone="success" if ok else "warn",
+                    chips=["voice", "llm", "stop"],
+                )
+        self._voice_models_loaded = {"stt": False, "llm": False, "tts": False}
+        self._voice_models_warning = ""
+        self._voice_models_needs_confirm = False
+        self._apply_voice_button_state()
+        self._sync_web_ui()
 
     def _start_voice_mode(self, config: dict[str, object]) -> None:
         if self._voice_worker is not None and self._voice_worker.isRunning():
