@@ -1326,6 +1326,12 @@ def _voice_mode_defaults() -> dict[str, object]:
         "enabled": False,
         "record_seconds": "5",
         "silence_threshold": "0.012",
+        # End-of-speech detector tuning (record-until-silence):
+        # - adaptive gate uses an estimated noise floor to reduce premature cut-offs on noisy mics
+        # - hysteresis counts "silence" only when RMS drops below threshold * hysteresis
+        "eos_adaptive_enabled": True,
+        "eos_noise_margin": "0.004",
+        "eos_hysteresis": "0.82",
         # End-of-speech detection: after speech begins, stop recording once we've observed this
         # much trailing silence (ms). Set to 0 to use fixed-length recording windows only.
         "speech_end_silence_ms": "750",
@@ -7602,6 +7608,7 @@ WEB_POPUP_HTML = r"""
       border: 1px solid rgba(214,195,255,.14);
       color: var(--text);
       cursor: pointer;
+      font-weight: 900;
       transition: transform .16s ease, background .16s ease, border-color .16s ease, box-shadow .16s ease;
     }
     .voice-nav-btn {
@@ -7609,14 +7616,40 @@ WEB_POPUP_HTML = r"""
       box-shadow: inset 0 1px 0 rgba(255,255,255,.10);
     }
     .voice-stop-btn-top {
-      background: linear-gradient(180deg, rgba(198,180,255,.22), rgba(198,180,255,.12));
-      box-shadow: inset 0 1px 0 rgba(255,255,255,.12), 0 10px 24px rgba(107,82,173,.18);
+      position: relative;
+      background: linear-gradient(180deg, rgba(255, 90, 126, .34), rgba(255, 90, 126, .16));
+      border-color: rgba(255, 116, 152, .34);
+      box-shadow:
+        inset 0 1px 0 rgba(255,255,255,.14),
+        0 16px 34px rgba(255, 90, 126, .18),
+        0 0 0 1px rgba(255, 90, 126, .12);
     }
+    .voice-stop-btn-top::before {
+      content: '';
+      position: absolute;
+      inset: -3px;
+      border-radius: 999px;
+      background: radial-gradient(circle at 30% 20%, rgba(255,255,255,.20), transparent 46%),
+                  radial-gradient(circle at 70% 70%, rgba(255, 90, 126, .26), transparent 56%);
+      opacity: .55;
+      pointer-events: none;
+      filter: blur(6px);
+      transition: opacity .2s ease;
+    }
+    .voice-stop-btn-top:hover::before { opacity: .85; }
     .voice-nav-btn:hover,
     .voice-stop-btn-top:hover {
       transform: translateY(-1px);
       border-color: rgba(214,195,255,.24);
     }
+    .voice-stop-btn-top:hover {
+      border-color: rgba(255, 116, 152, .46);
+      box-shadow:
+        inset 0 1px 0 rgba(255,255,255,.16),
+        0 18px 40px rgba(255, 90, 126, .24),
+        0 0 0 1px rgba(255, 90, 126, .18);
+    }
+    .voice-stop-btn-top:active { transform: translateY(0px); }
     .voice-top { text-align: center; }
     .voice-pill { display: inline-flex; padding: 8px 12px; border-radius: 999px; background: rgba(255,255,255,.04); border: 1px solid rgba(214,195,255,.12); font-size: 11px; font-weight: 700; color: #ddd6fe; }
     .voice-name { margin-top: 16px; font-size: 15px; font-weight: 800; }
@@ -8898,6 +8931,22 @@ class OneShotSttWorker(QThread):
         except Exception:
             return 0.012
 
+    def _eos_adaptive_enabled(self) -> bool:
+        return bool(self.config.get("eos_adaptive_enabled", True))
+
+    def _eos_noise_margin(self) -> float:
+        try:
+            return float(str(self.config.get("eos_noise_margin", "0.004")))
+        except Exception:
+            return 0.004
+
+    def _eos_hysteresis(self) -> float:
+        try:
+            value = float(str(self.config.get("eos_hysteresis", "0.82")))
+        except Exception:
+            value = 0.82
+        return float(max(0.50, min(0.98, value)))
+
     def _speech_end_silence_ms(self) -> int:
         try:
             return int(float(str(self.config.get("speech_end_silence_ms", "750"))))
@@ -8928,6 +8977,10 @@ class OneShotSttWorker(QThread):
         chunk = float(max(0.25, min(3.0, self._listen_chunk_seconds())))
         min_speech_ms = max(0, int(self._min_speech_ms()))
         threshold = float(self._silence_threshold())
+        hysteresis = float(self._eos_hysteresis())
+        adaptive = bool(self._eos_adaptive_enabled())
+        noise_margin = float(self._eos_noise_margin())
+        noise_floor = max(0.0, threshold * 0.35)
 
         start = time.time()
         silence_ms = 0
@@ -8940,13 +8993,31 @@ class OneShotSttWorker(QThread):
             parts.append(part)
             dur = _wav_duration_seconds(part) or chunk
             rms = _voice_recording_rms(part)
-            if rms >= threshold:
+            if adaptive and ((not speech_seen) or rms < (threshold * hysteresis)):
+                # Best-effort noise floor tracking. EMA keeps it stable without heavy deps.
+                if noise_floor <= 0:
+                    noise_floor = rms
+                else:
+                    noise_floor = (noise_floor * 0.92) + (rms * 0.08)
+            effective = threshold
+            if adaptive:
+                effective = max(threshold, noise_floor + noise_margin)
+                effective = min(effective, threshold * 4.0)
+            silence_cut = effective * hysteresis
+
+            if rms >= effective:
                 speech_seen = True
                 speech_ms += int(dur * 1000.0)
                 silence_ms = 0
             else:
                 if speech_seen:
-                    silence_ms += int(dur * 1000.0)
+                    # Only count silence when we're meaningfully below the silence cut.
+                    # Between (silence_cut..effective) we treat as "soft speech" to avoid cutting
+                    # the user off during quiet syllables or a short breath.
+                    if rms < silence_cut:
+                        silence_ms += int(dur * 1000.0)
+                    else:
+                        silence_ms = 0
             if stop_silence_ms > 0 and speech_seen and speech_ms >= min_speech_ms and silence_ms >= stop_silence_ms:
                 break
 
@@ -9295,6 +9366,22 @@ class VoiceConversationWorker(QThread):
         except Exception:
             return 0.012
 
+    def _eos_adaptive_enabled(self) -> bool:
+        return bool(self.config.get("eos_adaptive_enabled", True))
+
+    def _eos_noise_margin(self) -> float:
+        try:
+            return float(str(self.config.get("eos_noise_margin", "0.004")))
+        except Exception:
+            return 0.004
+
+    def _eos_hysteresis(self) -> float:
+        try:
+            value = float(str(self.config.get("eos_hysteresis", "0.82")))
+        except Exception:
+            value = 0.82
+        return float(max(0.50, min(0.98, value)))
+
     def _barge_in_threshold(self) -> float:
         try:
             configured = float(str(self.config.get("barge_in_threshold", "0.035")))
@@ -9326,6 +9413,10 @@ class VoiceConversationWorker(QThread):
         chunk = float(max(0.25, min(3.0, self._listen_chunk_seconds())))
         min_speech_ms = max(0, int(self._min_speech_ms()))
         threshold = float(self._silence_threshold())
+        hysteresis = float(self._eos_hysteresis())
+        adaptive = bool(self._eos_adaptive_enabled())
+        noise_margin = float(self._eos_noise_margin())
+        noise_floor = max(0.0, threshold * 0.35)
 
         start = time.time()
         silence_ms = 0
@@ -9338,13 +9429,27 @@ class VoiceConversationWorker(QThread):
             parts.append(part)
             dur = _wav_duration_seconds(part) or chunk
             rms = _voice_recording_rms(part)
-            if rms >= threshold:
+            if adaptive and ((not speech_seen) or rms < (threshold * hysteresis)):
+                if noise_floor <= 0:
+                    noise_floor = rms
+                else:
+                    noise_floor = (noise_floor * 0.92) + (rms * 0.08)
+            effective = threshold
+            if adaptive:
+                effective = max(threshold, noise_floor + noise_margin)
+                effective = min(effective, threshold * 4.0)
+            silence_cut = effective * hysteresis
+
+            if rms >= effective:
                 speech_seen = True
                 speech_ms += int(dur * 1000.0)
                 silence_ms = 0
             else:
                 if speech_seen:
-                    silence_ms += int(dur * 1000.0)
+                    if rms < silence_cut:
+                        silence_ms += int(dur * 1000.0)
+                    else:
+                        silence_ms = 0
             if stop_silence_ms > 0 and speech_seen and speech_ms >= min_speech_ms and silence_ms >= stop_silence_ms:
                 break
 
@@ -9392,6 +9497,10 @@ class VoiceConversationWorker(QThread):
                     chunk = float(max(0.25, min(3.0, self._listen_chunk_seconds())))
                     min_speech_ms = max(0, int(self._min_speech_ms()))
                     threshold = float(self._silence_threshold())
+                    hysteresis = float(self._eos_hysteresis())
+                    adaptive = bool(self._eos_adaptive_enabled())
+                    noise_margin = float(self._eos_noise_margin())
+                    noise_floor = max(0.0, threshold * 0.35)
                     start = time.time()
                     silence_ms = 0
                     speech_ms = 0
@@ -9401,14 +9510,28 @@ class VoiceConversationWorker(QThread):
                         part = _record_microphone_wav(chunk)
                         dur = _wav_duration_seconds(part) or chunk
                         rms = _voice_recording_rms(part)
-                        if rms >= threshold:
+                        if adaptive and ((not speech_seen) or rms < (threshold * hysteresis)):
+                            if noise_floor <= 0:
+                                noise_floor = rms
+                            else:
+                                noise_floor = (noise_floor * 0.92) + (rms * 0.08)
+                        effective = threshold
+                        if adaptive:
+                            effective = max(threshold, noise_floor + noise_margin)
+                            effective = min(effective, threshold * 4.0)
+                        silence_cut = effective * hysteresis
+
+                        if rms >= effective:
                             speech_seen = True
                             speech_ms += int(dur * 1000.0)
                             silence_ms = 0
                         else:
                             if speech_seen:
-                                silence_ms += int(dur * 1000.0)
-                        if rms >= threshold:
+                                if rms < silence_cut:
+                                    silence_ms += int(dur * 1000.0)
+                                else:
+                                    silence_ms = 0
+                        if rms >= effective:
                             if stt_backend == "whisper":
                                 piece = self._whisper_stream_transcribe(part, partial[-240:])
                             else:
@@ -10344,6 +10467,18 @@ class VoiceModeDialog(QDialog):
         self.silence_threshold_input = QLineEdit(str(self.config.get("silence_threshold", "0.012")))
         self.silence_threshold_input.setPlaceholderText("Silence threshold, e.g. 0.012")
         form.addWidget(self._labeled("Silence skip threshold", self.silence_threshold_input))
+
+        self.eos_adaptive_check = QCheckBox("Adaptive end-of-speech (recommended)")
+        self.eos_adaptive_check.setToolTip("Estimates mic noise floor so short breaths and quiet syllables are less likely to be cut off.")
+        self.eos_adaptive_check.setChecked(bool(self.config.get("eos_adaptive_enabled", True)))
+        form.addWidget(self.eos_adaptive_check)
+        self.eos_noise_margin_input = QLineEdit(str(self.config.get("eos_noise_margin", "0.004")))
+        self.eos_noise_margin_input.setPlaceholderText("e.g. 0.004")
+        form.addWidget(self._labeled("Adaptive noise margin", self.eos_noise_margin_input))
+        self.eos_hysteresis_input = QLineEdit(str(self.config.get("eos_hysteresis", "0.82")))
+        self.eos_hysteresis_input.setPlaceholderText("0.50 to 0.98 (lower = more forgiving)")
+        form.addWidget(self._labeled("Silence hysteresis ratio", self.eos_hysteresis_input))
+
         self.speech_end_silence_input = QLineEdit(str(self.config.get("speech_end_silence_ms", "750")))
         self.speech_end_silence_input.setPlaceholderText("e.g. 750 (0 disables)")
         form.addWidget(self._labeled("Stop after silence (ms)", self.speech_end_silence_input))
@@ -10642,6 +10777,9 @@ class VoiceModeDialog(QDialog):
                 "enabled": bool(self.enabled_check.isChecked()),
                 "record_seconds": self.record_seconds_input.text().strip() or "5",
                 "silence_threshold": self.silence_threshold_input.text().strip() or "0.012",
+                "eos_adaptive_enabled": bool(self.eos_adaptive_check.isChecked()),
+                "eos_noise_margin": self.eos_noise_margin_input.text().strip() or "0.004",
+                "eos_hysteresis": self.eos_hysteresis_input.text().strip() or "0.82",
                 "speech_end_silence_ms": self.speech_end_silence_input.text().strip() or "750",
                 "listen_chunk_seconds": self.listen_chunk_input.text().strip() or "0.75",
                 "min_speech_ms": self.min_speech_input.text().strip() or "260",
@@ -12568,9 +12706,15 @@ class DemoWindow(QMainWindow):
 
     def keyPressEvent(self, event) -> None:  # type: ignore[override]
         if event.key() == Qt.Key.Key_Escape:
-            self.close()
+            # Hide instead of quitting. Voice mode can keep running in the background.
+            self.hide()
             return
         super().keyPressEvent(event)
+
+    def closeEvent(self, event) -> None:  # type: ignore[override]
+        # Treat "close" like "hide" so the popup can keep its background services alive.
+        self.hide()
+        event.ignore()
 
 
 class PopupCommandServer(QObject):
