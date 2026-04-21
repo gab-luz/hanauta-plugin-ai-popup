@@ -105,119 +105,56 @@ try:
 except Exception:
     WEBENGINE_AVAILABLE = False
 
-PLUGIN_ROOT = Path(__file__).resolve().parent.parent
-
-
-def _resolve_hanauta_src() -> Path:
-    env_hint = Path(str(os.environ.get("HANAUTA_SRC", "")).strip()).expanduser()
-    candidates: list[Path] = []
-    if str(env_hint).strip():
-        candidates.append(env_hint)
-    candidates.append(Path.home() / ".config" / "i3" / "hanauta" / "src")
-    try:
-        candidates.append(PLUGIN_ROOT.parents[2])
-    except Exception:
-        pass
-    for parent in PLUGIN_ROOT.parents:
-        candidates.append(parent / "hanauta" / "src")
-        candidates.append(parent / "src")
-    seen: set[str] = set()
-    for candidate in candidates:
-        try:
-            resolved = candidate.expanduser().resolve()
-        except Exception:
-            resolved = candidate.expanduser()
-        key = str(resolved)
-        if key in seen:
-            continue
-        seen.add(key)
-        if (resolved / "pyqt" / "shared" / "theme.py").exists():
-            return resolved
-    return Path.home() / ".config" / "i3" / "hanauta" / "src"
-
-
-APP_DIR = _resolve_hanauta_src()
-if str(APP_DIR) not in sys.path:
-    sys.path.insert(0, str(APP_DIR))
-
-from pyqt.shared.theme import load_theme_palette, palette_mtime, relative_luminance
-from pyqt.shared.button_helpers import create_close_button
-try:
-    from pyqt.shared.plugin_bridge import trigger_fullscreen_alert
-except Exception:
-    def trigger_fullscreen_alert(title: str, body: str, severity: str = "discrete") -> bool:
-        del title, body, severity
-        return False
-
-THEME = load_theme_palette()
-AI_ASSETS_DIR = (
-    PLUGIN_ROOT / "assets"
-    if (PLUGIN_ROOT / "assets" / "backend-icons").exists()
-    else APP_DIR / "pyqt" / "ai-popup" / "assets"
+from .fonts import button_css_weight, load_material_icon_font, load_ui_font
+from .runtime import (
+    AI_ASSETS_DIR,
+    AI_POPUP_CRASH_FILE,
+    AI_POPUP_ERROR_LOG_FILE,
+    AI_POPUP_LOG_FILE,
+    AI_STATE_DIR,
+    APP_DIR,
+    BACKEND_ICONS_DIR,
+    BACKEND_SETTINGS_FILE,
+    CHARACTER_AVATARS_DIR,
+    CHARACTER_LIBRARY_FILE,
+    CHAT_ARCHIVES_DIR,
+    GGUF_GALLERY_DIR,
+    IMAGE_OUTPUT_DIR,
+    KOBOLDCPP_RELEASE_STATE_FILE,
+    KOKORO_SYNTH_LOG_FILE,
+    KOKORO_ONNX_REPO,
+    KOKORO_TTS_RELEASE_URL,
+    MODEL_CATALOG_FILE,
+    NOTIFICATION_CENTER_SETTINGS_FILE,
+    POCKET_ONNX_REPO,
+    POCKETTTS_LANGUAGE_CODES,
+    POCKETTTS_LANGUAGES,
+    POCKETTTS_PRESET_VOICES,
+    POCKETTTS_REFERENCE_DIR,
+    POCKETTTS_SERVER_BINARY_NAME,
+    POCKETTTS_SERVER_INFER_SCRIPT_NAME,
+    POCKETTTS_SERVER_INSTALL_DIR,
+    POCKETTTS_SERVER_SRC_DIR,
+    POCKETTTS_VOICES_REPO,
+    PLUGIN_ROOT,
+    SECURE_DB_FILE,
+    SECURE_KEY_FILE,
+    TTS_MODELS_DIR,
+    TTS_OUTPUT_DIR,
+    VOICE_MEMORY_DB_FILE,
+    VOICE_PRIVACY_CODEBOOK_FILE,
+    VOICE_RECORDINGS_DIR,
+    VOICE_STOP_EXPRESSIONS_FILE,
+    VOICE_TOKEN_COMPRESSOR_FILE,
+    VOICE_TOKEN_COMPRESSOR_SAMPLE_FILE,
+    create_close_button,
+    palette_mtime,
+    trigger_fullscreen_alert,
 )
-BACKEND_ICONS_DIR = AI_ASSETS_DIR / "backend-icons"
-AI_STATE_DIR = Path.home() / ".local" / "state" / "hanauta" / "ai-popup"
-BACKEND_SETTINGS_FILE = AI_STATE_DIR / "backend_settings.json"
-SECURE_DB_FILE = AI_STATE_DIR / "secure_store.sqlite3"
-SECURE_KEY_FILE = AI_STATE_DIR / "secure_store.key"
-IMAGE_OUTPUT_DIR = AI_STATE_DIR / "generated-images"
-TTS_MODELS_DIR = AI_STATE_DIR / "tts-models"
-TTS_OUTPUT_DIR = AI_STATE_DIR / "tts-audio"
-VOICE_RECORDINGS_DIR = AI_STATE_DIR / "voice-recordings"
-CHAT_ARCHIVES_DIR = AI_STATE_DIR / "chat-archives"
-CHARACTER_LIBRARY_FILE = AI_STATE_DIR / "characters.json"
-CHARACTER_AVATARS_DIR = AI_STATE_DIR / "characters-avatars"
-VOICE_STOP_EXPRESSIONS_FILE = PLUGIN_ROOT / "voice-stop-expressions.json"
-VOICE_PRIVACY_CODEBOOK_FILE = AI_STATE_DIR / "voice-privacy-codebook.txt"
-VOICE_TOKEN_COMPRESSOR_SAMPLE_FILE = PLUGIN_ROOT / "voice-token-compressor.sample.json"
-VOICE_TOKEN_COMPRESSOR_FILE = AI_STATE_DIR / "voice-token-compressor.json"
-VOICE_MEMORY_DB_FILE = AI_STATE_DIR / "voice-memory.sqlite3"
-NOTIFICATION_CENTER_STATE_DIR = Path.home() / ".local" / "state" / "hanauta" / "notification-center"
-NOTIFICATION_CENTER_SETTINGS_FILE = NOTIFICATION_CENTER_STATE_DIR / "settings.json"
-KOKORO_ONNX_REPO = "onnx-community/Kokoro-82M-ONNX"
-POCKET_ONNX_REPO = "KevinAHM/pocket-tts-onnx"
-KOKORO_TTS_RELEASE_REPO = "gab-luz/hanauta"
-KOKORO_TTS_RELEASE_TAG = "TTS"
-KOKORO_TTS_RELEASE_ASSET = "kokorotts-quantized-bundle.zip"
-KOKORO_TTS_RELEASE_URL = (
-    f"https://github.com/{KOKORO_TTS_RELEASE_REPO}/releases/download/"
-    f"{KOKORO_TTS_RELEASE_TAG}/{KOKORO_TTS_RELEASE_ASSET}"
-)
-_KOKORO_RUNTIME_READY = False
-POCKETTTS_SERVER_SRC_DIR = PLUGIN_ROOT / "onnx" / "cpp" / "pockettts_server"
-POCKETTTS_SERVER_INSTALL_DIR = AI_STATE_DIR / "pockettts-server"
-POCKETTTS_SERVER_BINARY_NAME = "pockettts_server"
-POCKETTTS_SERVER_INFER_SCRIPT_NAME = "pockettts_infer.py"
-POCKETTTS_REFERENCE_DIR = AI_STATE_DIR / "pockettts-references"
-POCKETTTS_VOICES_REPO = "kyutai/tts-voices"
-POCKETTTS_PRESET_VOICES: list[tuple[str, str]] = [
-    ("alba", "alba-mackenna/casual.wav"),
-    ("marius", "voice-donations/Selfie.wav"),
-    ("javert", "voice-donations/Butter.wav"),
-    ("jean", "ears/p010/freeform_speech_01.wav"),
-    ("fantine", "vctk/p244_023.wav"),
-    ("cosette", "expresso/ex04-ex02_confused_001_channel1_499s.wav"),
-    ("eponine", "vctk/p262_023.wav"),
-    ("azelma", "vctk/p303_023.wav"),
-]
-POCKETTTS_LANGUAGES: list[tuple[str, str]] = [
-    ("Auto", "auto"),
-    ("English", "english"),
-    ("Français", "french"),
-    ("Deutsch", "german"),
-    ("Português", "portuguese"),
-    ("Italiano", "italian"),
-    ("Español", "spanish"),
-]
-POCKETTTS_LANGUAGE_CODES = {code for _label, code in POCKETTTS_LANGUAGES}
-AI_POPUP_LOG_FILE = AI_STATE_DIR / "ai_popup.log"
-AI_POPUP_ERROR_LOG_FILE = AI_STATE_DIR / "ai_popup-errors.log"
-AI_POPUP_CRASH_FILE = AI_STATE_DIR / "ai_popup.crash.log"
-KOKORO_SYNTH_LOG_FILE = AI_STATE_DIR / "kokoro_synth_worker.log"
-KOBOLDCPP_RELEASE_STATE_FILE = AI_STATE_DIR / "koboldcpp-release-state.json"
+from .style import *  # noqa: F403
+
 _WAVEFORM_CACHE: dict[str, list[int]] = {}
-MODEL_CATALOG_FILE = PLUGIN_ROOT / "model_catalog.json"
-GGUF_GALLERY_DIR = AI_STATE_DIR / "gguf-gallery"
+_KOKORO_RUNTIME_READY = False
 
 
 def _format_bytes(value: int) -> str:
@@ -466,128 +403,6 @@ def _setup_diagnostics() -> None:
 _setup_diagnostics()
 
 
-def rgba(color: str, alpha: float) -> str:
-    q = QColor(color)
-    q.setAlphaF(max(0.0, min(1.0, alpha)))
-    return q.name(QColor.NameFormat.HexArgb)
-
-
-def mix(color_a: str, color_b: str, amount: float) -> str:
-    a = QColor(color_a)
-    b = QColor(color_b)
-    t = max(0.0, min(1.0, amount))
-    r = round(a.red() + (b.red() - a.red()) * t)
-    g = round(a.green() + (b.green() - a.green()) * t)
-    b_ = round(a.blue() + (b.blue() - a.blue()) * t)
-    return QColor(r, g, b_).name()
-
-
-def _is_global_dark_theme_enabled() -> bool:
-    try:
-        raw = NOTIFICATION_CENTER_SETTINGS_FILE.read_text(encoding="utf-8")
-        payload = json.loads(raw)
-    except Exception:
-        return False
-    appearance = payload.get("appearance", {})
-    if not isinstance(appearance, dict):
-        return False
-    theme_choice = str(appearance.get("theme_choice", "")).strip().lower()
-    theme_mode = str(appearance.get("theme_mode", "")).strip().lower()
-    return theme_choice == "dark" or theme_mode == "dark"
-
-
-def focused_workspace() -> dict[str, object] | None:
-    try:
-        output = subprocess.check_output(["i3-msg", "-t", "get_workspaces"], text=True)
-        workspaces = json.loads(output)
-    except Exception:
-        return None
-    if not isinstance(workspaces, list):
-        return None
-    for workspace in workspaces:
-        if isinstance(workspace, dict) and workspace.get("focused"):
-            return workspace
-    return None
-
-
-def apply_theme_globals() -> None:
-    global THEME, PANEL_BG, PANEL_BG_DEEP, PANEL_BG_FLOAT
-    global CARD_BG, CARD_BG_SOFT, CARD_BG_RAISED, CARD_BG_ALT
-    global BORDER, BORDER_SOFT, BORDER_HARD, BORDER_ACCENT
-    global TEXT, TEXT_MID, TEXT_DIM, TEXT_SOFT
-    global ACCENT, ACCENT_SOFT, ACCENT_ALT, ACCENT_GLOW
-    global USER_BG, ASSISTANT_BG, INPUT_BG, BOTTOM_BG
-    global SHADOW, HOVER_BG, HERO_TOP, HERO_BOTTOM
-    global UI_TEXT_STRONG, UI_TEXT_MUTED, UI_ICON_DIM, UI_ICON_ACTIVE, CHAT_TEXT, CHAT_SURFACE_BG
-
-    THEME = load_theme_palette()
-    PANEL_BG = THEME.panel_bg
-    PANEL_BG_DEEP = mix(THEME.panel_bg, "#000000", 0.18)
-    PANEL_BG_FLOAT = rgba(THEME.panel_bg, 0.96)
-
-    CARD_BG = THEME.app_running_bg
-    CARD_BG_SOFT = THEME.chip_bg
-    CARD_BG_RAISED = mix(THEME.app_running_bg, "#ffffff", 0.04)
-    CARD_BG_ALT = rgba(THEME.surface_container, 0.88)
-
-    BORDER = THEME.panel_border
-    BORDER_SOFT = THEME.chip_border
-    BORDER_HARD = rgba(THEME.panel_border, 0.92)
-    BORDER_ACCENT = rgba(THEME.app_focused_border, 0.95)
-
-    TEXT = THEME.text
-    TEXT_MID = THEME.text_muted
-    TEXT_DIM = THEME.inactive
-    TEXT_SOFT = mix(THEME.text_muted, THEME.inactive, 0.40)
-
-    ACCENT = THEME.primary
-    ACCENT_SOFT = THEME.accent_soft
-    ACCENT_ALT = THEME.tertiary
-    ACCENT_GLOW = rgba(THEME.primary, 0.22)
-
-    USER_BG = mix(THEME.media_active_start, THEME.panel_bg, 0.18)
-    ASSISTANT_BG = mix(THEME.app_running_bg, THEME.panel_bg, 0.05)
-    INPUT_BG = rgba(THEME.surface_container, 0.98)
-    BOTTOM_BG = rgba(THEME.chip_bg, 0.90)
-
-    SHADOW = rgba(THEME.primary, 0.16)
-    HOVER_BG = rgba(THEME.hover_bg, 0.92)
-    HERO_TOP = mix(THEME.panel_bg, THEME.primary, 0.16)
-    HERO_BOTTOM = mix(THEME.app_running_bg, THEME.panel_bg, 0.24)
-
-    dark_surface = relative_luminance(THEME.surface_container_high) < 0.42
-    if _is_global_dark_theme_enabled() or dark_surface:
-        UI_TEXT_STRONG = "#F6F8FF"
-        UI_TEXT_MUTED = rgba(UI_TEXT_STRONG, 0.84)
-        UI_ICON_DIM = rgba(UI_TEXT_STRONG, 0.84)
-        UI_ICON_ACTIVE = UI_TEXT_STRONG
-        CHAT_TEXT = "#F6F8FF"
-        CHAT_SURFACE_BG = mix(THEME.panel_bg, "#000000", 0.10)
-    else:
-        UI_TEXT_STRONG = TEXT
-        UI_TEXT_MUTED = TEXT_MID
-        UI_ICON_DIM = TEXT_DIM
-        UI_ICON_ACTIVE = TEXT
-        CHAT_TEXT = TEXT
-        CHAT_SURFACE_BG = mix(THEME.surface_container, "#ffffff", 0.22)
-
-
-apply_theme_globals()
-
-
-def load_ui_font() -> str:
-    font_dir = APP_DIR.parent / "assets" / "fonts"
-    if QFont("Rubik").exactMatch():
-        return "Rubik"
-    for name in ("Rubik-VariableFont_wght.ttf", "Rubik-Italic-VariableFont_wght.ttf", "Inter-Regular.ttf", "Inter.ttf"):
-        font_id = QFontDatabase.addApplicationFont(str(font_dir / name))
-        if font_id >= 0:
-            families = QFontDatabase.applicationFontFamilies(font_id)
-            if families:
-                return families[0]
-    return "Rubik"
-
-
 def _is_rubik_font(ui_font: str) -> bool:
     return "rubik" in (ui_font or "").strip().lower()
 
@@ -597,23 +412,7 @@ def _button_qfont_weight(ui_font: str) -> QFont.Weight:
 
 
 def _button_css_weight(ui_font: str) -> int:
-    return 500 if _is_rubik_font(ui_font) else 600
-
-
-def load_material_icon_font() -> str:
-    font_dir = APP_DIR.parent / "assets" / "fonts"
-    for name in (
-        "MaterialIcons-Regular.ttf",
-        "MaterialIconsOutlined-Regular.otf",
-        "MaterialSymbolsOutlined.ttf",
-        "MaterialSymbolsRounded.ttf",
-    ):
-        font_id = QFontDatabase.addApplicationFont(str(font_dir / name))
-        if font_id >= 0:
-            families = QFontDatabase.applicationFontFamilies(font_id)
-            if families:
-                return families[0]
-    return "Material Icons"
+    return button_css_weight(ui_font)
 
 
 class SurfaceFrame(QFrame):
