@@ -34,6 +34,8 @@ from pathlib import Path
 from urllib import request, error
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
+from hanauta_ai_popup.prompt_smartness import PromptSmartness
+
 # Qt WebEngine can crash on some Linux/GBM GPU stacks. Use conservative flags only.
 _chromium_flags = os.environ.get("QTWEBENGINE_CHROMIUM_FLAGS", "").strip()
 _extra_flags = [
@@ -308,40 +310,11 @@ VOICE_EMOTIONS = {
 
 
 def _strip_simple_markdown(text: str) -> str:
-    """
-    Minimal markdown cleanup for speech/UI. We only strip the most common noisy markers
-    (bold/italic/code fences) without attempting full markdown parsing.
-    """
-    s = str(text or "")
-    # Code fences / inline code.
-    s = s.replace("```", "")
-    s = s.replace("`", "")
-    # Bold markers (paired first, then leftovers).
-    s = re.sub(r"\*\*([^\n]+?)\*\*", r"\1", s)
-    s = re.sub(r"__([^\n]+?)__", r"\1", s)
-    s = s.replace("**", "").replace("__", "")
-    # Leave single '*' unless it looks like a trailing artifact.
-    s = re.sub(r"\*{3,}", "", s)
-    return s
+    return _PROMPT_SMARTNESS.strip_simple_markdown(text)
 
 
 def _render_llm_text_html(text: str) -> str:
-    """
-    Render assistant text as safe HTML, with a tiny subset of markdown (bold only) and
-    best-effort cleanup of common malformed Gemma/GGUF outputs like '**text***'.
-    """
-    raw = str(text or "")
-    escaped = html.escape(raw)
-    # Bold: only treat it as markdown when the start/end tags exist.
-    # Also handle common malformed outputs like '**text***' (extra trailing '*').
-    try:
-        cooked = re.sub(r"\*\*([^*\n][^\n]*?)\*\*\*?", r"<strong>\1</strong>", escaped)
-    except Exception:
-        cooked = escaped
-    # Remove leftover markers that weren't paired.
-    cooked = cooked.replace("**", "").replace("__", "")
-    cooked = cooked.replace("\n", "<br>")
-    return f"<p>{cooked}</p>"
+    return _PROMPT_SMARTNESS.render_llm_text_html(text)
 
 
 def _emotion_prompt_suffix(enabled: bool) -> str:
@@ -419,43 +392,7 @@ def _write_privacy_codebook(config: dict[str, object]) -> str:
 
 
 def _ensure_voice_token_compressor_file() -> Path:
-    """
-    Ensure a user-editable JSON compressor file exists in Hanauta state.
-    This reduces prompt token usage for voice mode without touching the repo copy.
-    """
-    AI_STATE_DIR.mkdir(parents=True, exist_ok=True)
-    try:
-        if VOICE_TOKEN_COMPRESSOR_FILE.exists():
-            return VOICE_TOKEN_COMPRESSOR_FILE
-        if VOICE_TOKEN_COMPRESSOR_SAMPLE_FILE.exists():
-            shutil.copy2(VOICE_TOKEN_COMPRESSOR_SAMPLE_FILE, VOICE_TOKEN_COMPRESSOR_FILE)
-            _chmod_private(VOICE_TOKEN_COMPRESSOR_FILE)
-            return VOICE_TOKEN_COMPRESSOR_FILE
-    except Exception:
-        pass
-    # Last resort: write a tiny default.
-    try:
-        VOICE_TOKEN_COMPRESSOR_FILE.write_text(
-            json.dumps(
-                {
-                    "version": 1,
-                    "collapse_whitespace": True,
-                    "filler_words": ["um", "uh", "erm"],
-                    "replace_phrases": {"please": ""},
-                    "drop_sentences_containing": [],
-                    "max_words": 90,
-                    "max_chars": 560,
-                },
-                ensure_ascii=False,
-                indent=2,
-            )
-            + "\n",
-            encoding="utf-8",
-        )
-        _chmod_private(VOICE_TOKEN_COMPRESSOR_FILE)
-    except Exception:
-        pass
-    return VOICE_TOKEN_COMPRESSOR_FILE
+    return _PROMPT_SMARTNESS.ensure_token_compressor_file()
 
 
 def _setup_diagnostics() -> None:
@@ -1721,6 +1658,18 @@ def _api_url_from_host(host: str) -> str:
     return f"http://{clean}"
 
 
+_PROMPT_SMARTNESS = PromptSmartness(
+    state_dir=AI_STATE_DIR,
+    token_compressor_sample_file=VOICE_TOKEN_COMPRESSOR_SAMPLE_FILE,
+    token_compressor_file=VOICE_TOKEN_COMPRESSOR_FILE,
+    memory_db_file=VOICE_MEMORY_DB_FILE,
+    http_post_json=_http_post_json,
+    api_url_from_host=_api_url_from_host,
+    load_secret=secure_load_secret,
+    chmod_private=_chmod_private,
+)
+
+
 def _voice_recording_rms(audio_path: Path) -> float:
     try:
         import audioop
@@ -2457,145 +2406,20 @@ def _voice_token_saver_enabled(
 
 
 def _load_voice_token_compressor() -> dict[str, object]:
-    _ensure_voice_token_compressor_file()
-    try:
-        raw = VOICE_TOKEN_COMPRESSOR_FILE.read_text(encoding="utf-8")
-        data = json.loads(raw)
-        return data if isinstance(data, dict) else {}
-    except Exception:
-        return {}
+    return _PROMPT_SMARTNESS.load_token_compressor()
 
 
 def _compress_voice_prompt(text: str, config: dict[str, object]) -> str:
-    """
-    Compress a voice prompt (typically Whisper transcript) to reduce prompt tokens.
-    This is intentionally dumb but safe: we escape all user-provided phrases and never
-    compile arbitrary regex patterns.
-    """
-    original = str(text or "").strip()
-    if not original:
-        return ""
-    cfg = _load_voice_token_compressor()
-    s = original
-
-    def _ci_sub(needle: str, repl: str) -> None:
-        nonlocal s
-        clean = str(needle or "").strip()
-        if not clean:
-            return
-        try:
-            s = re.sub(re.escape(clean), str(repl), s, flags=re.IGNORECASE)
-        except Exception:
-            # Shouldn't happen because we escape, but keep it bulletproof.
-            s = s.replace(clean, str(repl))
-
-    # Replace phrases (case-insensitive).
-    replace_phrases = cfg.get("replace_phrases", {})
-    if isinstance(replace_phrases, dict):
-        for k, v in replace_phrases.items():
-            _ci_sub(str(k), str(v))
-
-    # Remove filler words/phrases.
-    filler = cfg.get("filler_words", [])
-    if isinstance(filler, list):
-        for word in filler:
-            w = str(word or "").strip()
-            if not w:
-                continue
-            # Word-ish boundary if it looks like a single token, else phrase match.
-            if " " in w:
-                _ci_sub(w, "")
-            else:
-                try:
-                    s = re.sub(rf"(?i)\\b{re.escape(w)}\\b", "", s)
-                except Exception:
-                    _ci_sub(w, "")
-
-    # Drop sentences containing specific phrases.
-    drop = cfg.get("drop_sentences_containing", [])
-    if isinstance(drop, list) and drop:
-        try:
-            parts = re.split(r"(?<=[\\.!\\?])\\s+|\\n+", s)
-        except Exception:
-            parts = [s]
-        kept: list[str] = []
-        for part in parts:
-            p = str(part).strip()
-            if not p:
-                continue
-            low = p.lower()
-            if any(str(item).strip().lower() in low for item in drop if str(item).strip()):
-                continue
-            kept.append(p)
-        if kept:
-            s = " ".join(kept)
-
-    if bool(cfg.get("collapse_whitespace", True)):
-        s = " ".join(s.split())
-
-    # Clamp length. Keep the tail (usually where the actual ask ends up).
-    try:
-        max_words = int(cfg.get("max_words", 90) or 0)
-    except Exception:
-        max_words = 90
-    if max_words > 0:
-        words = s.split()
-        if len(words) > max_words:
-            s = " ".join(words[-max_words:])
-
-    try:
-        max_chars = int(cfg.get("max_chars", 560) or 0)
-    except Exception:
-        max_chars = 560
-    if max_chars > 0 and len(s) > max_chars:
-        s = s[-max_chars:].lstrip()
-
-    # Never return empty if the original had content.
-    return s.strip() or original
+    del config
+    return _PROMPT_SMARTNESS.compress_voice_prompt(text)
 
 
 def _cosine_similarity(a: list[float], b: list[float]) -> float:
-    if not a or not b:
-        return -1.0
-    n = min(len(a), len(b))
-    dot = 0.0
-    sa = 0.0
-    sb = 0.0
-    for i in range(n):
-        x = float(a[i])
-        y = float(b[i])
-        dot += x * y
-        sa += x * x
-        sb += y * y
-    denom = math.sqrt(sa) * math.sqrt(sb)
-    return (dot / denom) if denom > 0 else -1.0
+    return _PROMPT_SMARTNESS.cosine_similarity(a, b)
 
 
 def _fetch_openai_style_embedding(host: str, model: str, text: str, api_key: str = "") -> list[float]:
-    headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
-    payload: dict[str, object] = {"model": model.strip(), "input": text}
-    response = _http_post_json(
-        f"{_api_url_from_host(host)}/v1/embeddings",
-        payload,
-        timeout=60.0,
-        headers=headers,
-    )
-    data = response.get("data", [])
-    if not isinstance(data, list) or not data:
-        return []
-    first = data[0]
-    if not isinstance(first, dict):
-        return []
-    embedding = first.get("embedding", [])
-    if not isinstance(embedding, list):
-        return []
-    out: list[float] = []
-    for value in embedding:
-        try:
-            out.append(float(value))
-        except Exception:
-            out.append(0.0)
-    return out
+    return _PROMPT_SMARTNESS.fetch_openai_style_embedding(host, model, text, api_key)
 
 
 def _voice_memory_enabled(config: dict[str, object]) -> bool:
@@ -2603,40 +2427,11 @@ def _voice_memory_enabled(config: dict[str, object]) -> bool:
 
 
 def _voice_memory_db_init(conn: sqlite3.Connection) -> None:
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS voice_memory ("
-        "id INTEGER PRIMARY KEY AUTOINCREMENT,"
-        "role TEXT NOT NULL,"
-        "content TEXT NOT NULL,"
-        "embedding TEXT NOT NULL,"
-        "created_at REAL NOT NULL"
-        ")"
-    )
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_voice_memory_created_at ON voice_memory(created_at)")
-    conn.commit()
+    _PROMPT_SMARTNESS.memory_db_init(conn)
 
 
 def _voice_memory_add(role: str, content: str, embedding: list[float]) -> None:
-    clean = str(content or "").strip()
-    if not clean or not embedding:
-        return
-    AI_STATE_DIR.mkdir(parents=True, exist_ok=True)
-    with sqlite3.connect(str(VOICE_MEMORY_DB_FILE)) as conn:
-        _voice_memory_db_init(conn)
-        conn.execute(
-            "INSERT INTO voice_memory(role, content, embedding, created_at) VALUES(?,?,?,?)",
-            (str(role or "user"), clean[:4000], json.dumps(embedding), float(time.time())),
-        )
-        # Best-effort pruning.
-        try:
-            max_rows = 2500
-            conn.execute(
-                "DELETE FROM voice_memory WHERE id NOT IN (SELECT id FROM voice_memory ORDER BY id DESC LIMIT ?)",
-                (max_rows,),
-            )
-        except Exception:
-            pass
-        conn.commit()
+    _PROMPT_SMARTNESS.memory_add(role, content, embedding)
 
 
 def _voice_memory_recall(config: dict[str, object], query: str) -> str:
@@ -2645,62 +2440,15 @@ def _voice_memory_recall(config: dict[str, object], query: str) -> str:
     host = str(config.get("memory_host", "")).strip()
     model = str(config.get("memory_model", "")).strip() or "nomic-embed-text-v2-moe"
     api_key = secure_load_secret("voice_mode:memory_api_key").strip()
-    query_emb = _fetch_openai_style_embedding(host, model, str(query or "").strip(), api_key)
-    if not query_emb:
-        return ""
     try:
         top_k = int(str(config.get("memory_top_k", "4")).strip() or "4")
     except Exception:
         top_k = 4
-    top_k = max(0, min(12, top_k))
-    if top_k <= 0:
-        return ""
     try:
         max_chars = int(str(config.get("memory_max_chars", "1100")).strip() or "1100")
     except Exception:
         max_chars = 1100
-    max_chars = max(200, min(4000, max_chars))
-
-    AI_STATE_DIR.mkdir(parents=True, exist_ok=True)
-    scored: list[tuple[float, str, str]] = []
-    with sqlite3.connect(str(VOICE_MEMORY_DB_FILE)) as conn:
-        _voice_memory_db_init(conn)
-        rows = conn.execute(
-            "SELECT role, content, embedding FROM voice_memory ORDER BY id DESC LIMIT 450"
-        ).fetchall()
-    for role, content, emb_json in rows:
-        try:
-            emb = json.loads(emb_json)
-        except Exception:
-            emb = []
-        if not isinstance(emb, list):
-            continue
-        try:
-            emb_floats = [float(x) for x in emb]
-        except Exception:
-            continue
-        score = _cosine_similarity(query_emb, emb_floats)
-        if score <= 0:
-            continue
-        scored.append((score, str(role), str(content)))
-    if not scored:
-        return ""
-    scored.sort(key=lambda t: t[0], reverse=True)
-
-    lines: list[str] = []
-    used = 0
-    for score, role, content in scored[:top_k]:
-        del score
-        prefix = "User" if role == "user" else "Assistant"
-        snippet = " ".join(str(content).split())
-        if len(snippet) > 420:
-            snippet = snippet[:420].rstrip() + "..."
-        line = f"{prefix}: {snippet}"
-        if used + len(line) + 1 > max_chars:
-            break
-        lines.append(line)
-        used += len(line) + 1
-    return "\n".join(lines).strip()
+    return _PROMPT_SMARTNESS.memory_recall(host, model, api_key, query, top_k, max_chars)
 
 
 def _voice_memory_store_pair(config: dict[str, object], user_text: str, assistant_text: str) -> None:
@@ -2721,11 +2469,11 @@ def _voice_memory_store_pair(config: dict[str, object], user_text: str, assistan
             pass
     try:
         if user_clean:
-            emb_u = _fetch_openai_style_embedding(host, model, user_clean, api_key)
-            _voice_memory_add("user", user_clean, emb_u)
+            emb_u = _PROMPT_SMARTNESS.fetch_openai_style_embedding(host, model, user_clean, api_key)
+            _PROMPT_SMARTNESS.memory_add("user", user_clean, emb_u)
         if assistant_clean:
-            emb_a = _fetch_openai_style_embedding(host, model, assistant_clean, api_key)
-            _voice_memory_add("assistant", assistant_clean, emb_a)
+            emb_a = _PROMPT_SMARTNESS.fetch_openai_style_embedding(host, model, assistant_clean, api_key)
+            _PROMPT_SMARTNESS.memory_add("assistant", assistant_clean, emb_a)
     except Exception:
         # Memory is best-effort; never crash the conversation.
         return
