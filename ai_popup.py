@@ -3593,7 +3593,12 @@ def _stop_koboldcpp(payload: dict[str, object]) -> tuple[bool, str]:
         payload["koboldcpp_pid"] = 0
         return False, "No tracked KoboldCpp process is running."
     try:
-        os.kill(pid, signal.SIGTERM)
+        # KoboldCpp can spawn worker children. When we started it with start_new_session=True,
+        # it becomes a process group leader, so stop the whole group if possible.
+        try:
+            os.killpg(pid, signal.SIGTERM)
+        except Exception:
+            os.kill(pid, signal.SIGTERM)
     except OSError as exc:
         return False, f"Unable to stop KoboldCpp: {exc}"
     payload["koboldcpp_pid"] = 0
@@ -6594,8 +6599,8 @@ WEB_POPUP_HTML = r"""
       --panel: rgba(24, 20, 36, 0.96);
       --panel-2: rgba(33, 28, 48, 0.86);
       --panel-3: rgba(255,255,255,0.04);
-      --line: rgba(214, 195, 255, 0.10);
-      --line-2: rgba(214, 195, 255, 0.18);
+      --line: rgba(214, 195, 255, 0.06);
+      --line-2: rgba(214, 195, 255, 0.12);
       --text: #f4effd;
       --text-dim: rgba(244,239,253,0.66);
       --accent: #c6b4ff;
@@ -6637,7 +6642,7 @@ WEB_POPUP_HTML = r"""
       flex: 1;
       min-height: 0;
       border-radius: 30px;
-      border: 1px solid var(--line);
+      border: 1px solid rgba(214, 195, 255, 0.07);
       background: linear-gradient(180deg, rgba(27,22,40,.96), rgba(16,13,24,.98));
       box-shadow: var(--shadow);
       overflow: hidden;
@@ -6662,7 +6667,7 @@ WEB_POPUP_HTML = r"""
     }
     .header {
       padding: 14px 16px 12px 16px;
-      border-bottom: 1px solid var(--line);
+      border-bottom: 1px solid rgba(214, 195, 255, 0.06);
       background: linear-gradient(180deg, rgba(255,255,255,.03), rgba(255,255,255,.01));
       display: flex;
       align-items: center;
@@ -6720,7 +6725,7 @@ WEB_POPUP_HTML = r"""
     .status { font-size: 12px; font-weight: 600; color: var(--text-dim); margin-top: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .actions { display: flex; gap: 8px; }
     .icon-btn, .pill, .send-btn, .voice-stop {
-      border: 1px solid var(--line);
+      border: 0;
       background: rgba(255,255,255,.04);
       color: var(--text);
       border-radius: 999px;
@@ -6744,7 +6749,7 @@ WEB_POPUP_HTML = r"""
       flex: 1;
       min-height: 0;
       border-radius: 24px;
-      border: 1px solid var(--line);
+      border: 0;
       background: rgba(255,255,255,.03);
       padding: 12px;
       overflow-y: auto;
@@ -6825,7 +6830,7 @@ WEB_POPUP_HTML = r"""
     }
     .composer {
       border-radius: 22px;
-      border: 1px solid var(--line);
+      border: 0;
       background: rgba(255,255,255,.04);
       padding: 12px;
     }
@@ -6833,7 +6838,7 @@ WEB_POPUP_HTML = r"""
       width: 100%;
       min-height: 76px;
       resize: none;
-      border: 1px solid rgba(255,255,255,.06);
+      border: 0;
       background: rgba(255,255,255,.04);
       color: var(--text);
       border-radius: 18px;
@@ -10412,6 +10417,26 @@ class SidebarPanel(QFrame):
                     message,
                     tone="success" if ok else "warn",
                     chips=["voice", "llm", "stop"],
+                )
+        # Stop any tracked TTS server process (Kokoro/Pocket) if it was started from backend settings.
+        tts_profile = self.profile_by_key.get(str(config.get("tts_profile", "kokorotts")).strip())
+        if tts_profile is not None and tts_profile.provider == "tts_local":
+            payload = dict(self.backend_settings.get(tts_profile.key, {}))
+            pid = int(payload.get("tts_server_pid", 0) or 0)
+            stopped = False
+            message = ""
+            if tts_profile.key == "kokorotts":
+                stopped, message = _stop_kokoro_server(payload)
+            elif tts_profile.key == "pockettts":
+                stopped, message = _stop_pocket_server(payload)
+            if stopped or pid:
+                self.backend_settings[tts_profile.key] = dict(payload)
+                save_backend_settings(self.backend_settings)
+                self._add_runtime_status_card(
+                    "Stop TTS Server",
+                    message or "Stopped TTS server.",
+                    tone="success" if stopped else "warn",
+                    chips=["voice", "tts", "stop"],
                 )
         self._voice_models_loaded = {"stt": False, "llm": False, "tts": False}
         self._voice_models_warning = ""
