@@ -1,0 +1,36 @@
+{
+  "en-us": [
+    "hanauta stop",
+    "hanauta stop listening",
+    "hanauta end voice mode",
+    "stop voice mode",
+    "exit voice mode",
+    "end voice mode",
+    "cancel voice mode",
+    "stop hands free",
+    "stop hands free mode"
+  ],
+  "ptbr": [
+    "hanauta parar",
+    "hanauta pare de ouvir",
+    "hanauta encerrar modo voz",
+    "parar modo voz",
+    "sair do modo voz",
+    "encerrar modo voz",
+    "cancelar modo voz",
+    "parar de ouvir",
+    "pare de ouvir"
+  ],
+  "es": [
+    "hanauta parar",
+    "hanauta deja de escuchar",
+    "hanauta terminar modo voz",
+    "parar modo voz",
+    "salir del modo voz",
+    "terminar modo voz",
+    "cancelar modo voz",
+    "deja de escuchar",
+    "dejar de escuchar"
+  ]
+}
+

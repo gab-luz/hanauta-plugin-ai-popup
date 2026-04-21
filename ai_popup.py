@@ -158,6 +158,7 @@ VOICE_RECORDINGS_DIR = AI_STATE_DIR / "voice-recordings"
 CHAT_ARCHIVES_DIR = AI_STATE_DIR / "chat-archives"
 CHARACTER_LIBRARY_FILE = AI_STATE_DIR / "characters.json"
 CHARACTER_AVATARS_DIR = AI_STATE_DIR / "characters-avatars"
+VOICE_STOP_EXPRESSIONS_FILE = PLUGIN_ROOT / "voice-stop-expressions.json"
 VOICE_PRIVACY_CODEBOOK_FILE = AI_STATE_DIR / "voice-privacy-codebook.txt"
 NOTIFICATION_CENTER_STATE_DIR = Path.home() / ".local" / "state" / "hanauta" / "notification-center"
 NOTIFICATION_CENTER_SETTINGS_FILE = NOTIFICATION_CENTER_STATE_DIR / "settings.json"
@@ -1498,6 +1499,14 @@ def _voice_mode_defaults() -> dict[str, object]:
         "enabled": False,
         "record_seconds": "5",
         "silence_threshold": "0.012",
+        # End-of-speech detection: after speech begins, stop recording once we've observed this
+        # much trailing silence (ms). Set to 0 to use fixed-length recording windows only.
+        "speech_end_silence_ms": "750",
+        # Microphone chunk size (seconds) while listening for end-of-speech. Smaller feels snappier but
+        # can cost CPU and increase the chance of gaps between chunks depending on the recorder.
+        "listen_chunk_seconds": "0.75",
+        # Minimum speech time (ms) required before we allow trailing-silence stop.
+        "min_speech_ms": "260",
         "stt_backend": "whisper",
         "stt_model": "small",
         "stt_device": "cpu",
@@ -1525,6 +1534,10 @@ def _voice_mode_defaults() -> dict[str, object]:
         "hide_character_photo": False,
         "hide_answer_text": False,
         "generic_notification_text": "Notification received",
+        # Stop expressions: optional voice command detection to stop the hands-free loop.
+        "stop_phrases_enabled": True,
+        "stop_phrases_language": "en-us",
+        "stop_phrases_allow_single_word": False,
     }
 
 
@@ -1578,6 +1591,78 @@ def _wav_duration_seconds(audio_path: Path) -> float:
         return (frames / float(rate)) if rate > 0 else 0.0
     except Exception:
         return 0.0
+
+
+_VOICE_STOP_CACHE: dict[str, object] = {"loaded": False, "payload": {}}
+
+
+def _load_voice_stop_expressions() -> dict[str, list[str]]:
+    if bool(_VOICE_STOP_CACHE.get("loaded", False)):
+        payload = _VOICE_STOP_CACHE.get("payload", {})
+        return payload if isinstance(payload, dict) else {}
+    payload: dict[str, list[str]] = {}
+    try:
+        if VOICE_STOP_EXPRESSIONS_FILE.exists():
+            raw = json.loads(VOICE_STOP_EXPRESSIONS_FILE.read_text(encoding="utf-8"))
+            if isinstance(raw, dict):
+                for lang, phrases in raw.items():
+                    if isinstance(lang, str) and isinstance(phrases, list):
+                        clean = [str(p).strip() for p in phrases if str(p).strip()]
+                        if clean:
+                            payload[lang.strip().lower()] = clean
+    except Exception:
+        payload = {}
+    _VOICE_STOP_CACHE["loaded"] = True
+    _VOICE_STOP_CACHE["payload"] = payload
+    return payload
+
+
+def _normalize_stop_text(text: str) -> str:
+    clean = str(text or "").strip().lower()
+    if not clean:
+        return ""
+    try:
+        import unicodedata
+
+        clean = "".join(
+            ch for ch in unicodedata.normalize("NFKD", clean)
+            if not unicodedata.combining(ch)
+        )
+    except Exception:
+        pass
+    # Keep letters/numbers/spaces only
+    clean = re.sub(r"[^a-z0-9\s]+", " ", clean)
+    clean = re.sub(r"\s+", " ", clean).strip()
+    return clean
+
+
+def _matches_stop_phrase(text: str, config: dict[str, object]) -> bool:
+    if not bool(config.get("stop_phrases_enabled", True)):
+        return False
+    lang = str(config.get("stop_phrases_language", "en-us")).strip().lower() or "en-us"
+    allow_single = bool(config.get("stop_phrases_allow_single_word", False))
+    payload = _load_voice_stop_expressions()
+    phrases = list(payload.get(lang, []))
+    # Fallback to English if requested language missing.
+    if not phrases and lang != "en-us":
+        phrases = list(payload.get("en-us", []))
+    if not phrases:
+        return False
+    norm = _normalize_stop_text(text)
+    if not norm:
+        return False
+    for phrase in phrases:
+        p = _normalize_stop_text(phrase)
+        if not p:
+            continue
+        # By default, only accept multi-word (or explicit) phrases to avoid false positives.
+        if (not allow_single) and (" " not in p) and (len(p) <= 5):
+            continue
+        if norm == p:
+            return True
+        if norm.startswith(p + " "):
+            return True
+    return False
 
 
 def _record_microphone_wav(seconds: float) -> Path:
@@ -7091,6 +7176,7 @@ WEB_POPUP_HTML = r"""
             <textarea id="composerInput" placeholder="Message the model... Enter to send"></textarea>
             <div class="composer-row">
               <div class="provider" id="providerLabel"></div>
+              <button class="send-btn secondary" id="sttBtn" title="Dictate (speech to text)" aria-label="Dictate"><span class="btn-icon">🎤</span></button>
               <button class="send-btn secondary" id="archiveBtn" title="Archive chat" aria-label="Archive chat"><span class="btn-icon">🗄</span></button>
               <button class="send-btn secondary" id="exportBtn" title="Export chat" aria-label="Export chat"><span class="btn-icon">⤴</span></button>
               <button class="send-btn secondary" id="clearBtn" title="Clear chat" aria-label="Clear chat"><span class="btn-icon">🧹</span></button>
@@ -7207,6 +7293,7 @@ WEB_POPUP_HTML = r"""
   <script>
     let bridge = null;
     let state = {};
+    let lastDraftId = 0;
     const esc = (value) => String(value ?? '').replace(/[&<>"]/g, (ch) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[ch]));
     const nl2br = (value) => esc(value).replace(/\n/g, '<br>');
 
@@ -7256,8 +7343,8 @@ WEB_POPUP_HTML = r"""
         listening ? 'Listening now. Start talking whenever you want.' :
         (voice.status || 'Voice mode is ready.');
       document.getElementById('voiceTranscript').textContent = voice.transcript || "Say something whenever you're ready.";
-      document.getElementById('voiceCaption').textContent = speaking && voice.response ? voice.response : 'The AI reply appears here while speech is playing.';
-      document.getElementById('voiceAiCard').classList.toggle('idle', !(speaking && voice.response));
+      document.getElementById('voiceCaption').textContent = voice.response ? voice.response : 'The last AI reply will appear here.';
+      document.getElementById('voiceAiCard').classList.toggle('idle', !voice.response);
       document.getElementById('voiceYouCard').classList.toggle('idle', !voice.transcript);
       const orb = document.getElementById('orbWrap');
       const emotion = (voice.emotion || 'neutral').toLowerCase().replace(/[^a-z_]/g, '');
@@ -7361,6 +7448,22 @@ WEB_POPUP_HTML = r"""
       document.getElementById('voicePage').hidden = !inVoice;
       document.getElementById('voiceBtn').textContent = inVoice ? '■' : '🎙';
       document.getElementById('voiceBtn').classList.toggle('magic-ready', !!(state.voice && state.voice.stack_ready));
+
+      // Apply one-shot STT dictation into the composer without stomping on active typing.
+      try {
+        const draft = state.draft || {};
+        const did = Number(draft.id || 0);
+        const text = String(draft.text || '');
+        if (!inVoice && did && did !== lastDraftId && text) {
+          const el = document.getElementById('composerInput');
+          if (el && (!el.value || !el.value.trim())) {
+            el.value = text;
+            el.focus();
+            lastDraftId = did;
+            if (bridge && bridge.ackDraft) bridge.ackDraft(did);
+          }
+        }
+      } catch (_err) {}
     }
 
     function sendNow() {
@@ -7374,6 +7477,7 @@ WEB_POPUP_HTML = r"""
     function toggleAudio(path) { if (bridge && bridge.toggleAudio) bridge.toggleAudio(path); }
 
     document.getElementById('sendBtn').addEventListener('click', sendNow);
+    document.getElementById('sttBtn').addEventListener('click', () => bridge && bridge.transcribeOnce && bridge.transcribeOnce());
     document.getElementById('clearBtn').addEventListener('click', () => bridge && bridge.clearChat && bridge.clearChat());
     document.getElementById('archiveBtn').addEventListener('click', () => bridge && bridge.archiveChat && bridge.archiveChat());
     document.getElementById('exportBtn').addEventListener('click', () => bridge && bridge.exportChat && bridge.exportChat());
@@ -7461,6 +7565,14 @@ class PopupWebBridge(QObject):
     @pyqtSlot()
     def stopVoiceModels(self) -> None:
         self.owner._web_stop_voice_models()
+
+    @pyqtSlot()
+    def transcribeOnce(self) -> None:
+        self.owner._web_transcribe_once()
+
+    @pyqtSlot(int)
+    def ackDraft(self, draft_id: int) -> None:
+        self.owner._web_ack_draft(draft_id)
 
     @pyqtSlot()
     def clearChat(self) -> None:
@@ -8033,6 +8145,107 @@ class TtsSynthesisWorker(QThread):
         self.finished_ok.emit(str(audio_path), self.profile.label, source)
 
 
+class OneShotSttWorker(QThread):
+    finished_ok = pyqtSignal(str)
+    failed = pyqtSignal(str)
+    status = pyqtSignal(str)
+
+    def __init__(self, config: dict[str, object]) -> None:
+        super().__init__()
+        self.config = dict(config)
+
+    def _silence_threshold(self) -> float:
+        try:
+            return float(str(self.config.get("silence_threshold", "0.012")))
+        except Exception:
+            return 0.012
+
+    def _speech_end_silence_ms(self) -> int:
+        try:
+            return int(float(str(self.config.get("speech_end_silence_ms", "750"))))
+        except Exception:
+            return 750
+
+    def _record_seconds(self) -> int:
+        try:
+            return int(float(str(self.config.get("record_seconds", "5"))))
+        except Exception:
+            return 5
+
+    def _listen_chunk_seconds(self) -> float:
+        try:
+            return float(str(self.config.get("listen_chunk_seconds", "0.75")))
+        except Exception:
+            return 0.75
+
+    def _min_speech_ms(self) -> int:
+        try:
+            return int(float(str(self.config.get("min_speech_ms", "260"))))
+        except Exception:
+            return 260
+
+    def _record_until_silence(self) -> Path:
+        max_seconds = float(max(1.0, min(30.0, float(self._record_seconds()))))
+        stop_silence_ms = max(0, int(self._speech_end_silence_ms()))
+        chunk = float(max(0.25, min(3.0, self._listen_chunk_seconds())))
+        min_speech_ms = max(0, int(self._min_speech_ms()))
+        threshold = float(self._silence_threshold())
+
+        start = time.time()
+        silence_ms = 0
+        speech_ms = 0
+        speech_seen = False
+        parts: list[Path] = []
+
+        while (time.time() - start) < max_seconds:
+            part = _record_microphone_wav(chunk)
+            parts.append(part)
+            dur = _wav_duration_seconds(part) or chunk
+            rms = _voice_recording_rms(part)
+            if rms >= threshold:
+                speech_seen = True
+                speech_ms += int(dur * 1000.0)
+                silence_ms = 0
+            else:
+                if speech_seen:
+                    silence_ms += int(dur * 1000.0)
+            if stop_silence_ms > 0 and speech_seen and speech_ms >= min_speech_ms and silence_ms >= stop_silence_ms:
+                break
+
+        VOICE_RECORDINGS_DIR.mkdir(parents=True, exist_ok=True)
+        out = VOICE_RECORDINGS_DIR / f"stt_once_{int(time.time() * 1000)}.wav"
+        try:
+            with wave.open(str(out), "wb") as dst:
+                written = False
+                for part in parts:
+                    with wave.open(str(part), "rb") as src:
+                        if not written:
+                            dst.setnchannels(src.getnchannels())
+                            dst.setsampwidth(src.getsampwidth())
+                            dst.setframerate(src.getframerate())
+                            written = True
+                        frames = src.readframes(int(src.getnframes() or 0))
+                        if frames:
+                            dst.writeframes(frames)
+            if out.exists() and out.stat().st_size > 44:
+                return out
+        except Exception:
+            pass
+        return parts[-1] if parts else _record_microphone_wav(self._record_seconds())
+
+    def run(self) -> None:
+        try:
+            self.status.emit("Listening")
+            audio_path = self._record_until_silence() if self._speech_end_silence_ms() > 0 else _record_microphone_wav(self._record_seconds())
+            self.status.emit("Transcribing")
+            text = transcribe_voice_audio(audio_path, self.config).strip()
+            if not text:
+                raise RuntimeError("No speech detected.")
+            self.finished_ok.emit(text)
+        except Exception as exc:
+            self.failed.emit(str(exc).strip() or exc.__class__.__name__)
+
+
 class VoiceModelsWarmupWorker(QThread):
     progress = pyqtSignal(str, str)
     finished_ok = pyqtSignal(str)
@@ -8203,6 +8416,24 @@ class VoiceConversationWorker(QThread):
         except Exception:
             return 5
 
+    def _speech_end_silence_ms(self) -> int:
+        try:
+            return int(float(str(self.config.get("speech_end_silence_ms", "750"))))
+        except Exception:
+            return 750
+
+    def _listen_chunk_seconds(self) -> float:
+        try:
+            return float(str(self.config.get("listen_chunk_seconds", "0.75")))
+        except Exception:
+            return 0.75
+
+    def _min_speech_ms(self) -> int:
+        try:
+            return int(float(str(self.config.get("min_speech_ms", "260"))))
+        except Exception:
+            return 260
+
     def _silence_threshold(self) -> float:
         try:
             return float(str(self.config.get("silence_threshold", "0.012")))
@@ -8230,11 +8461,70 @@ class VoiceConversationWorker(QThread):
             payload["tts_mode"] = "external_api"
         return payload
 
+    def _record_until_silence(self) -> Path:
+        """
+        Best-effort end-of-speech recording using repeated short recordings.
+        This avoids cutting the user off mid-sentence and keeps dependencies minimal.
+        """
+        max_seconds = float(max(1.0, min(30.0, float(self._record_seconds()))))
+        stop_silence_ms = max(0, int(self._speech_end_silence_ms()))
+        chunk = float(max(0.25, min(3.0, self._listen_chunk_seconds())))
+        min_speech_ms = max(0, int(self._min_speech_ms()))
+        threshold = float(self._silence_threshold())
+
+        start = time.time()
+        silence_ms = 0
+        speech_ms = 0
+        speech_seen = False
+        parts: list[Path] = []
+
+        while self._running and (time.time() - start) < max_seconds:
+            part = _record_microphone_wav(chunk)
+            parts.append(part)
+            dur = _wav_duration_seconds(part) or chunk
+            rms = _voice_recording_rms(part)
+            if rms >= threshold:
+                speech_seen = True
+                speech_ms += int(dur * 1000.0)
+                silence_ms = 0
+            else:
+                if speech_seen:
+                    silence_ms += int(dur * 1000.0)
+            if stop_silence_ms > 0 and speech_seen and speech_ms >= min_speech_ms and silence_ms >= stop_silence_ms:
+                break
+
+        # Combine parts into one WAV (same sample rate/channels enforced by recorder).
+        VOICE_RECORDINGS_DIR.mkdir(parents=True, exist_ok=True)
+        out = VOICE_RECORDINGS_DIR / f"voice_concat_{int(time.time() * 1000)}.wav"
+        try:
+            with wave.open(str(out), "wb") as dst:
+                written = False
+                for idx, part in enumerate(parts):
+                    try:
+                        with wave.open(str(part), "rb") as src:
+                            if not written:
+                                dst.setnchannels(src.getnchannels())
+                                dst.setsampwidth(src.getsampwidth())
+                                dst.setframerate(src.getframerate())
+                                written = True
+                            frames = src.readframes(int(src.getnframes() or 0))
+                            if frames:
+                                dst.writeframes(frames)
+                    except Exception:
+                        LOGGER.debug("voice record combine skipped part %d: %s", idx, part)
+            if out.exists() and out.stat().st_size > 44:
+                return out
+        except Exception:
+            LOGGER.exception("voice record combine failed")
+
+        # Fallback: return the last recorded chunk.
+        return parts[-1] if parts else _record_microphone_wav(self._record_seconds())
+
     def run(self) -> None:
         while self._running:
             try:
                 self.status_changed.emit("Listening")
-                audio_path = _record_microphone_wav(self._record_seconds())
+                audio_path = self._record_until_silence() if self._speech_end_silence_ms() > 0 else _record_microphone_wav(self._record_seconds())
                 if not self._running:
                     break
                 rms = _voice_recording_rms(audio_path)
@@ -8249,6 +8539,9 @@ class VoiceConversationWorker(QThread):
                     self.status_changed.emit("No speech detected")
                     continue
                 self.transcript_ready.emit(transcript)
+                if _matches_stop_phrase(transcript, self.config):
+                    self.status_changed.emit("Stop command")
+                    break
                 self.status_changed.emit("Thinking")
                 answer, llm_label, llm_model, emotion = generate_voice_chat_reply(
                     self.config,
@@ -8574,12 +8867,30 @@ class CharacterLibraryDialog(QDialog):
                 background: {PANEL_BG_FLOAT};
                 color: {TEXT};
             }}
-            QComboBox, QPlainTextEdit {{
+            QPlainTextEdit {{
                 background: {INPUT_BG};
                 color: {TEXT};
                 border: 1px solid {rgba(BORDER_SOFT, 0.95)};
                 border-radius: 12px;
                 padding: 8px 10px;
+            }}
+            QListWidget {{
+                background: {rgba(PANEL_BG, 0.92)};
+                color: {TEXT};
+                border: 1px solid {rgba(BORDER_SOFT, 0.95)};
+                border-radius: 16px;
+                padding: 10px;
+            }}
+            QListWidget::item {{
+                background: transparent;
+                border: 1px solid transparent;
+                border-radius: 14px;
+                padding: 8px 6px 10px 6px;
+            }}
+            QListWidget::item:selected {{
+                background: {rgba(ACCENT_SOFT, 0.60)};
+                border: 1px solid {rgba(BORDER_ACCENT, 0.92)};
+                color: {UI_TEXT_STRONG};
             }}
             QLabel {{
                 color: {TEXT_MID};
@@ -8613,10 +8924,20 @@ class CharacterLibraryDialog(QDialog):
         title.setStyleSheet(f"color: {UI_TEXT_STRONG};")
         layout.addWidget(title)
 
-        self.combo = QComboBox()
-        self.combo.setFont(QFont(ui_font, 11))
-        self.combo.currentIndexChanged.connect(self._refresh_preview)
-        layout.addWidget(self.combo)
+        self.grid = QListWidget()
+        self.grid.setViewMode(QListView.ViewMode.IconMode)
+        self.grid.setResizeMode(QListView.ResizeMode.Adjust)
+        self.grid.setMovement(QListView.Movement.Static)
+        self.grid.setIconSize(QSize(88, 88))
+        self.grid.setGridSize(QSize(118, 128))
+        self.grid.setSpacing(10)
+        self.grid.setUniformItemSizes(True)
+        self.grid.setWordWrap(True)
+        self.grid.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.grid.setFont(QFont(ui_font, 10, QFont.Weight.DemiBold))
+        self.grid.itemSelectionChanged.connect(self._refresh_preview)
+        self.grid.itemDoubleClicked.connect(lambda _item: self._accept_selected())
+        layout.addWidget(self.grid)
 
         self.preview = QPlainTextEdit()
         self.preview.setReadOnly(True)
@@ -8655,23 +8976,69 @@ class CharacterLibraryDialog(QDialog):
         actions.addWidget(close_button)
         layout.addLayout(actions)
 
-        self._reload_combo()
+        self._reload_grid()
 
-    def _reload_combo(self) -> None:
-        self.combo.blockSignals(True)
-        self.combo.clear()
-        self.combo.addItem("None", "")
-        active_index = 0
-        for card in self.cards:
-            self.combo.addItem(card.name, card.id)
+    def _character_icon(self, card: CharacterCard | None) -> QIcon:
+        size = 88
+        avatar_path = ""
+        if card is not None:
+            avatar_path = str(card.avatar_path or "").strip()
+        if avatar_path:
+            path = Path(avatar_path).expanduser()
+            if path.exists():
+                pix = QPixmap(str(path))
+                if not pix.isNull():
+                    pix = pix.scaled(size, size, Qt.AspectRatioMode.KeepAspectRatioByExpanding, Qt.TransformationMode.SmoothTransformation)
+                    return QIcon(pix)
+        # Fallback: gradient badge with initials.
+        pix = QPixmap(size, size)
+        pix.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(pix)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        rect = QRectF(0, 0, size, size)
+        grad = QLinearGradient(0, 0, size, size)
+        grad.setColorAt(0.0, QColor(ACCENT))
+        grad.setColorAt(1.0, QColor(ACCENT_ALT))
+        painter.setBrush(QBrush(grad))
+        painter.setPen(QPen(QColor(BORDER_ACCENT), 2))
+        painter.drawRoundedRect(rect.adjusted(1.5, 1.5, -1.5, -1.5), 22, 22)
+        text = "AI"
+        if card is not None and str(card.name or "").strip():
+            parts = [p for p in str(card.name).strip().split(" ") if p]
+            initials = "".join(p[0] for p in parts[:2]).upper()
+            text = initials or "AI"
+        painter.setPen(QColor(UI_TEXT_STRONG))
+        font = QFont(self.ui_font, 20, QFont.Weight.DemiBold)
+        painter.setFont(font)
+        painter.drawText(QRectF(0, 0, size, size), int(Qt.AlignmentFlag.AlignCenter), text)
+        painter.end()
+        return QIcon(pix)
+
+    def _reload_grid(self) -> None:
+        self.grid.blockSignals(True)
+        self.grid.clear()
+        none_item = QListWidgetItem("None")
+        none_item.setData(Qt.ItemDataRole.UserRole, "")
+        none_item.setIcon(self._character_icon(None))
+        none_item.setTextAlignment(int(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop))
+        self.grid.addItem(none_item)
+
+        selected_row = 0
+        for idx, card in enumerate(self.cards, start=1):
+            item = QListWidgetItem(card.name)
+            item.setData(Qt.ItemDataRole.UserRole, card.id)
+            item.setIcon(self._character_icon(card))
+            item.setTextAlignment(int(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop))
+            self.grid.addItem(item)
             if self.selected_id and card.id == self.selected_id:
-                active_index = self.combo.count() - 1
-        self.combo.setCurrentIndex(active_index)
-        self.combo.blockSignals(False)
+                selected_row = idx
+        self.grid.setCurrentRow(selected_row)
+        self.grid.blockSignals(False)
         self._refresh_preview()
 
     def _current_card(self) -> CharacterCard | None:
-        current_id = str(self.combo.currentData() or "").strip()
+        items = self.grid.selectedItems() if hasattr(self, "grid") else []
+        current_id = str(items[0].data(Qt.ItemDataRole.UserRole) or "").strip() if items else ""
         for card in self.cards:
             if card.id == current_id:
                 return card
@@ -8776,7 +9143,7 @@ class CharacterLibraryDialog(QDialog):
                 self.cards[existing_idx] = card
             self.selected_id = card.id
             imported_names.append(card.name)
-        self._reload_combo()
+        self._reload_grid()
         if imported_names:
             send_desktop_notification("Character import", f"Imported: {', '.join(imported_names[:4])}")
 
@@ -8787,14 +9154,15 @@ class CharacterLibraryDialog(QDialog):
         self.cards = [row for row in self.cards if row.id != card.id]
         if self.selected_id == card.id:
             self.selected_id = ""
-        self._reload_combo()
+        self._reload_grid()
 
     def _disable_character(self) -> None:
         self.selected_id = ""
         self.accept()
 
     def _accept_selected(self) -> None:
-        self.selected_id = str(self.combo.currentData() or "").strip()
+        card = self._current_card()
+        self.selected_id = card.id if card is not None else ""
         self.accept()
 
 
@@ -8879,6 +9247,15 @@ class VoiceModeDialog(QDialog):
         self.silence_threshold_input = QLineEdit(str(self.config.get("silence_threshold", "0.012")))
         self.silence_threshold_input.setPlaceholderText("Silence threshold, e.g. 0.012")
         form.addWidget(self._labeled("Silence skip threshold", self.silence_threshold_input))
+        self.speech_end_silence_input = QLineEdit(str(self.config.get("speech_end_silence_ms", "750")))
+        self.speech_end_silence_input.setPlaceholderText("e.g. 750 (0 disables)")
+        form.addWidget(self._labeled("Stop after silence (ms)", self.speech_end_silence_input))
+        self.listen_chunk_input = QLineEdit(str(self.config.get("listen_chunk_seconds", "0.75")))
+        self.listen_chunk_input.setPlaceholderText("e.g. 0.75")
+        form.addWidget(self._labeled("Listen chunk (seconds)", self.listen_chunk_input))
+        self.min_speech_input = QLineEdit(str(self.config.get("min_speech_ms", "260")))
+        self.min_speech_input.setPlaceholderText("e.g. 260")
+        form.addWidget(self._labeled("Minimum speech (ms)", self.min_speech_input))
 
         form.addWidget(self._section_label("Speech to text"))
         self.stt_external_check = QCheckBox("Use external STT API")
@@ -8957,6 +9334,20 @@ class VoiceModeDialog(QDialog):
         self.emotion_tags_check = QCheckBox("Enable character emotion tags for orb motion")
         self.emotion_tags_check.setChecked(bool(self.config.get("emotion_tags_enabled", True)))
         form.addWidget(self.emotion_tags_check)
+
+        form.addWidget(self._section_label("Voice commands"))
+        self.stop_phrases_check = QCheckBox("Enable stop phrases (\"stop voice mode\")")
+        self.stop_phrases_check.setChecked(bool(self.config.get("stop_phrases_enabled", True)))
+        form.addWidget(self.stop_phrases_check)
+        self.stop_lang_combo = QComboBox()
+        self.stop_lang_combo.addItem("English (en-us)", "en-us")
+        self.stop_lang_combo.addItem("Portuguese (ptbr)", "ptbr")
+        self.stop_lang_combo.addItem("Spanish (es)", "es")
+        self._set_combo_selected(self.stop_lang_combo, str(self.config.get("stop_phrases_language", "en-us")))
+        form.addWidget(self._labeled("Stop phrases language", self.stop_lang_combo))
+        self.stop_single_check = QCheckBox("Allow single-word stop (more false positives)")
+        self.stop_single_check.setChecked(bool(self.config.get("stop_phrases_allow_single_word", False)))
+        form.addWidget(self.stop_single_check)
 
         form.addWidget(self._section_label("Character and notifications"))
         self.character_check = QCheckBox("Enable character")
@@ -9060,6 +9451,9 @@ class VoiceModeDialog(QDialog):
                 "enabled": bool(self.enabled_check.isChecked()),
                 "record_seconds": self.record_seconds_input.text().strip() or "5",
                 "silence_threshold": self.silence_threshold_input.text().strip() or "0.012",
+                "speech_end_silence_ms": self.speech_end_silence_input.text().strip() or "750",
+                "listen_chunk_seconds": self.listen_chunk_input.text().strip() or "0.75",
+                "min_speech_ms": self.min_speech_input.text().strip() or "260",
                 "stt_backend": str(self.stt_backend_combo.currentData() or "whisper"),
                 "stt_model": str(self.stt_model_combo.currentData() or "small"),
                 "stt_device": str(self.stt_device_combo.currentData() or "cpu"),
@@ -9078,6 +9472,9 @@ class VoiceModeDialog(QDialog):
                 "barge_in_enabled": bool(self.barge_in_check.isChecked()),
                 "barge_in_threshold": self.barge_in_threshold_input.text().strip() or "0.035",
                 "emotion_tags_enabled": bool(self.emotion_tags_check.isChecked()),
+                "stop_phrases_enabled": bool(self.stop_phrases_check.isChecked()),
+                "stop_phrases_language": str(self.stop_lang_combo.currentData() or "en-us"),
+                "stop_phrases_allow_single_word": bool(self.stop_single_check.isChecked()),
                 "enable_character": bool(self.character_check.isChecked()),
                 "hide_character_photo": bool(self.hide_photo_check.isChecked()),
                 "hide_answer_text": bool(self.hide_answer_check.isChecked()),
@@ -9140,6 +9537,9 @@ class SidebarPanel(QFrame):
         self._voice_models_needs_confirm: bool = False
         self._voice_models_last_selection: dict[str, bool] = {"stt": True, "llm": True, "tts": True}
         self._voice_models_worker: VoiceModelsWarmupWorker | None = None
+        self._stt_once_worker: OneShotSttWorker | None = None
+        self._web_draft_text: str = ""
+        self._web_draft_id: int = 0
         self._pending_kobold_ready_profile: str = ""
         self._pending_kobold_ready_host: str = ""
         self._text_response_timer = QTimer(self)
@@ -9765,6 +10165,7 @@ class SidebarPanel(QFrame):
             "mode": getattr(self, "_web_mode", "chat"),
             "header_status": header_status,
             "provider_label": provider_label,
+            "draft": {"id": int(self._web_draft_id or 0), "text": str(self._web_draft_text or "")},
             "info": self._web_info_payload(),
             "models": self._voice_models_payload(),
             "backends": available_backends,
@@ -10018,6 +10419,47 @@ class SidebarPanel(QFrame):
         self._apply_voice_button_state()
         self._sync_web_ui()
 
+    def _web_ack_draft(self, draft_id: int) -> None:
+        if int(draft_id or 0) != int(self._web_draft_id or 0):
+            return
+        self._web_draft_text = ""
+        self._sync_web_ui()
+
+    def _web_transcribe_once(self) -> None:
+        if self._stt_once_worker is not None and self._stt_once_worker.isRunning():
+            self._voice_models_warning = "STT is already running."
+            self._sync_web_ui()
+            return
+        config = _voice_mode_settings(self.backend_settings)
+        if not bool(config.get("enabled", False)):
+            if not self._open_voice_mode_settings():
+                return
+            config = _voice_mode_settings(self.backend_settings)
+        if not bool(config.get("enabled", False)):
+            return
+        self._add_runtime_status_card("STT", "Listening for dictation…", chips=["stt", "dictation"])
+        worker = OneShotSttWorker(config)
+        self._stt_once_worker = worker
+
+        def _on_status(label: str) -> None:
+            self._add_runtime_status_card("STT", str(label), chips=["stt", "dictation"])
+
+        def _on_ok(text: str) -> None:
+            self._stt_once_worker = None
+            self._web_draft_id = int(self._web_draft_id or 0) + 1
+            self._web_draft_text = str(text).strip()
+            self._sync_web_ui()
+            self._add_runtime_status_card("STT Ready", "Dictation inserted into the composer.", tone="success", chips=["stt", "dictation"])
+
+        def _on_fail(message: str) -> None:
+            self._stt_once_worker = None
+            self._add_runtime_status_card("STT Failed", str(message).strip() or "STT failed.", tone="warn", chips=["stt", "dictation", "error"])
+
+        worker.status.connect(_on_status)
+        worker.finished_ok.connect(_on_ok)
+        worker.failed.connect(_on_fail)
+        worker.start()
+
     def _start_voice_mode(self, config: dict[str, object]) -> None:
         if self._voice_worker is not None and self._voice_worker.isRunning():
             return
@@ -10125,6 +10567,8 @@ class SidebarPanel(QFrame):
             backend, model = self._voice_stt_backend_model()
             self._add_runtime_status_card("Loading STT", f"Preparing {backend} ({model}) for transcription.", chips=["voice", "stt"])
         elif lowered == "thinking":
+            # Clear the previous spoken answer once a new answer begins generating.
+            self._voice_last_response = ""
             backend, model = self._voice_llm_backend_model()
             self._add_runtime_status_card("Loading LLM", f"Generating a reply with {backend} ({model}).", chips=["voice", "llm"])
         elif lowered == "speaking":
