@@ -1529,6 +1529,13 @@ def _voice_mode_defaults() -> dict[str, object]:
         "tts_external_api": False,
         "barge_in_enabled": True,
         "barge_in_threshold": "0.035",
+        # Streaming mode (more realistic voice agents): show live transcript, stream LLM tokens, and
+        # speak the reply as it is generated (best with PocketTTS + KoboldCpp streaming).
+        "stt_streaming_enabled": False,
+        "llm_streaming_enabled": True,
+        "tts_streaming_enabled": True,
+        "tts_streaming_min_chars": "42",
+        "tts_streaming_max_chars": "180",
         "emotion_tags_enabled": True,
         "privacy_word_coding_enabled": False,
         "privacy_words": "",
@@ -1938,6 +1945,145 @@ if __name__ == "__main__":
     return script_path
 
 
+def _voice_whisper_stream_script_path() -> Path:
+    return AI_STATE_DIR / "voice-runtime" / "faster_whisper_stream.py"
+
+
+def _ensure_voice_whisper_stream_script() -> Path:
+    script_path = _voice_whisper_stream_script_path()
+    script_path.parent.mkdir(parents=True, exist_ok=True)
+    script_text = """#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+import inspect
+import json
+import os
+import sys
+from pathlib import Path
+
+from faster_whisper import WhisperModel
+from huggingface_hub import snapshot_download
+
+
+MODEL_REPOS = {
+    "tiny": "Systran/faster-whisper-tiny",
+    "small": "Systran/faster-whisper-small",
+    "medium": "Systran/faster-whisper-medium",
+    "large": "Systran/faster-whisper-large-v3",
+}
+
+
+def _resolve_model_path(model_name: str, model_cache: Path) -> Path:
+    if model_name.startswith("/") or model_name.startswith("."):
+        candidate = Path(model_name).expanduser()
+        if candidate.exists():
+            return candidate
+    repo_id = MODEL_REPOS.get(model_name, model_name)
+    target = model_cache / repo_id.replace("/", "--")
+    if target.exists():
+        return target
+    os.environ.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
+    os.environ.setdefault("HF_HUB_DOWNLOAD_TIMEOUT", "35")
+    os.environ.setdefault("HF_HUB_ETAG_TIMEOUT", "20")
+    snapshot_download(
+        repo_id=repo_id,
+        local_dir=str(target),
+        local_dir_use_symlinks=False,
+        max_workers=4,
+        etag_timeout=20,
+    )
+    return target
+
+
+def _transcribe(model: WhisperModel, audio_path: Path, prompt: str) -> str:
+    kwargs = {"beam_size": 1}
+    # Optional params across faster-whisper versions.
+    try:
+        sig = inspect.signature(model.transcribe)
+        params = set(sig.parameters.keys())
+        if "vad_filter" in params:
+            kwargs["vad_filter"] = True
+        if prompt and "initial_prompt" in params:
+            kwargs["initial_prompt"] = prompt
+        if "condition_on_previous_text" in params:
+            kwargs["condition_on_previous_text"] = True
+    except Exception:
+        kwargs["vad_filter"] = True
+    segments, _info = model.transcribe(str(audio_path), **kwargs)
+    return " ".join(seg.text.strip() for seg in segments if seg.text.strip()).strip()
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--model", required=True)
+    parser.add_argument("--device", choices=["cpu", "gpu"], default="cpu")
+    parser.add_argument("--model-cache", required=True)
+    args = parser.parse_args()
+
+    model_cache = Path(args.model_cache).expanduser()
+    model_cache.mkdir(parents=True, exist_ok=True)
+
+    attempts = []
+    if args.device == "gpu":
+        attempts.extend([("cuda", "float16"), ("cuda", "int8_float16")])
+    attempts.extend([("cpu", "int8"), ("cpu", "int8_float32")])
+
+    resolved_model = _resolve_model_path(args.model, model_cache)
+    loaded = None
+    last_error = ""
+    for device, compute_type in attempts:
+        try:
+            loaded = WhisperModel(str(resolved_model), device=device, compute_type=compute_type)
+            print(json.dumps({"ready": True, "device": device, "compute_type": compute_type}), flush=True)
+            break
+        except Exception as exc:
+            last_error = str(exc)
+            continue
+    if loaded is None:
+        print(json.dumps({"ready": False, "error": last_error}), flush=True)
+        return 2
+
+    for line in sys.stdin:
+        raw = line.strip()
+        if not raw:
+            continue
+        try:
+            msg = json.loads(raw)
+        except Exception:
+            continue
+        if not isinstance(msg, dict):
+            continue
+        cmd = str(msg.get("cmd", "")).strip()
+        if cmd == "shutdown":
+            print(json.dumps({"ok": True}), flush=True)
+            return 0
+        if cmd != "transcribe":
+            continue
+        audio = Path(str(msg.get("audio", "")).strip()).expanduser()
+        prompt = str(msg.get("prompt", "")).strip()
+        if not audio.exists():
+            print(json.dumps({"ok": False, "error": "audio not found"}), flush=True)
+            continue
+        try:
+            text = _transcribe(loaded, audio, prompt)
+            print(json.dumps({"ok": True, "text": text}), flush=True)
+        except Exception as exc:
+            print(json.dumps({"ok": False, "error": str(exc)}), flush=True)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+"""
+    script_path.write_text(script_text, encoding="utf-8")
+    try:
+        os.chmod(script_path, 0o700)
+    except Exception:
+        pass
+    return script_path
+
+
 def _voice_vosk_script_path() -> Path:
     return AI_STATE_DIR / "voice-runtime" / "vosk_transcribe.py"
 
@@ -2138,6 +2284,69 @@ def _generate_openai_style_reply(
             if text:
                 return text
     raise RuntimeError("LLM endpoint returned no assistant text.")
+
+
+def _iter_openai_sse_deltas(url: str, payload: dict[str, object], headers: dict[str, str], timeout: float = 240.0):
+    body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    merged = dict(headers)
+    merged.setdefault("Content-Type", "application/json")
+    merged.setdefault("Accept", "text/event-stream")
+    req = request.Request(url, data=body, headers=merged, method="POST")
+    try:
+        resp = request.urlopen(req, timeout=timeout)
+    except Exception as exc:
+        raise RuntimeError(str(exc).strip() or "LLM stream connection failed.") from exc
+    with resp:
+        for raw_line in resp:
+            try:
+                line = raw_line.decode("utf-8", "ignore").strip()
+            except Exception:
+                continue
+            if not line or not line.startswith("data:"):
+                continue
+            data = line.split(":", 1)[1].strip()
+            if not data:
+                continue
+            if data == "[DONE]":
+                break
+            try:
+                obj = json.loads(data)
+            except Exception:
+                continue
+            if not isinstance(obj, dict):
+                continue
+            choices = obj.get("choices", [])
+            if not isinstance(choices, list) or not choices:
+                continue
+            first = choices[0]
+            if not isinstance(first, dict):
+                continue
+            delta = first.get("delta", {})
+            if isinstance(delta, dict):
+                chunk = str(delta.get("content", "")).strip("\r")
+                if chunk:
+                    yield chunk
+                    continue
+            chunk = str(first.get("text", "")).strip("\r")
+            if chunk:
+                yield chunk
+
+
+def _stream_openai_style_reply(
+    host: str,
+    model: str,
+    messages: list[dict[str, str]],
+    api_key: str = "",
+):
+    headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+    payload: dict[str, object] = {
+        "model": model.strip() or "gpt-4.1-mini",
+        "messages": messages,
+        "temperature": 0.8,
+        "stream": True,
+    }
+    url = f"{_api_url_from_host(host)}/v1/chat/completions"
+    yield from _iter_openai_sse_deltas(url, payload, headers, timeout=240.0)
 
 
 def generate_voice_chat_reply(
@@ -7683,6 +7892,8 @@ class ChatWebView(QWidget):
         self._media_player: QMediaPlayer | None = None
         self._fade_timer: QTimer | None = None
         self._default_volume = 1.0
+        self._audio_queue: list[str] = []
+        self._queue_enabled: bool = True
 
         shell = QVBoxLayout(self)
         shell.setContentsMargins(0, 0, 0, 0)
@@ -7848,6 +8059,8 @@ class ChatWebView(QWidget):
             self._fade_timer = None
 
     def fade_out_current_audio(self, duration_ms: int = 420) -> None:
+        # Voice mode can enqueue multiple chunks; fadeout should also clear the queue so it truly stops.
+        self._audio_queue.clear()
         if self._media_player is None or self._audio_output is None:
             return
         if self._media_player.playbackState() != QMediaPlayer.PlaybackState.PlayingState:
@@ -7888,6 +8101,23 @@ class ChatWebView(QWidget):
     def _on_playback_state_changed(self, state) -> None:
         if self._media_player is None:
             return
+        # If an audio queue is active, advance automatically when playback ends.
+        try:
+            if (
+                self._queue_enabled
+                and state == QMediaPlayer.PlaybackState.StoppedState
+                and self._audio_queue
+                and not self._pending_play_path
+            ):
+                next_path = self._audio_queue.pop(0)
+                self._pending_play_path = next_path
+                self._media_player.setSource(QUrl.fromLocalFile(next_path))
+                self._media_player.play()
+                self._set_audio_state(Path(next_path), True)
+                QTimer.singleShot(350, lambda p=next_path: self._ensure_playback_started(p))
+                return
+        except Exception:
+            pass
         playing = bool(state == QMediaPlayer.PlaybackState.PlayingState)
         if playing:
             self._pending_play_path = ""
@@ -7961,6 +8191,30 @@ class ChatWebView(QWidget):
 
     def autoplay_audio(self, path: Path) -> None:
         self._toggle_audio_path(path)
+
+    def enqueue_audio(self, path: Path, *, clear: bool = False) -> None:
+        absolute = path.expanduser().resolve()
+        if not absolute.exists():
+            return
+        if clear:
+            self._audio_queue.clear()
+        # If nothing is playing, start immediately; else queue it.
+        if self._media_player is None:
+            _play_audio_file(absolute)
+            self._set_audio_state(absolute, True)
+            return
+        state = self._media_player.playbackState()
+        if state != QMediaPlayer.PlaybackState.PlayingState and not self._pending_play_path:
+            self._pending_play_path = str(absolute)
+            self._media_player.setSource(QUrl.fromLocalFile(str(absolute)))
+            self._media_player.play()
+            self._set_audio_state(absolute, True)
+            QTimer.singleShot(350, lambda p=str(absolute): self._ensure_playback_started(p))
+            return
+        self._audio_queue.append(str(absolute))
+
+    def clear_audio_queue(self) -> None:
+        self._audio_queue.clear()
 
     def _save_audio_as(self, source: Path) -> None:
         target, _ = QFileDialog.getSaveFileName(
@@ -8397,7 +8651,10 @@ class VoiceModelsWarmupWorker(QThread):
 
 class VoiceConversationWorker(QThread):
     status_changed = pyqtSignal(str)
+    transcript_partial = pyqtSignal(str)
     transcript_ready = pyqtSignal(str)
+    response_partial = pyqtSignal(str, str, str, str)
+    tts_chunk_ready = pyqtSignal(str, str)
     response_ready = pyqtSignal(str, str, str, str, str, str)
     barge_in_detected = pyqtSignal()
     failed = pyqtSignal(str)
@@ -8415,9 +8672,100 @@ class VoiceConversationWorker(QThread):
         self.backend_settings = json.loads(json.dumps(backend_settings))
         self.character = CharacterCard(**character.__dict__) if character is not None else None
         self._running = True
+        self._whisper_stream_proc: subprocess.Popen[str] | None = None
+        self._whisper_stream_last_prompt: str = ""
 
     def stop(self) -> None:
         self._running = False
+        proc = self._whisper_stream_proc
+        if proc is not None:
+            try:
+                if proc.stdin:
+                    proc.stdin.write(json.dumps({"cmd": "shutdown"}) + "\n")
+                    proc.stdin.flush()
+            except Exception:
+                pass
+            try:
+                proc.terminate()
+            except Exception:
+                pass
+            self._whisper_stream_proc = None
+
+    def _stt_streaming_enabled(self) -> bool:
+        return bool(self.config.get("stt_streaming_enabled", False))
+
+    def _llm_streaming_enabled(self) -> bool:
+        return bool(self.config.get("llm_streaming_enabled", True))
+
+    def _tts_streaming_enabled(self) -> bool:
+        return bool(self.config.get("tts_streaming_enabled", True))
+
+    def _tts_streaming_min_chars(self) -> int:
+        try:
+            return int(float(str(self.config.get("tts_streaming_min_chars", "42"))))
+        except Exception:
+            return 42
+
+    def _tts_streaming_max_chars(self) -> int:
+        try:
+            return int(float(str(self.config.get("tts_streaming_max_chars", "180"))))
+        except Exception:
+            return 180
+
+    def _whisper_stream_start(self) -> subprocess.Popen[str] | None:
+        if bool(self.config.get("stt_external_api", False)):
+            return None
+        backend = str(self.config.get("stt_backend", "whisper")).strip().lower()
+        if backend != "whisper":
+            return None
+        model_name = str(self.config.get("stt_model", "small")).strip().lower() or "small"
+        if model_name not in {"tiny", "small", "medium", "large"}:
+            model_name = "small"
+        device = "gpu" if str(self.config.get("stt_device", "cpu")).lower() == "gpu" else "cpu"
+        python_bin = _ensure_voice_venv("whisper", model_name, device, ["faster-whisper", "huggingface-hub"], "faster_whisper")
+        script_path = _ensure_voice_whisper_stream_script()
+        model_cache = _voice_venv_dir("whisper", model_name, device) / "model-cache"
+        model_cache.mkdir(parents=True, exist_ok=True)
+        try:
+            proc = subprocess.Popen(
+                [str(python_bin), str(script_path), "--model", model_name, "--device", device, "--model-cache", str(model_cache)],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                text=True,
+                bufsize=1,
+            )
+        except Exception:
+            return None
+        # Read the ready line (non-blocking-ish with short timeout via polling).
+        try:
+            if proc.stdout:
+                proc.stdout.readline()
+        except Exception:
+            pass
+        return proc
+
+    def _whisper_stream_transcribe(self, audio_path: Path, prompt: str) -> str:
+        if self._whisper_stream_proc is None:
+            self._whisper_stream_proc = self._whisper_stream_start()
+        proc = self._whisper_stream_proc
+        if proc is None or proc.stdin is None or proc.stdout is None:
+            # Fallback to one-shot transcription.
+            return transcribe_voice_audio(audio_path, self.config)
+        payload = {"cmd": "transcribe", "audio": str(audio_path.expanduser()), "prompt": prompt}
+        try:
+            proc.stdin.write(json.dumps(payload, ensure_ascii=False) + "\n")
+            proc.stdin.flush()
+            line = proc.stdout.readline()
+        except Exception:
+            return transcribe_voice_audio(audio_path, self.config)
+        try:
+            msg = json.loads((line or "").strip())
+        except Exception:
+            return ""
+        if isinstance(msg, dict) and bool(msg.get("ok", False)):
+            return str(msg.get("text", "")).strip()
+        return ""
 
     def _record_seconds(self) -> int:
         try:
@@ -8533,15 +8881,54 @@ class VoiceConversationWorker(QThread):
         while self._running:
             try:
                 self.status_changed.emit("Listening")
-                audio_path = self._record_until_silence() if self._speech_end_silence_ms() > 0 else _record_microphone_wav(self._record_seconds())
-                if not self._running:
-                    break
-                rms = _voice_recording_rms(audio_path)
-                if rms < self._silence_threshold():
-                    self.status_changed.emit("Silence skipped")
-                    continue
-                self.status_changed.emit("Transcribing")
-                transcript = transcribe_voice_audio(audio_path, self.config)
+                transcript = ""
+                if (
+                    self._stt_streaming_enabled()
+                    and (not bool(self.config.get("stt_external_api", False)))
+                    and str(self.config.get("stt_backend", "whisper")).strip().lower() == "whisper"
+                ):
+                    # Live transcription while recording chunks. (Best-effort; depends on recorder chunk cadence.)
+                    max_seconds = float(max(1.0, min(30.0, float(self._record_seconds()))))
+                    stop_silence_ms = max(0, int(self._speech_end_silence_ms()))
+                    chunk = float(max(0.25, min(3.0, self._listen_chunk_seconds())))
+                    min_speech_ms = max(0, int(self._min_speech_ms()))
+                    threshold = float(self._silence_threshold())
+                    start = time.time()
+                    silence_ms = 0
+                    speech_ms = 0
+                    speech_seen = False
+                    partial = ""
+                    while self._running and (time.time() - start) < max_seconds:
+                        part = _record_microphone_wav(chunk)
+                        dur = _wav_duration_seconds(part) or chunk
+                        rms = _voice_recording_rms(part)
+                        if rms >= threshold:
+                            speech_seen = True
+                            speech_ms += int(dur * 1000.0)
+                            silence_ms = 0
+                        else:
+                            if speech_seen:
+                                silence_ms += int(dur * 1000.0)
+                        if rms >= threshold:
+                            piece = self._whisper_stream_transcribe(part, partial[-240:])
+                            if piece:
+                                if partial and not partial.endswith((" ", "\n")):
+                                    partial += " "
+                                partial += piece.strip()
+                                self.transcript_partial.emit(partial)
+                        if stop_silence_ms > 0 and speech_seen and speech_ms >= min_speech_ms and silence_ms >= stop_silence_ms:
+                            break
+                    transcript = partial.strip()
+                else:
+                    audio_path = self._record_until_silence() if self._speech_end_silence_ms() > 0 else _record_microphone_wav(self._record_seconds())
+                    if not self._running:
+                        break
+                    rms = _voice_recording_rms(audio_path)
+                    if rms < self._silence_threshold():
+                        self.status_changed.emit("Silence skipped")
+                        continue
+                    self.status_changed.emit("Transcribing")
+                    transcript = transcribe_voice_audio(audio_path, self.config)
                 if not self._running:
                     break
                 if not transcript.strip():
@@ -8552,13 +8939,157 @@ class VoiceConversationWorker(QThread):
                     self.status_changed.emit("Stop command")
                     break
                 self.status_changed.emit("Thinking")
-                answer, llm_label, llm_model, emotion = generate_voice_chat_reply(
-                    self.config,
-                    self.profiles,
-                    self.backend_settings,
-                    transcript,
-                    self.character if bool(self.config.get("enable_character", True)) else None,
-                )
+                # LLM generation: optionally stream tokens (OpenAI-compatible / KoboldCpp).
+                llm_label = "LLM"
+                llm_model = ""
+                emotion = "neutral"
+                answer = ""
+                streaming_llm = False
+                try:
+                    streaming_llm = self._llm_streaming_enabled() and (
+                        bool(self.config.get("llm_external_api", False))
+                        or (
+                            str(self.config.get("llm_profile", "koboldcpp")).strip() in self.profiles
+                            and self.profiles[str(self.config.get("llm_profile", "koboldcpp")).strip()].provider in {"openai", "openai_compat"}
+                        )
+                    )
+                except Exception:
+                    streaming_llm = False
+
+                if not streaming_llm:
+                    answer, llm_label, llm_model, emotion = generate_voice_chat_reply(
+                        self.config,
+                        self.profiles,
+                        self.backend_settings,
+                        transcript,
+                        self.character if bool(self.config.get("enable_character", True)) else None,
+                    )
+                else:
+                    privacy_mapping: dict[str, str] = {}
+                    masked_prompt = transcript
+                    if bool(self.config.get("privacy_word_coding_enabled", False)):
+                        masked_prompt, privacy_mapping = _replace_sensitive_words(transcript, _privacy_word_list(self.config))
+                    messages = _chat_messages_for_prompt(
+                        masked_prompt,
+                        self.character if bool(self.config.get("enable_character", True)) else None,
+                        emotion_tags=bool(self.config.get("emotion_tags_enabled", False)),
+                    )
+                    host = ""
+                    model = ""
+                    api_key = ""
+                    if bool(self.config.get("llm_external_api", False)):
+                        host = str(self.config.get("llm_host", "")).strip()
+                        model = str(self.config.get("llm_model", "")).strip() or "gpt-4.1-mini"
+                        api_key = secure_load_secret("voice_mode:llm_api_key").strip()
+                        llm_label = "OpenAI-compatible"
+                        llm_model = model
+                    else:
+                        profile_key = str(self.config.get("llm_profile", "koboldcpp")).strip()
+                        profile = self.profiles.get(profile_key)
+                        if profile is None:
+                            raise RuntimeError("Select a valid text backend for voice mode.")
+                        payload = dict(self.backend_settings.get(profile.key, {}))
+                        host = str(payload.get("host", profile.host)).strip()
+                        model = str(payload.get("model", profile.model)).strip() or profile.model
+                        api_key = secure_load_secret(f"{profile.key}:api_key").strip()
+                        llm_label = profile.label
+                        llm_model = model
+                        if profile.key == "koboldcpp":
+                            gguf_path = _existing_path(payload.get("gguf_path"))
+                            if gguf_path is not None:
+                                llm_model = gguf_path.name
+                    raw_accum = ""
+                    clean_accum = ""
+                    tag_parsed = False
+                    speak_cursor = 0
+                    total_audio = 0.0
+                    tts_profile = self._tts_profile()
+                    tts_payload = self._tts_payload(tts_profile)
+                    min_chars = max(12, self._tts_streaming_min_chars())
+                    max_chars = max(min_chars + 10, self._tts_streaming_max_chars())
+
+                    def _flush_tts(force: bool = False) -> None:
+                        nonlocal speak_cursor, total_audio
+                        if not self._tts_streaming_enabled():
+                            return
+                        text = clean_accum
+                        if speak_cursor >= len(text):
+                            return
+                        remaining = text[speak_cursor:]
+                        candidate = remaining[:max_chars]
+                        split_at = -1
+                        if not force:
+                            if len(candidate) < min_chars:
+                                return
+                            # sentence/line boundaries first
+                            for mark in ("\n", ".", "?", "!", ":", ";"):
+                                idx = candidate.rfind(mark)
+                                if idx >= min_chars - 1:
+                                    split_at = idx + 1
+                                    break
+                            if split_at < 0 and len(candidate) >= max_chars:
+                                sp = candidate.rfind(" ")
+                                split_at = sp if sp > 0 else len(candidate)
+                        else:
+                            split_at = len(candidate)
+                        if split_at <= 0:
+                            return
+                        chunk_text = remaining[:split_at].strip()
+                        if not chunk_text:
+                            speak_cursor += split_at
+                            return
+                        try:
+                            audio_out, source = synthesize_tts(tts_profile, tts_payload, chunk_text)
+                            self.tts_chunk_ready.emit(str(audio_out), chunk_text)
+                            total_audio += float(_wav_duration_seconds(audio_out) or 0.0)
+                        except Exception:
+                            source = "tts"
+                        speak_cursor += split_at
+
+                    for delta in _stream_openai_style_reply(host, model, messages, api_key):
+                        if not self._running:
+                            break
+                        raw_accum += delta
+                        if not tag_parsed:
+                            m = re.match(r"^\s*\[([a-zA-Z_ -]{2,24})\]\s*", raw_accum)
+                            if m:
+                                tag = m.group(1).strip().lower().replace(" ", "_")
+                                emotion = tag if tag in VOICE_EMOTIONS else "neutral"
+                                tag_parsed = True
+                                raw_accum = raw_accum[m.end():]
+                        clean_accum = raw_accum.strip()
+                        restored = _restore_sensitive_words(clean_accum, privacy_mapping)
+                        clean_accum = restored
+                        self.response_partial.emit(clean_accum, emotion, llm_label, llm_model)
+                        # Try to speak progressively.
+                        _flush_tts(force=False)
+                    if not self._running:
+                        break
+                    # Flush remaining.
+                    _flush_tts(force=True)
+                    answer = clean_accum.strip()
+                    if not answer:
+                        raise RuntimeError("LLM endpoint returned no assistant text.")
+                    # Give the UI a final snapshot.
+                    self.response_partial.emit(answer, emotion, llm_label, llm_model)
+                    # Wait roughly for queued audio to finish (best-effort) and allow barge-in.
+                    self.status_changed.emit("Speaking")
+                    pause_until = time.time() + min(60.0, max(1.0, total_audio + 0.8))
+                    while self._running and time.time() < pause_until:
+                        if not bool(self.config.get("barge_in_enabled", True)):
+                            time.sleep(0.1)
+                            continue
+                        try:
+                            sample = _record_microphone_wav(0.55)
+                            if _voice_recording_rms(sample) >= self._barge_in_threshold():
+                                self.barge_in_detected.emit()
+                                self.status_changed.emit("Listening")
+                                break
+                        except Exception:
+                            time.sleep(0.2)
+                    # Mark as a streaming run; emit a final "ready" without forcing autoplay.
+                    self.response_ready.emit(answer, "", llm_label, llm_model, "streaming-chunks", emotion)
+                    continue
                 if not self._running:
                     break
                 self.status_changed.emit("Speaking")
@@ -8581,6 +9112,7 @@ class VoiceConversationWorker(QThread):
                     except Exception:
                         time.sleep(0.2)
             except Exception as exc:
+                LOGGER.exception("voice loop crashed")
                 self.failed.emit(str(exc).strip() or exc.__class__.__name__)
                 time.sleep(0.8)
         self.status_changed.emit("Voice mode stopped")
@@ -9298,6 +9830,23 @@ class VoiceModeDialog(QDialog):
         self.stt_api_key_input.setEchoMode(QLineEdit.EchoMode.Password)
         form.addWidget(self._labeled("STT API key", self.stt_api_key_input))
 
+        form.addWidget(self._section_label("Streaming mode"))
+        self.stt_streaming_check = QCheckBox("Live transcript (streaming STT)")
+        self.stt_streaming_check.setChecked(bool(self.config.get("stt_streaming_enabled", False)))
+        form.addWidget(self.stt_streaming_check)
+        self.llm_streaming_check = QCheckBox("Stream LLM tokens (KoboldCpp/OpenAI-compatible)")
+        self.llm_streaming_check.setChecked(bool(self.config.get("llm_streaming_enabled", True)))
+        form.addWidget(self.llm_streaming_check)
+        self.tts_streaming_check = QCheckBox("Speak while generating (PocketTTS/Kokoro)")
+        self.tts_streaming_check.setChecked(bool(self.config.get("tts_streaming_enabled", True)))
+        form.addWidget(self.tts_streaming_check)
+        self.tts_streaming_min_chars_input = QLineEdit(str(self.config.get("tts_streaming_min_chars", "42")))
+        self.tts_streaming_min_chars_input.setPlaceholderText("e.g. 42")
+        form.addWidget(self._labeled("Speak after (min chars)", self.tts_streaming_min_chars_input))
+        self.tts_streaming_max_chars_input = QLineEdit(str(self.config.get("tts_streaming_max_chars", "180")))
+        self.tts_streaming_max_chars_input.setPlaceholderText("e.g. 180")
+        form.addWidget(self._labeled("Max chunk size (chars)", self.tts_streaming_max_chars_input))
+
         form.addWidget(self._section_label("Text model"))
         self.llm_external_check = QCheckBox("Use external OpenAI-compatible text API")
         self.llm_external_check.setChecked(bool(self.config.get("llm_external_api", False)))
@@ -9470,6 +10019,11 @@ class VoiceModeDialog(QDialog):
                 "stt_host": self.stt_host_input.text().strip(),
                 "stt_remote_model": self.stt_remote_model_input.text().strip() or "whisper-1",
                 "stt_vosk_model_path": self.stt_vosk_model_input.text().strip(),
+                "stt_streaming_enabled": bool(self.stt_streaming_check.isChecked()),
+                "llm_streaming_enabled": bool(self.llm_streaming_check.isChecked()),
+                "tts_streaming_enabled": bool(self.tts_streaming_check.isChecked()),
+                "tts_streaming_min_chars": self.tts_streaming_min_chars_input.text().strip() or "42",
+                "tts_streaming_max_chars": self.tts_streaming_max_chars_input.text().strip() or "180",
                 "llm_profile": str(self.llm_profile_combo.currentData() or "koboldcpp"),
                 "llm_device": str(self.llm_device_combo.currentData() or "cpu"),
                 "llm_external_api": bool(self.llm_external_check.isChecked()),
@@ -10537,7 +11091,10 @@ class SidebarPanel(QFrame):
         worker = VoiceConversationWorker(config, self.profile_by_key, self.backend_settings, character)
         self._voice_worker = worker
         worker.status_changed.connect(self._handle_voice_status)
+        worker.transcript_partial.connect(self._handle_voice_transcript_partial)
         worker.transcript_ready.connect(self._handle_voice_transcript)
+        worker.response_partial.connect(self._handle_voice_response_partial)
+        worker.tts_chunk_ready.connect(self._handle_voice_tts_chunk)
         worker.response_ready.connect(self._handle_voice_response)
         worker.barge_in_detected.connect(self._handle_voice_barge_in)
         worker.failed.connect(self._handle_voice_failed)
@@ -10611,6 +11168,15 @@ class SidebarPanel(QFrame):
             speaking=(clean.lower() == "speaking"),
         )
 
+    def _handle_voice_transcript_partial(self, transcript: str) -> None:
+        clean = str(transcript).strip()
+        if not clean:
+            return
+        self._voice_last_transcript = clean
+        self._voice_last_emotion = "neutral"
+        self._voice_last_status = "Listening"
+        self._update_voice_mode_view(listening=True, speaking=False)
+
     def _handle_voice_transcript(self, transcript: str) -> None:
         stt_backend, stt_model = self._voice_stt_backend_model()
         _voice_log("stt", stt_backend, stt_model, transcript.strip())
@@ -10625,6 +11191,31 @@ class SidebarPanel(QFrame):
             chips.append(SourceChipData(f"character:{active_character.name}"))
         self.add_card(ChatItemData(role="user", title="You", body=f"<p>{safe}</p>", meta="voice prompt", chips=chips))
 
+    def _handle_voice_response_partial(self, text: str, emotion: str, llm_label: str, llm_model: str) -> None:
+        clean = str(text).strip()
+        if not clean:
+            return
+        self._voice_last_response = clean
+        self._voice_last_emotion = str(emotion).strip().lower() or "neutral"
+        self._voice_last_status = f"{llm_label}"
+        self._update_voice_mode_view(listening=False, speaking=True)
+
+    def _handle_voice_tts_chunk(self, audio_path_text: str, chunk_text: str) -> None:
+        try:
+            path = Path(audio_path_text).expanduser().resolve()
+        except Exception:
+            return
+        if not path.exists():
+            return
+        try:
+            # Queue chunked audio so it speaks continuously.
+            self.chat_view.enqueue_audio(path)
+        except Exception:
+            try:
+                self.chat_view.autoplay_audio(path)
+            except Exception:
+                pass
+
     def _handle_voice_response(self, answer: str, audio_path_text: str, llm_label: str, llm_model: str, source: str, emotion: str) -> None:
         _voice_log("llm", llm_label, llm_model, answer.strip())
         self._add_runtime_status_card("LLM Ready", f"{llm_label} ({llm_model}) generated a reply.", tone="success", chips=["voice", "llm"])
@@ -10632,12 +11223,18 @@ class SidebarPanel(QFrame):
         self._voice_last_emotion = emotion.strip().lower() or "neutral"
         self._voice_last_status = "Speaking"
         self._update_voice_mode_view(speaking=True)
-        resolved_audio = Path(audio_path_text).expanduser().resolve()
-        waveform = _waveform_from_hanauta_service(resolved_audio, bars=24)
         config = _voice_mode_settings(self.backend_settings)
         active_character = self._active_character() if bool(config.get("enable_character", True)) else None
         title = active_character.name if active_character is not None else "Hanauta AI"
         chips = [SourceChipData("voice"), SourceChipData(llm_label), SourceChipData(source)]
+        resolved_audio: Path | None = None
+        waveform: list[int] = []
+        if str(audio_path_text).strip():
+            try:
+                resolved_audio = Path(audio_path_text).expanduser().resolve()
+                waveform = _waveform_from_hanauta_service(resolved_audio, bars=24)
+            except Exception:
+                resolved_audio = None
         self.add_card(
             ChatItemData(
                 role="assistant",
@@ -10645,15 +11242,16 @@ class SidebarPanel(QFrame):
                 meta="voice reply",
                 body=f"<p>{html.escape(answer).replace(chr(10), '<br>')}</p>",
                 chips=chips,
-                audio_path=str(resolved_audio),
+                audio_path=str(resolved_audio) if resolved_audio is not None else "",
                 audio_waveform=waveform,
             )
         )
-        self._add_runtime_status_card("TTS Ready", f"{source} finished audio synthesis and playback started.", tone="success", chips=["voice", "tts"])
-        try:
-            self.chat_view.autoplay_audio(resolved_audio)
-        except Exception:
-            LOGGER.exception("voice mode autoplay failed for %s", resolved_audio)
+        if source != "streaming-chunks" and resolved_audio is not None:
+            self._add_runtime_status_card("TTS Ready", f"{source} finished audio synthesis and playback started.", tone="success", chips=["voice", "tts"])
+            try:
+                self.chat_view.autoplay_audio(resolved_audio)
+            except Exception:
+                LOGGER.exception("voice mode autoplay failed for %s", resolved_audio)
         body = str(config.get("generic_notification_text", "Notification received")).strip() or "Notification received"
         if not bool(config.get("hide_answer_text", False)):
             body = answer.strip() or body
