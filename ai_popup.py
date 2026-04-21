@@ -155,6 +155,7 @@ IMAGE_OUTPUT_DIR = AI_STATE_DIR / "generated-images"
 TTS_MODELS_DIR = AI_STATE_DIR / "tts-models"
 TTS_OUTPUT_DIR = AI_STATE_DIR / "tts-audio"
 VOICE_RECORDINGS_DIR = AI_STATE_DIR / "voice-recordings"
+CHAT_ARCHIVES_DIR = AI_STATE_DIR / "chat-archives"
 CHARACTER_LIBRARY_FILE = AI_STATE_DIR / "characters.json"
 CHARACTER_AVATARS_DIR = AI_STATE_DIR / "characters-avatars"
 VOICE_PRIVACY_CODEBOOK_FILE = AI_STATE_DIR / "voice-privacy-codebook.txt"
@@ -197,8 +198,10 @@ POCKETTTS_LANGUAGES: list[tuple[str, str]] = [
 ]
 POCKETTTS_LANGUAGE_CODES = {code for _label, code in POCKETTTS_LANGUAGES}
 AI_POPUP_LOG_FILE = AI_STATE_DIR / "ai_popup.log"
+AI_POPUP_ERROR_LOG_FILE = AI_STATE_DIR / "ai_popup-errors.log"
 AI_POPUP_CRASH_FILE = AI_STATE_DIR / "ai_popup.crash.log"
 KOKORO_SYNTH_LOG_FILE = AI_STATE_DIR / "kokoro_synth_worker.log"
+KOBOLDCPP_RELEASE_STATE_FILE = AI_STATE_DIR / "koboldcpp-release-state.json"
 _WAVEFORM_CACHE: dict[str, list[int]] = {}
 
 
@@ -327,8 +330,8 @@ def _setup_diagnostics() -> None:
             "%(asctime)s | %(levelname)s | %(threadName)s | %(message)s",
             datefmt="%Y-%m-%d %H:%M:%S",
         )
-        file_handler = logging.FileHandler(AI_POPUP_LOG_FILE, encoding="utf-8")
-        file_handler.setLevel(logging.DEBUG)
+        file_handler = logging.FileHandler(AI_POPUP_ERROR_LOG_FILE, encoding="utf-8")
+        file_handler.setLevel(logging.WARNING)
         file_handler.setFormatter(formatter)
         stream_handler = logging.StreamHandler(sys.stderr)
         stream_handler.setLevel(logging.INFO)
@@ -383,7 +386,7 @@ def _setup_diagnostics() -> None:
     except Exception as exc:
         LOGGER.warning("Failed to install Qt message handler: %s", exc)
 
-    LOGGER.info("Diagnostics initialized. Log file: %s", AI_POPUP_LOG_FILE)
+    LOGGER.info("Diagnostics initialized. Error log file: %s", AI_POPUP_ERROR_LOG_FILE)
 
 
 _setup_diagnostics()
@@ -562,6 +565,7 @@ class ChatItemData:
     title: str
     body: str
     meta: str = ""
+    created_at: float = field(default_factory=time.time)
     chips: list[SourceChipData] = field(default_factory=list)
     pending: bool = False
     audio_path: str = ""
@@ -1006,6 +1010,19 @@ def _decrypt_payload(blob: bytes) -> dict[str, object]:
     return value if isinstance(value, dict) else {}
 
 
+def _chat_timestamp_label(timestamp_value: object) -> str:
+    try:
+        stamp = float(timestamp_value or 0.0)
+    except Exception:
+        return ""
+    if stamp <= 0:
+        return ""
+    try:
+        return time.strftime("%H:%M", time.localtime(stamp))
+    except Exception:
+        return ""
+
+
 def secure_store_secret(name: str, value: str) -> None:
     connection = _secure_db()
     try:
@@ -1048,12 +1065,13 @@ def secure_append_chat(item: ChatItemData) -> None:
                         "title": item.title,
                         "body": item.body,
                         "meta": item.meta,
+                        "created_at": float(item.created_at or time.time()),
                         "chips": [chip.text for chip in item.chips],
                         "audio_path": item.audio_path,
                         "audio_waveform": [int(v) for v in item.audio_waveform],
                     }
                 ),
-                time.time(),
+                float(item.created_at or time.time()),
             ),
         )
         connection.commit()
@@ -1064,7 +1082,7 @@ def secure_append_chat(item: ChatItemData) -> None:
 def secure_load_chat_history() -> list[ChatItemData]:
     connection = _secure_db()
     try:
-        rows = connection.execute("SELECT payload FROM chat_history ORDER BY id ASC").fetchall()
+        rows = connection.execute("SELECT payload, created_at FROM chat_history ORDER BY id ASC").fetchall()
     finally:
         connection.close()
     history: list[ChatItemData] = []
@@ -1087,6 +1105,7 @@ def secure_load_chat_history() -> list[ChatItemData]:
                 title=str(payload.get("title", "")),
                 body=str(payload.get("body", "")),
                 meta=str(payload.get("meta", "")),
+                created_at=float(payload.get("created_at", row[1] if len(row) > 1 else time.time()) or time.time()),
                 chips=chips,
                 audio_path=str(payload.get("audio_path", "")),
                 audio_waveform=waveform,
@@ -1102,6 +1121,89 @@ def secure_clear_chat_history() -> None:
         connection.commit()
     finally:
         connection.close()
+
+
+def _chat_export_payload(items: list[ChatItemData]) -> dict[str, object]:
+    return {
+        "format": "hanauta-chat-export-v1",
+        "exported_at": time.time(),
+        "messages": [
+            {
+                "role": item.role,
+                "title": item.title,
+                "meta": item.meta,
+                "timestamp": float(item.created_at or time.time()),
+                "timestamp_label": _chat_timestamp_label(item.created_at),
+                "body_html": item.body,
+                "audio_path": item.audio_path,
+                "chips": [chip.text for chip in item.chips],
+            }
+            for item in items
+        ],
+        "plain_text": "\n\n".join(
+            f"[{_chat_timestamp_label(item.created_at) or '--:--'}] {item.title or item.role}: "
+            f"{re.sub(r'<[^>]+>', ' ', html.unescape(item.body)).strip()}"
+            for item in items
+        ).strip(),
+    }
+
+
+def archive_chat_history(items: list[ChatItemData]) -> Path:
+    CHAT_ARCHIVES_DIR.mkdir(parents=True, exist_ok=True)
+    stamp = time.strftime("%Y%m%d-%H%M%S", time.localtime())
+    path = CHAT_ARCHIVES_DIR / f"hanauta-chat-archive-{stamp}.json"
+    path.write_text(json.dumps(_chat_export_payload(items), ensure_ascii=False, indent=2), encoding="utf-8")
+    return path
+
+
+def _load_json_file(path: Path) -> dict[str, object]:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        return payload if isinstance(payload, dict) else {}
+    except Exception:
+        return {}
+
+
+def _save_json_file(path: Path, payload: dict[str, object]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def maybe_notify_koboldcpp_release() -> None:
+    now = time.time()
+    state = _load_json_file(KOBOLDCPP_RELEASE_STATE_FILE)
+    last_checked = float(state.get("last_checked", 0.0) or 0.0)
+    if now - last_checked < 20 * 60 * 60:
+        return
+    latest_tag = ""
+    latest_url = ""
+    try:
+        req = request.Request(
+            "https://api.github.com/repos/LostRuins/koboldcpp/releases/latest",
+            headers={
+                "User-Agent": "Hanauta AI/1.0",
+                "Accept": "application/vnd.github+json",
+            },
+        )
+        with request.urlopen(req, timeout=5.0) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+        if isinstance(payload, dict):
+            latest_tag = str(payload.get("tag_name", "")).strip()
+            latest_url = str(payload.get("html_url", "")).strip()
+    except Exception as exc:
+        LOGGER.warning("KoboldCpp release check failed: %s", exc)
+    previous_tag = str(state.get("last_seen_tag", "")).strip()
+    next_state = {
+        "last_checked": now,
+        "last_seen_tag": latest_tag or previous_tag,
+        "last_url": latest_url or str(state.get("last_url", "")).strip(),
+    }
+    _save_json_file(KOBOLDCPP_RELEASE_STATE_FILE, next_state)
+    if latest_tag and previous_tag and latest_tag != previous_tag:
+        body = f"New KoboldCpp release available: {latest_tag}"
+        if latest_url:
+            body = f"{body}\n{latest_url}"
+        send_desktop_notification("KoboldCpp update", body)
 
 
 def send_desktop_notification(title: str, body: str, icon_path: str = "") -> None:
@@ -1124,11 +1226,98 @@ def send_desktop_notification(title: str, body: str, icon_path: str = "") -> Non
         LOGGER.exception("notify-send failed")
 
 
+def send_desktop_notification_with_action(
+    title: str,
+    body: str,
+    action_key: str,
+    action_label: str,
+    callback: callable | None = None,
+    icon_path: str = "",
+) -> None:
+    try:
+        command = [
+            "notify-send",
+            "-a",
+            "Hanauta AI",
+            "--wait",
+            "--action",
+            f"{action_key}={action_label}",
+        ]
+        icon_candidate = Path(str(icon_path).strip()).expanduser() if str(icon_path).strip() else None
+        if icon_candidate is not None and icon_candidate.exists():
+            command.extend(["-i", str(icon_candidate)])
+        command.extend([title, body])
+        LOGGER.debug("notify-send action queued: title=%r body=%r action=%r", title, body, action_key)
+
+        def _runner() -> None:
+            try:
+                completed = subprocess.run(
+                    command,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.DEVNULL,
+                    text=True,
+                    check=False,
+                )
+                choice = (completed.stdout or "").strip()
+                if choice == action_key and callable(callback):
+                    callback()
+            except Exception:
+                LOGGER.exception("notify-send action failed")
+                send_desktop_notification(title, body, icon_path=icon_path)
+
+        threading.Thread(target=_runner, name="notify-action", daemon=True).start()
+    except Exception:
+        LOGGER.exception("notify-send action setup failed")
+        send_desktop_notification(title, body, icon_path=icon_path)
+
+
 def _normalize_host_url(host: str) -> str:
     value = host.strip().rstrip("/")
     if not value.startswith(("http://", "https://")):
         value = f"http://{value}"
     return value
+
+
+def _friendly_http_target(url: str) -> str:
+    parsed = urlparse(url)
+    if not parsed.scheme or not parsed.netloc:
+        return url
+    path = parsed.path or "/"
+    if parsed.query:
+        path = f"{path}?{parsed.query}"
+    return f"{parsed.scheme}://{parsed.netloc}{path}"
+
+
+def _friendly_network_error(action: str, url: str, exc: Exception) -> RuntimeError:
+    target = _friendly_http_target(url)
+    if isinstance(exc, error.URLError):
+        reason = getattr(exc, "reason", None)
+        if isinstance(reason, ConnectionRefusedError):
+            return RuntimeError(
+                f"{action} failed because {target} refused the connection. "
+                "The backend is not ready yet, is stopped, or is listening on another host/port."
+            )
+        if isinstance(reason, TimeoutError) or "timed out" in str(reason).lower():
+            return RuntimeError(f"{action} timed out while waiting for {target}.")
+        if isinstance(reason, OSError):
+            return RuntimeError(f"{action} failed at {target}: {reason}.")
+        return RuntimeError(f"{action} failed at {target}: {exc}.")
+    return RuntimeError(f"{action} failed at {target}: {exc}.")
+
+
+def _wait_for_http_ready(url: str, timeout: float = 8.0, poll: float = 0.25) -> bool:
+    deadline = time.time() + max(0.2, timeout)
+    while time.time() < deadline:
+        try:
+            with request.urlopen(url, timeout=min(1.2, max(0.3, poll * 2.0))) as response:
+                return int(getattr(response, "status", 200) or 200) < 500
+        except error.HTTPError as exc:
+            if int(getattr(exc, "code", 0) or 0) < 500:
+                return True
+        except Exception:
+            pass
+        time.sleep(max(0.05, poll))
+    return False
 
 
 def _http_json(
@@ -1140,8 +1329,13 @@ def _http_json(
     if headers:
         merged_headers.update(headers)
     req = request.Request(url, headers=merged_headers)
-    with request.urlopen(req, timeout=timeout) as response:
-        return json.loads(response.read().decode("utf-8"))
+    try:
+        with request.urlopen(req, timeout=timeout) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except error.HTTPError:
+        raise
+    except Exception as exc:
+        raise _friendly_network_error("Request", url, exc) from exc
 
 
 def _http_post_json(
@@ -1163,8 +1357,13 @@ def _http_post_json(
         headers=merged_headers,
         method="POST",
     )
-    with request.urlopen(req, timeout=timeout) as response:
-        return json.loads(response.read().decode("utf-8"))
+    try:
+        with request.urlopen(req, timeout=timeout) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except error.HTTPError:
+        raise
+    except Exception as exc:
+        raise _friendly_network_error("Request", url, exc) from exc
 
 
 def _sd_auth_headers(profile_key: str, payload: dict[str, object]) -> dict[str, str]:
@@ -1199,9 +1398,14 @@ def _http_post_bytes(
     if headers:
         merged_headers.update(headers)
     req = request.Request(url, data=body, headers=merged_headers, method="POST")
-    with request.urlopen(req, timeout=timeout) as response:
-        content_type = str(response.headers.get("Content-Type", ""))
-        return response.read(), content_type
+    try:
+        with request.urlopen(req, timeout=timeout) as response:
+            content_type = str(response.headers.get("Content-Type", ""))
+            return response.read(), content_type
+    except error.HTTPError:
+        raise
+    except Exception as exc:
+        raise _friendly_network_error("Request", url, exc) from exc
 
 
 def _http_post_multipart(
@@ -1241,8 +1445,13 @@ def _http_post_multipart(
     if headers:
         merged_headers.update(headers)
     req = request.Request(url, data=body, headers=merged_headers, method="POST")
-    with request.urlopen(req, timeout=timeout) as response:
-        return json.loads(response.read().decode("utf-8"))
+    try:
+        with request.urlopen(req, timeout=timeout) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except error.HTTPError:
+        raise
+    except Exception as exc:
+        raise _friendly_network_error("Upload", url, exc) from exc
 
 
 def _safe_slug(value: str) -> str:
@@ -3250,6 +3459,62 @@ def _stop_kokoro_server(payload: dict[str, object]) -> tuple[bool, str]:
     return True, f"Stopped Kokoro server process {pid}."
 
 
+def _koboldcpp_status(payload: dict[str, object]) -> tuple[bool, str]:
+    host = str(payload.get("host", "")).strip()
+    if host and _openai_compat_alive(host):
+        return True, f"Server active at {host}"
+    pid = int(payload.get("koboldcpp_pid", 0) or 0)
+    if _is_pid_alive(pid):
+        return True, f"Server process running (pid {pid})"
+    return False, "Server inactive"
+
+
+def _start_koboldcpp(payload: dict[str, object]) -> tuple[bool, str]:
+    binary_path = _existing_path(payload.get("binary_path"))
+    gguf_path = _existing_path(payload.get("gguf_path"))
+    if binary_path is None or gguf_path is None:
+        return False, "Configure both the KoboldCpp binary path and GGUF model first."
+    command = [str(binary_path), "--model", str(gguf_path)]
+    mmproj_path = _existing_path(payload.get("mmproj_path"))
+    if mmproj_path is not None:
+        command.extend(["--mmproj", str(mmproj_path)])
+    host = str(payload.get("host", "")).strip()
+    if host:
+        parsed = urlparse(_normalize_host_url(host))
+        if parsed.port:
+            command.extend(["--port", str(parsed.port)])
+        if parsed.hostname and parsed.hostname not in {"", "127.0.0.1", "localhost"}:
+            command.extend(["--host", parsed.hostname])
+    if str(payload.get("device", "cpu")).lower() == "gpu":
+        command.append("--usecublas")
+    if bool(payload.get("jinja", False)):
+        command.append("--jinja")
+    try:
+        process = subprocess.Popen(
+            command,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+    except Exception as exc:
+        return False, f"Unable to start KoboldCpp: {exc}"
+    payload["koboldcpp_pid"] = int(process.pid or 0)
+    return True, f"KoboldCpp started with {gguf_path.name}."
+
+
+def _stop_koboldcpp(payload: dict[str, object]) -> tuple[bool, str]:
+    pid = int(payload.get("koboldcpp_pid", 0) or 0)
+    if not _is_pid_alive(pid):
+        payload["koboldcpp_pid"] = 0
+        return False, "No tracked KoboldCpp process is running."
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except OSError as exc:
+        return False, f"Unable to stop KoboldCpp: {exc}"
+    payload["koboldcpp_pid"] = 0
+    return True, f"Stopped KoboldCpp process {pid}."
+
+
 def _pocket_server_binary_path() -> Path:
     return POCKETTTS_SERVER_INSTALL_DIR / POCKETTTS_SERVER_BINARY_NAME
 
@@ -3882,8 +4147,10 @@ class BackendSettingsDialog(QDialog):
         pocket_mode_layout.addStretch(1)
         shell_layout.addWidget(self.pocket_mode_row)
 
-        self.binary_path_input = QLineEdit()
+        self.binary_path_input = ClickableLineEdit()
         self.binary_path_input.setPlaceholderText("Local binary path")
+        self.binary_path_input.setToolTip("Click to browse for a local binary or model folder")
+        self.binary_path_input.clicked.connect(self._browse_binary_path)
         shell_layout.addWidget(self.binary_path_input)
 
         self.tts_repo_input = QLineEdit()
@@ -3916,6 +4183,24 @@ class BackendSettingsDialog(QDialog):
         shell_layout.addWidget(self.tts_server_row)
         self.kokoro_autostart_check = QCheckBox("Auto-start local TTS server when Linux session boots")
         shell_layout.addWidget(self.kokoro_autostart_check)
+
+        self.kobold_server_row = QWidget()
+        kobold_server_layout = QHBoxLayout(self.kobold_server_row)
+        kobold_server_layout.setContentsMargins(0, 0, 0, 0)
+        kobold_server_layout.setSpacing(8)
+        self.kobold_server_status_label = QLabel("Server status: unknown")
+        self.kobold_server_status_label.setStyleSheet(f"color: {TEXT_DIM};")
+        kobold_server_layout.addWidget(self.kobold_server_status_label, 1)
+        self.kobold_start_button = QPushButton("Start")
+        self.kobold_start_button.clicked.connect(self._start_kobold_clicked)
+        kobold_server_layout.addWidget(self.kobold_start_button)
+        self.kobold_restart_button = QPushButton("Restart")
+        self.kobold_restart_button.clicked.connect(self._restart_kobold_clicked)
+        kobold_server_layout.addWidget(self.kobold_restart_button)
+        self.kobold_stop_button = QPushButton("Stop")
+        self.kobold_stop_button.clicked.connect(self._stop_kobold_clicked)
+        kobold_server_layout.addWidget(self.kobold_stop_button)
+        shell_layout.addWidget(self.kobold_server_row)
 
         self.pocket_language_combo = QComboBox()
         self.pocket_language_combo.setToolTip("PocketTTS language")
@@ -3977,17 +4262,31 @@ class BackendSettingsDialog(QDialog):
         tts_test_layout.addWidget(self.tts_test_button)
         shell_layout.addWidget(self.tts_test_row)
 
-        self.gguf_path_input = QLineEdit()
+        self.gguf_path_input = ClickableLineEdit()
         self.gguf_path_input.setPlaceholderText("GGUF model path")
+        self.gguf_path_input.setToolTip("Click to browse for a GGUF model file")
+        self.gguf_path_input.clicked.connect(self._browse_gguf_path)
         shell_layout.addWidget(self.gguf_path_input)
 
-        self.text_model_path_input = QLineEdit()
+        self.text_model_path_input = ClickableLineEdit()
         self.text_model_path_input.setPlaceholderText("Optional text model path for JoyCaption-style setups")
+        self.text_model_path_input.setToolTip("Click to browse for an optional text model path")
+        self.text_model_path_input.clicked.connect(self._browse_text_model_path)
         shell_layout.addWidget(self.text_model_path_input)
 
-        self.mmproj_path_input = QLineEdit()
+        self.mmproj_path_input = ClickableLineEdit()
         self.mmproj_path_input.setPlaceholderText("Optional mmproj path")
+        self.mmproj_path_input.setToolTip("Click to browse for an optional mmproj file")
+        self.mmproj_path_input.clicked.connect(self._browse_mmproj_path)
         shell_layout.addWidget(self.mmproj_path_input)
+
+        self.kobold_jinja_check = QCheckBox("Enable Jinja chat template support")
+        self.kobold_jinja_check.setToolTip("Useful for Gemma 4 and other chat templates that expect Jinja support in KoboldCpp.")
+        shell_layout.addWidget(self.kobold_jinja_check)
+        self.kobold_test_prompt_input = QLineEdit()
+        self.kobold_test_prompt_input.setPlaceholderText("Test prompt for KoboldCpp")
+        self.kobold_test_prompt_input.setToolTip("This message is sent by the Test button to confirm the model is answering.")
+        shell_layout.addWidget(self.kobold_test_prompt_input)
 
         self.device_combo = QComboBox()
         self.device_combo.addItem("CPU", "cpu")
@@ -4043,8 +4342,10 @@ class BackendSettingsDialog(QDialog):
         self.resolution_layout.addStretch(1)
         shell_layout.addWidget(self.resolution_row)
 
-        self.output_dir_input = QLineEdit()
+        self.output_dir_input = ClickableLineEdit()
         self.output_dir_input.setPlaceholderText("SD output folder for monitor notifications")
+        self.output_dir_input.setToolTip("Click to browse for an output folder")
+        self.output_dir_input.clicked.connect(self._browse_output_dir)
         shell_layout.addWidget(self.output_dir_input)
 
         self.monitor_check = QCheckBox("Notify when new SD images appear in the output folder")
@@ -4063,10 +4364,15 @@ class BackendSettingsDialog(QDialog):
         self.status_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         status_row_layout.addWidget(self.status_label, 1)
         self.copy_status_button = QToolButton()
-        self.copy_status_button.setText("Copy errors")
+        self.copy_status_button.setText("Copy status")
         self.copy_status_button.setToolTip("Copy the current status/error text to the clipboard")
         self.copy_status_button.clicked.connect(self._copy_backend_errors)
         status_row_layout.addWidget(self.copy_status_button)
+        self.copy_log_button = QToolButton()
+        self.copy_log_button.setText("Copy log")
+        self.copy_log_button.setToolTip("Copy the private-safe error log to the clipboard")
+        self.copy_log_button.clicked.connect(self._copy_error_log)
+        status_row_layout.addWidget(self.copy_log_button)
         shell_layout.addWidget(self.status_row)
         self.validation_badge = QLabel("○ Not validated")
         self.validation_badge.setStyleSheet(f"color: {TEXT_DIM}; font-weight: 600;")
@@ -4218,6 +4524,8 @@ class BackendSettingsDialog(QDialog):
                 "gguf_path": self.gguf_path_input.text().strip(),
                 "text_model_path": self.text_model_path_input.text().strip(),
                 "mmproj_path": self.mmproj_path_input.text().strip(),
+                "jinja": bool(self.kobold_jinja_check.isChecked()),
+                "test_prompt": self.kobold_test_prompt_input.text().strip(),
                 "device": str(self.device_combo.currentData()),
                 "negative_prompt": self.negative_prompt_input.text().strip(),
                 "sampler_name": str(
@@ -4269,6 +4577,8 @@ class BackendSettingsDialog(QDialog):
         self.gguf_path_input.setText(str(payload.get("gguf_path", "")))
         self.text_model_path_input.setText(str(payload.get("text_model_path", "")))
         self.mmproj_path_input.setText(str(payload.get("mmproj_path", "")))
+        self.kobold_jinja_check.setChecked(bool(payload.get("jinja", False)))
+        self.kobold_test_prompt_input.setText(str(payload.get("test_prompt", "Tell me that KoboldCpp is working.")))
         device = str(payload.get("device", "cpu")).lower()
         self.device_combo.setCurrentIndex(1 if device == "gpu" else 0)
         self.negative_prompt_input.setText(str(payload.get("negative_prompt", "")))
@@ -4302,9 +4612,11 @@ class BackendSettingsDialog(QDialog):
         self.tts_repo_input.setVisible(is_tts and mode == "local_onnx")
         self.tts_bundle_url_input.setVisible(is_tts and mode == "local_onnx")
         show_tts_server_controls = is_tts and profile.key in {"kokorotts", "pockettts"} and mode == "local_onnx"
+        show_kobold_controls = is_kobold
         self.tts_server_command_input.setVisible(show_tts_server_controls)
         self.tts_server_row.setVisible(show_tts_server_controls)
         self.kokoro_autostart_check.setVisible(show_tts_server_controls)
+        self.kobold_server_row.setVisible(show_kobold_controls)
         self.pocket_lang_preset_row.setVisible(is_tts and profile.key == "pockettts")
         self.pocket_voice_ref_row.setVisible(is_tts and profile.key == "pockettts" and mode == "local_onnx")
         self.tts_voice_ref_input.setVisible(is_tts and profile.key == "pockettts" and mode == "local_onnx")
@@ -4317,6 +4629,8 @@ class BackendSettingsDialog(QDialog):
         self.gguf_path_input.setVisible(is_kobold)
         self.text_model_path_input.setVisible(is_kobold)
         self.mmproj_path_input.setVisible(is_kobold)
+        self.kobold_jinja_check.setVisible(is_kobold)
+        self.kobold_test_prompt_input.setVisible(is_kobold)
         self.device_combo.setVisible(device_enabled)
         self.negative_prompt_input.setVisible(is_sd)
         self.sampler_combo.setVisible(is_sd)
@@ -4347,6 +4661,8 @@ class BackendSettingsDialog(QDialog):
             self._reload_pocket_voice_list(payload)
         if show_tts_server_controls:
             self._refresh_tts_server_status(payload)
+        if show_kobold_controls:
+            self._refresh_kobold_status(payload)
         self._refresh_download_progress(profile.key if is_tts else "")
         if is_tts:
             self._apply_tts_mode_visibility()
@@ -4366,6 +4682,24 @@ class BackendSettingsDialog(QDialog):
             return
         payload = self._current_payload()
         ok, message = validate_backend(profile, payload)
+        if ok and profile.key == "koboldcpp":
+            host = str(payload.get("host", profile.host)).strip()
+            if not host or not _openai_compat_alive(host):
+                ok = False
+                message = "Start KoboldCpp first so the Test prompt can reach the API."
+            else:
+                test_prompt = str(payload.get("test_prompt", "")).strip() or "Tell me that KoboldCpp is working."
+                try:
+                    reply = _generate_openai_style_reply(
+                        host,
+                        str(payload.get("model", profile.model)).strip() or profile.model,
+                        [{"role": "user", "content": test_prompt}],
+                    ).strip()
+                    preview = reply[:220] + ("..." if len(reply) > 220 else "")
+                    message = f"Reply ok: {preview}" if preview else "KoboldCpp answered successfully."
+                except Exception as exc:
+                    ok = False
+                    message = str(exc).strip() or "KoboldCpp test failed."
         payload["tested"] = ok
         payload["last_status"] = message
         self.settings[profile.key] = payload
@@ -4404,6 +4738,8 @@ class BackendSettingsDialog(QDialog):
             save_backend_settings(self.settings)
         self.status_label.setText("Saved.")
         self.status_label.setStyleSheet(f"color: {TEXT_MID};")
+        if profile.key == "koboldcpp":
+            self._refresh_kobold_status(payload)
 
     def _install_pockettts(self) -> None:
         profile = self._selected_profile()
@@ -4506,6 +4842,186 @@ class BackendSettingsDialog(QDialog):
             return
         QGuiApplication.clipboard().setText(payload)
         send_desktop_notification("Clipboard", "Copied backend errors/status text.")
+
+    def _copy_error_log(self) -> None:
+        try:
+            text = AI_POPUP_ERROR_LOG_FILE.read_text(encoding="utf-8")
+        except Exception as exc:
+            self.status_label.setText(f"Unable to read error log: {exc}")
+            self.status_label.setStyleSheet(f"color: {ACCENT_ALT};")
+            return
+        if not text.strip():
+            send_desktop_notification("Clipboard", "The error log is currently empty.")
+            return
+        QGuiApplication.clipboard().setText(text)
+        send_desktop_notification("Clipboard", "Copied error log.")
+
+    def _styled_path_dialog(self) -> QFileDialog:
+        dialog = QFileDialog(self)
+        dialog.setOption(QFileDialog.Option.DontUseNativeDialog, True)
+        dialog.setStyleSheet(
+            f"""
+            QFileDialog, QWidget {{
+                background: {CARD_BG};
+                color: {TEXT};
+            }}
+            QLineEdit, QComboBox {{
+                background: {INPUT_BG};
+                color: {TEXT};
+                border: 1px solid {BORDER_SOFT};
+                border-radius: 12px;
+                padding: 8px 10px;
+                selection-background-color: {ACCENT_SOFT};
+            }}
+            QListView, QTreeView {{
+                background: {rgba(PANEL_BG, 0.96)};
+                color: {TEXT};
+                border: 1px solid {BORDER_SOFT};
+                border-radius: 12px;
+            }}
+            QListView::item:selected, QTreeView::item:selected {{
+                background: {ACCENT_SOFT};
+                color: {TEXT};
+            }}
+            QPushButton {{
+                min-height: 34px;
+                background: {CARD_BG_SOFT};
+                color: {TEXT};
+                border: 1px solid {BORDER_SOFT};
+                border-radius: 16px;
+                padding: 0 12px;
+                font-weight: {_button_css_weight(self.ui_font)};
+            }}
+            QPushButton:hover {{
+                background: {HOVER_BG};
+                border: 1px solid {BORDER_ACCENT};
+            }}
+            """
+        )
+        return dialog
+
+    def _pick_existing_file(self, title: str, start_path: str, filters: list[str]) -> str:
+        dialog = self._styled_path_dialog()
+        dialog.setWindowTitle(title)
+        base = Path(start_path).expanduser() if start_path.strip() else Path.home()
+        dialog.setDirectory(str(base.parent if base.exists() and base.is_file() else base))
+        dialog.setFileMode(QFileDialog.FileMode.ExistingFile)
+        dialog.setNameFilters(filters)
+        dialog.setAcceptMode(QFileDialog.AcceptMode.AcceptOpen)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return ""
+        files = dialog.selectedFiles()
+        return files[0] if files else ""
+
+    def _pick_existing_dir(self, title: str, start_path: str) -> str:
+        dialog = self._styled_path_dialog()
+        dialog.setWindowTitle(title)
+        base = Path(start_path).expanduser() if start_path.strip() else Path.home()
+        dialog.setDirectory(str(base if base.exists() and base.is_dir() else base.parent if base.parent.exists() else Path.home()))
+        dialog.setFileMode(QFileDialog.FileMode.Directory)
+        dialog.setOption(QFileDialog.Option.ShowDirsOnly, True)
+        dialog.setAcceptMode(QFileDialog.AcceptMode.AcceptOpen)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return ""
+        files = dialog.selectedFiles()
+        return files[0] if files else ""
+
+    def _browse_binary_path(self) -> None:
+        profile = self._selected_profile()
+        current = self.binary_path_input.text().strip()
+        if profile.key == "koboldcpp":
+            picked = self._pick_existing_file(
+                "Select KoboldCpp binary",
+                current,
+                ["Executable files (*)", "All files (*)"],
+            )
+        else:
+            picked = self._pick_existing_dir("Select local model folder", current)
+        if picked:
+            self.binary_path_input.setText(picked)
+
+    def _browse_gguf_path(self) -> None:
+        picked = self._pick_existing_file(
+            "Select GGUF model",
+            self.gguf_path_input.text().strip(),
+            ["GGUF models (*.gguf)", "All files (*)"],
+        )
+        if picked:
+            self.gguf_path_input.setText(picked)
+
+    def _browse_text_model_path(self) -> None:
+        current = self.text_model_path_input.text().strip()
+        picked = self._pick_existing_file(
+            "Select text model path",
+            current,
+            ["Model files (*)", "All files (*)"],
+        )
+        if not picked and current:
+            picked = self._pick_existing_dir("Select text model folder", current)
+        if picked:
+            self.text_model_path_input.setText(picked)
+
+    def _browse_mmproj_path(self) -> None:
+        picked = self._pick_existing_file(
+            "Select mmproj file",
+            self.mmproj_path_input.text().strip(),
+            ["Projector files (*)", "All files (*)"],
+        )
+        if picked:
+            self.mmproj_path_input.setText(picked)
+
+    def _browse_output_dir(self) -> None:
+        picked = self._pick_existing_dir("Select SD output folder", self.output_dir_input.text().strip())
+        if picked:
+            self.output_dir_input.setText(picked)
+
+    def _refresh_kobold_status(self, payload: dict[str, object]) -> None:
+        active, message = _koboldcpp_status(payload)
+        self.kobold_server_status_label.setText(f"Server status: {message}")
+        self.kobold_server_status_label.setStyleSheet(f"color: {ACCENT if active else TEXT_DIM};")
+
+    def _persist_selected_backend_payload(self, payload: dict[str, object]) -> None:
+        profile = self._selected_profile()
+        self.settings[profile.key] = payload
+        save_backend_settings(self.settings)
+
+    def _start_kobold_clicked(self) -> None:
+        profile = self._selected_profile()
+        if profile.key != "koboldcpp":
+            return
+        payload = self._current_payload()
+        ok, message = _start_koboldcpp(payload)
+        self._persist_selected_backend_payload(payload)
+        self._refresh_kobold_status(payload)
+        if ok:
+            self._schedule_kobold_ready_notification(profile, payload)
+        self.status_label.setText(message)
+        self.status_label.setStyleSheet(f"color: {ACCENT if ok else ACCENT_ALT};")
+
+    def _stop_kobold_clicked(self) -> None:
+        profile = self._selected_profile()
+        if profile.key != "koboldcpp":
+            return
+        payload = self._current_payload()
+        ok, message = _stop_koboldcpp(payload)
+        self._persist_selected_backend_payload(payload)
+        self._refresh_kobold_status(payload)
+        self.status_label.setText(message)
+        self.status_label.setStyleSheet(f"color: {TEXT_MID if ok else ACCENT_ALT};")
+
+    def _restart_kobold_clicked(self) -> None:
+        profile = self._selected_profile()
+        if profile.key != "koboldcpp":
+            return
+        payload = self._current_payload()
+        _stop_koboldcpp(payload)
+        ok, message = _start_koboldcpp(payload)
+        self._persist_selected_backend_payload(payload)
+        self._refresh_kobold_status(payload)
+        if ok:
+            self._schedule_kobold_ready_notification(profile, payload)
+        self.status_label.setText(message)
+        self.status_label.setStyleSheet(f"color: {ACCENT if ok else ACCENT_ALT};")
 
     def _on_tts_mode_changed(self) -> None:
         profile = self._selected_profile()
@@ -5130,6 +5646,40 @@ class ActionIcon(QToolButton):
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setFixedSize(30, 30)
         self.setFont(QFont(ui_font, 11, _button_qfont_weight(ui_font)))
+        self.setStyleSheet(
+            f"""
+            QToolButton {{
+                background: transparent;
+                color: {UI_ICON_DIM};
+                border: none;
+                border-radius: 15px;
+            }}
+            QToolButton:hover {{
+                background: {HOVER_BG};
+                color: {UI_ICON_ACTIVE};
+            }}
+            """
+        )
+
+    def set_highlighted(self, enabled: bool) -> None:
+        if enabled:
+            self.setStyleSheet(
+                f"""
+                QToolButton {{
+                    background: {rgba(ACCENT_SOFT, 0.16)};
+                    color: #d9ffe7;
+                    border: 1px solid rgba(104, 255, 159, 0.92);
+                    border-radius: 15px;
+                    box-shadow: 0 0 0 2px rgba(104, 255, 159, 0.20);
+                }}
+                QToolButton:hover {{
+                    background: rgba(104, 255, 159, 0.16);
+                    color: #f4fff8;
+                    border: 1px solid rgba(104, 255, 159, 1.0);
+                }}
+                """
+            )
+            return
         self.setStyleSheet(
             f"""
             QToolButton {{
@@ -5979,7 +6529,8 @@ WEB_POPUP_HTML = r"""
       overflow-x: hidden;
       background: transparent;
       color: var(--text);
-      font-family: Inter, system-ui, sans-serif;
+      font-family: Rubik, Inter, system-ui, sans-serif;
+      font-weight: 500;
     }
     *::-webkit-scrollbar:horizontal { height: 0 !important; display: none; }
     * { scrollbar-width: thin; scrollbar-color: rgba(198,180,255,.24) rgba(255,255,255,.04); }
@@ -6033,8 +6584,8 @@ WEB_POPUP_HTML = r"""
       gap: 12px;
     }
     .brand { flex: 1; min-width: 0; }
-    .title { font-size: 16px; font-weight: 700; color: var(--text); }
-    .status { font-size: 12px; color: var(--text-dim); margin-top: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .title { font-size: 16px; font-weight: 800; color: var(--text); }
+    .status { font-size: 12px; font-weight: 600; color: var(--text-dim); margin-top: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .actions { display: flex; gap: 8px; }
     .icon-btn, .pill, .send-btn, .voice-stop {
       border: 1px solid var(--line);
@@ -6049,7 +6600,7 @@ WEB_POPUP_HTML = r"""
     .body { flex: 1; min-height: 0; display: flex; flex-direction: column; }
     .chat-page { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 12px; padding: 14px 14px 14px 14px; }
     .backend-row { display: flex; flex-wrap: wrap; gap: 8px; }
-    .pill { padding: 7px 12px; font-size: 12px; }
+    .pill { padding: 7px 12px; font-size: 12px; font-weight: 700; }
     .pill.active { background: rgba(198,180,255,.16); border-color: var(--line-2); color: var(--accent); }
     .conversation {
       flex: 1;
@@ -6112,15 +6663,16 @@ WEB_POPUP_HTML = r"""
     }
     .msg.user .bubble { background: var(--user-bg); border-color: rgba(198,180,255,.14); }
     .bubble-head { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
-    .bubble-title { font-size: 13px; font-weight: 700; color: var(--accent); }
+    .bubble-title { font-size: 13px; font-weight: 800; color: var(--accent); }
     .msg.user .bubble-title { color: #efe7ff; }
-    .bubble-meta { font-size: 11px; color: var(--text-dim); }
-    .bubble-body { font-size: 13px; line-height: 1.58; color: var(--text); }
+    .bubble-meta { font-size: 11px; font-weight: 600; color: var(--text-dim); }
+    .bubble-time { margin-left: auto; padding: 4px 8px; border-radius: 999px; background: rgba(255,255,255,.05); border: 1px solid rgba(255,255,255,.06); color: rgba(255,255,255,.68); font-size: 10px; font-weight: 700; }
+    .bubble-body { font-size: 14px; line-height: 1.62; font-weight: 500; color: var(--text); }
     .bubble-body p { margin: 0 0 8px 0; }
     .bubble-body img { max-width: 100%; height: auto; }
     .bubble-body pre, .bubble-body code { white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; }
     .chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
-    .chip { padding: 7px 11px; border-radius: 999px; background: rgba(255,255,255,.05); border: 1px solid rgba(255,255,255,.05); font-size: 11px; color: var(--text); }
+    .chip { padding: 7px 11px; border-radius: 999px; background: rgba(255,255,255,.05); border: 1px solid rgba(255,255,255,.05); font-size: 11px; font-weight: 700; color: var(--text); }
     .audio-btn {
       margin-top: 10px;
       border-radius: 16px;
@@ -6149,12 +6701,33 @@ WEB_POPUP_HTML = r"""
       border-radius: 18px;
       padding: 12px 14px;
       font: inherit;
+      font-weight: 500;
       outline: none;
       overflow-x: hidden;
     }
     .composer-row { display: flex; align-items: center; gap: 10px; margin-top: 10px; }
-    .provider { flex: 1; font-size: 12px; color: var(--text-dim); }
-    .send-btn { padding: 8px 14px; background: rgba(198,180,255,.18); color: #fff; }
+    .provider { flex: 1; font-size: 12px; font-weight: 600; color: var(--text-dim); }
+    .send-btn {
+      min-width: 40px;
+      height: 40px;
+      padding: 0 12px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      background: rgba(198,180,255,.18);
+      color: #fff;
+      font-weight: 800;
+      font-size: 15px;
+    }
+    .send-btn.secondary { background: rgba(255,255,255,.06); color: var(--text); }
+    .send-btn .btn-icon {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      line-height: 1;
+      transform: translateY(-0.5px);
+    }
     .voice-page {
       flex: 1;
       min-height: 0;
@@ -6214,10 +6787,10 @@ WEB_POPUP_HTML = r"""
       border-color: rgba(214,195,255,.24);
     }
     .voice-top { text-align: center; }
-    .voice-pill { display: inline-flex; padding: 8px 12px; border-radius: 999px; background: rgba(255,255,255,.04); border: 1px solid rgba(214,195,255,.12); font-size: 11px; color: #ddd6fe; }
-    .voice-name { margin-top: 16px; font-size: 15px; font-weight: 700; }
-    .voice-status { margin-top: 8px; font-size: 30px; font-weight: 700; }
-    .voice-sub { margin-top: 8px; font-size: 13px; color: var(--text-dim); }
+    .voice-pill { display: inline-flex; padding: 8px 12px; border-radius: 999px; background: rgba(255,255,255,.04); border: 1px solid rgba(214,195,255,.12); font-size: 11px; font-weight: 700; color: #ddd6fe; }
+    .voice-name { margin-top: 16px; font-size: 15px; font-weight: 800; }
+    .voice-status { margin-top: 8px; font-size: 30px; font-weight: 800; }
+    .voice-sub { margin-top: 8px; font-size: 13px; font-weight: 500; color: var(--text-dim); }
     .orb-scene { position: relative; margin: 22px auto 14px auto; width: 330px; height: 330px; }
     .orb-wrap, .orb-glow, .orb-aura, .orb-core, .orb-liquid, .orb-glass, .orb-ring, .orb-ring-2, .orb-ring-3, .orb-photo-border, .orb-photo {
       position: absolute; inset: 0; border-radius: 50%;
@@ -6379,8 +6952,10 @@ WEB_POPUP_HTML = r"""
             <textarea id="composerInput" placeholder="Message the model... Enter to send"></textarea>
             <div class="composer-row">
               <div class="provider" id="providerLabel"></div>
-              <button class="send-btn" id="clearBtn">Clear</button>
-              <button class="send-btn" id="sendBtn">Send</button>
+              <button class="send-btn secondary" id="archiveBtn" title="Archive chat" aria-label="Archive chat"><span class="btn-icon">🗄</span></button>
+              <button class="send-btn secondary" id="exportBtn" title="Export chat" aria-label="Export chat"><span class="btn-icon">⤴</span></button>
+              <button class="send-btn secondary" id="clearBtn" title="Clear chat" aria-label="Clear chat"><span class="btn-icon">🧹</span></button>
+              <button class="send-btn" id="sendBtn" title="Send message" aria-label="Send message"><span class="btn-icon">➤</span></button>
             </div>
           </div>
         </div>
@@ -6471,6 +7046,7 @@ WEB_POPUP_HTML = r"""
               <div class="bubble-head">
                 <div class="bubble-title">${esc(item.title || '')}</div>
                 <div class="bubble-meta">${esc(item.meta || '')}</div>
+                <div class="bubble-time">${esc(item.timestamp_label || '')}</div>
               </div>
               <div class="bubble-body">${item.body_html || ''}</div>
               ${audio}
@@ -6537,6 +7113,8 @@ WEB_POPUP_HTML = r"""
 
     document.getElementById('sendBtn').addEventListener('click', sendNow);
     document.getElementById('clearBtn').addEventListener('click', () => bridge && bridge.clearChat && bridge.clearChat());
+    document.getElementById('archiveBtn').addEventListener('click', () => bridge && bridge.archiveChat && bridge.archiveChat());
+    document.getElementById('exportBtn').addEventListener('click', () => bridge && bridge.exportChat && bridge.exportChat());
     document.getElementById('settingsBtn').addEventListener('click', () => bridge && bridge.openSettings && bridge.openSettings());
     document.getElementById('charactersBtn').addEventListener('click', () => bridge && bridge.openCharacters && bridge.openCharacters());
     document.getElementById('voiceBtn').addEventListener('click', () => bridge && bridge.toggleVoiceMode && bridge.toggleVoiceMode());
@@ -6594,6 +7172,14 @@ class PopupWebBridge(QObject):
     @pyqtSlot()
     def clearChat(self) -> None:
         self.owner._clear_cards()
+
+    @pyqtSlot()
+    def archiveChat(self) -> None:
+        self.owner._archive_cards()
+
+    @pyqtSlot()
+    def exportChat(self) -> None:
+        self.owner._export_cards()
 
     @pyqtSlot(str)
     def selectBackend(self, key: str) -> None:
@@ -7543,6 +8129,7 @@ class ComposerBar(QFrame):
 class CharacterLibraryDialog(QDialog):
     def __init__(self, cards: list[CharacterCard], active_id: str, ui_font: str, parent: QWidget | None = None) -> None:
         super().__init__(parent)
+        self.ui_font = ui_font
         self.setWindowTitle("Character Library")
         self.cards = [CharacterCard(**card.__dict__) for card in cards]
         self.active_id = active_id
@@ -7679,13 +8266,66 @@ class CharacterLibraryDialog(QDialog):
             lines.append(f"\nSystem prompt:\n{card.system_prompt}")
         self.preview.setPlainText("\n".join(lines))
 
-    def _import_cards(self) -> None:
-        paths, _ = QFileDialog.getOpenFileNames(
-            self,
-            "Import character cards",
-            str(Path.home()),
-            "Character Cards (*.json *.png);;JSON (*.json);;PNG (*.png)",
+    def _select_character_files(self) -> list[str]:
+        dialog = QFileDialog(self)
+        dialog.setWindowTitle("Import character cards")
+        dialog.setDirectory(str(Path.home()))
+        dialog.setFileMode(QFileDialog.FileMode.ExistingFiles)
+        dialog.setNameFilters(
+            [
+                "Character Cards (*.json *.png)",
+                "JSON (*.json)",
+                "PNG (*.png)",
+                "All files (*)",
+            ]
         )
+        dialog.setAcceptMode(QFileDialog.AcceptMode.AcceptOpen)
+        dialog.setOption(QFileDialog.Option.DontUseNativeDialog, True)
+        dialog.setStyleSheet(
+            f"""
+            QFileDialog, QWidget {{
+                background: {CARD_BG};
+                color: {TEXT};
+            }}
+            QLineEdit, QComboBox {{
+                background: {INPUT_BG};
+                color: {TEXT};
+                border: 1px solid {BORDER_SOFT};
+                border-radius: 12px;
+                padding: 8px 10px;
+                selection-background-color: {ACCENT_SOFT};
+            }}
+            QListView, QTreeView {{
+                background: {rgba(PANEL_BG, 0.96)};
+                color: {TEXT};
+                border: 1px solid {BORDER_SOFT};
+                border-radius: 12px;
+            }}
+            QListView::item:selected, QTreeView::item:selected {{
+                background: {ACCENT_SOFT};
+                color: {TEXT};
+            }}
+            QPushButton {{
+                min-height: 34px;
+                background: {CARD_BG_SOFT};
+                color: {TEXT};
+                border: 1px solid {BORDER_SOFT};
+                border-radius: 16px;
+                padding: 0 12px;
+                font-weight: {_button_css_weight(self.ui_font)};
+            }}
+            QPushButton:hover {{
+                background: {HOVER_BG};
+                border: 1px solid {BORDER_ACCENT};
+            }}
+            """
+        )
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return []
+        return list(dialog.selectedFiles())
+
+    def _import_cards(self) -> None:
+        paths = self._select_character_files()
         if not paths:
             return
         imported_names: list[str] = []
@@ -8061,9 +8701,14 @@ class SidebarPanel(QFrame):
         self._voice_listening = False
         self._voice_speaking = False
         self._web_mode = "chat"
+        self._pending_kobold_ready_profile: str = ""
+        self._pending_kobold_ready_host: str = ""
         self._text_response_timer = QTimer(self)
         self._text_response_timer.setSingleShot(True)
         self._text_response_timer.timeout.connect(self._finish_mock_text_response)
+        self._kobold_ready_timer = QTimer(self)
+        self._kobold_ready_timer.setInterval(1800)
+        self._kobold_ready_timer.timeout.connect(self._poll_pending_kobold_ready)
 
         self.setObjectName("sidebarPanel")
         self.setFixedWidth(452)
@@ -8115,6 +8760,7 @@ class SidebarPanel(QFrame):
         self._refresh_available_backends()
         self._update_voice_mode_view()
         self._sync_web_ui()
+        QTimer.singleShot(2200, maybe_notify_koboldcpp_release)
         self.monitor_timer = QTimer(self)
         self.monitor_timer.timeout.connect(self._poll_sd_output_monitors)
         self.monitor_timer.start(8000)
@@ -8365,6 +9011,7 @@ class SidebarPanel(QFrame):
             self.composer.entry.setEnabled(False)
             self.composer.entry.setPlaceholderText("Open backend settings to configure a provider")
         self._refresh_backend_hint()
+        self._apply_voice_button_state()
         self._sync_web_ui()
 
     def _open_backend_settings(self) -> None:
@@ -8372,6 +9019,7 @@ class SidebarPanel(QFrame):
         dialog.exec()
         self.backend_settings = load_backend_settings()
         self._refresh_available_backends()
+        self._apply_voice_button_state()
         self._sync_web_ui()
 
     def _open_voice_mode_settings(self) -> bool:
@@ -8379,6 +9027,7 @@ class SidebarPanel(QFrame):
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return False
         self.backend_settings = load_backend_settings()
+        self._apply_voice_button_state()
         return True
 
     def _voice_character_name(self) -> str:
@@ -8426,6 +9075,133 @@ class SidebarPanel(QFrame):
         except Exception:
             return ""
 
+    def _voice_stack_ready(self) -> bool:
+        config = _voice_mode_settings(self.backend_settings)
+        if not bool(config.get("enabled", False)):
+            return False
+        stt_ready = False
+        if bool(config.get("stt_external_api", False)):
+            stt_ready = bool(str(config.get("stt_host", "")).strip())
+        else:
+            backend = str(config.get("stt_backend", "whisper")).strip().lower()
+            if backend == "vosk":
+                stt_ready = bool(str(config.get("stt_vosk_model_path", "")).strip())
+            else:
+                stt_ready = bool(str(config.get("stt_model", "small")).strip())
+        if bool(config.get("llm_external_api", False)):
+            llm_ready = bool(str(config.get("llm_host", "")).strip())
+        else:
+            profile = self.profile_by_key.get(str(config.get("llm_profile", "koboldcpp")).strip())
+            if profile is None:
+                llm_ready = False
+            else:
+                payload = dict(self.backend_settings.get(profile.key, {}))
+                if profile.key == "koboldcpp":
+                    llm_ready = _existing_path(payload.get("binary_path")) is not None and _existing_path(payload.get("gguf_path")) is not None
+                elif profile.provider == "ollama":
+                    llm_ready = bool(str(payload.get("host", profile.host)).strip())
+                else:
+                    llm_ready = bool(str(payload.get("host", profile.host)).strip())
+        tts_profile = self.profile_by_key.get(str(config.get("tts_profile", "kokorotts")).strip())
+        if tts_profile is None:
+            tts_ready = False
+        else:
+            payload = dict(self.backend_settings.get(tts_profile.key, {}))
+            mode = _default_tts_mode(payload)
+            if mode == "external_api":
+                tts_ready = bool(str(payload.get("host", tts_profile.host)).strip())
+            else:
+                model_dir = _default_tts_model_dir(tts_profile, payload)
+                tts_ready = model_dir.exists()
+        return bool(stt_ready and llm_ready and tts_ready)
+
+    def _apply_voice_button_state(self) -> None:
+        active = self._voice_worker is not None and self._voice_worker.isRunning()
+        if active:
+            self.voice_button.set_highlighted(True)
+            return
+        self.voice_button.set_highlighted(self._voice_stack_ready())
+
+    def _reopen_popup_from_notification(self) -> None:
+        host = self.window()
+        if host is not None and hasattr(host, "present"):
+            QTimer.singleShot(0, getattr(host, "present"))
+            return
+        if host is not None:
+            QTimer.singleShot(0, host.show)
+
+    def _schedule_kobold_ready_notification(self, profile: BackendProfile, payload: dict[str, object]) -> None:
+        host = str(payload.get("host", profile.host)).strip()
+        if not host:
+            return
+        self._pending_kobold_ready_profile = profile.label
+        self._pending_kobold_ready_host = host
+        if not self._kobold_ready_timer.isActive():
+            self._kobold_ready_timer.start()
+
+    def _poll_pending_kobold_ready(self) -> None:
+        host = self._pending_kobold_ready_host.strip()
+        if not host:
+            self._kobold_ready_timer.stop()
+            return
+        if not _openai_compat_alive(host):
+            return
+        label = self._pending_kobold_ready_profile or "KoboldCpp"
+        self._pending_kobold_ready_profile = ""
+        self._pending_kobold_ready_host = ""
+        self._kobold_ready_timer.stop()
+        self.add_card(
+            ChatItemData(
+                role="assistant",
+                title="Runtime",
+                meta="koboldcpp ready",
+                body=f"<p>{html.escape(label)} is ready at {html.escape(_normalize_host_url(host))}. Voice mode can start now.</p>",
+                chips=[SourceChipData("koboldcpp"), SourceChipData("ready")],
+            )
+        )
+        if not self._popup_open():
+            send_desktop_notification_with_action(
+                "KoboldCpp ready",
+                f"{label} is ready. Reopen chat?",
+                "show",
+                "Reopen chat",
+                callback=self._reopen_popup_from_notification,
+            )
+        self._apply_voice_button_state()
+
+    def _wait_for_voice_llm_backend(self, config: dict[str, object]) -> tuple[bool, str]:
+        if bool(config.get("llm_external_api", False)):
+            host = str(config.get("llm_host", "")).strip()
+            if not host:
+                return False, "Voice mode needs an LLM host."
+            ready = _wait_for_http_ready(f"{_api_url_from_host(host)}/v1/models", timeout=8.0)
+            if ready:
+                return True, ""
+            return False, (
+                f"Voice mode could not reach {_normalize_host_url(host)}. "
+                "Check whether the external LLM endpoint is online and listening on the configured port."
+            )
+        profile_key = str(config.get("llm_profile", "koboldcpp")).strip()
+        profile = self.profile_by_key.get(profile_key)
+        if profile is None:
+            return False, "Select a valid text backend for voice mode."
+        payload = dict(self.backend_settings.get(profile.key, {}))
+        host = str(payload.get("host", profile.host)).strip()
+        if not host:
+            return True, ""
+        if profile.provider in {"openai", "openai_compat"}:
+            ready = _wait_for_http_ready(f"{_api_url_from_host(host)}/v1/models", timeout=8.0)
+        elif profile.provider == "ollama":
+            ready = _wait_for_http_ready(f"{_api_url_from_host(host)}/api/tags", timeout=8.0)
+        else:
+            ready = _host_reachable(host, timeout=1.5)
+        if ready:
+            return True, ""
+        return False, (
+            f"Voice mode could not reach {profile.label} at {_normalize_host_url(host)}. "
+            "The backend may still be starting or may be using a different host/port."
+        )
+
     def _set_voice_mode_screen(self, enabled: bool) -> None:
         self._web_mode = "voice" if enabled else "chat"
         self._sync_web_ui()
@@ -8454,6 +9230,8 @@ class SidebarPanel(QFrame):
             "role": item.role,
             "title": item.title,
             "meta": item.meta,
+            "timestamp": float(item.created_at or time.time()),
+            "timestamp_label": _chat_timestamp_label(item.created_at),
             "body_html": item.body,
             "chips": [chip.text for chip in item.chips],
             "audio_path": item_audio,
@@ -8535,7 +9313,43 @@ class SidebarPanel(QFrame):
             profile = self.profile_by_key.get(str(config.get("llm_profile", "koboldcpp")).strip())
             if profile is not None and profile.key == "koboldcpp":
                 self.backend_settings.setdefault(profile.key, {})["device"] = str(config.get("llm_device", "cpu"))
-                self._maybe_launch_koboldcpp(profile)
+                if not self._maybe_launch_koboldcpp(profile):
+                    self.add_card(
+                        ChatItemData(
+                            role="assistant",
+                            title="Voice mode",
+                            meta="error",
+                            body="<p>Voice mode could not start because KoboldCpp is not ready.</p>",
+                            chips=[SourceChipData("voice")],
+                        )
+                    )
+                    return
+        ready, detail = self._wait_for_voice_llm_backend(config)
+        if not ready:
+            llm_profile = self.profile_by_key.get(str(config.get("llm_profile", "koboldcpp")).strip())
+            if llm_profile is not None and llm_profile.key == "koboldcpp":
+                payload = dict(self.backend_settings.get(llm_profile.key, {}))
+                self._schedule_kobold_ready_notification(llm_profile, payload)
+                detail = (
+                    f"{detail} You'll be notified here as soon as KoboldCpp finishes starting."
+                )
+            self.header_status.setText(detail)
+            self.add_card(
+                ChatItemData(
+                    role="assistant",
+                    title="Voice mode",
+                    meta="error",
+                    body=f"<p>{html.escape(detail)}</p>",
+                    chips=[SourceChipData("voice")],
+                )
+            )
+            return
+        stt_backend, stt_model = self._voice_stt_backend_model()
+        llm_backend, llm_model = self._voice_llm_backend_model()
+        tts_profile = self.profile_by_key.get(str(config.get("tts_profile", "kokorotts")).strip())
+        tts_label = tts_profile.label if tts_profile is not None else "TTS"
+        tts_model = str(self.backend_settings.get(tts_profile.key, {}).get("model", tts_profile.model)).strip() if tts_profile is not None else "default"
+        self._add_runtime_status_card("Voice Session Ready", f"STT {stt_backend} {stt_model} • LLM {llm_backend} {llm_model} • TTS {tts_label} {tts_model}", tone="success", chips=["voice", "models"])
         character = self._active_character() if bool(config.get("enable_character", True)) else None
         worker = VoiceConversationWorker(config, self.profile_by_key, self.backend_settings, character)
         self._voice_worker = worker
@@ -8552,6 +9366,7 @@ class SidebarPanel(QFrame):
         self._voice_last_emotion = "neutral"
         self.voice_button.setText("■")
         self.voice_button.setToolTip("Stop voice mode")
+        self._apply_voice_button_state()
         self.header_status.setText("Voice mode listening.")
         self._set_voice_mode_screen(True)
         self._update_voice_mode_view(listening=True)
@@ -8574,15 +9389,18 @@ class SidebarPanel(QFrame):
             LOGGER.exception("voice mode stop fadeout failed")
         self.voice_button.setText("🎙")
         self.voice_button.setToolTip("Start voice mode")
+        self._apply_voice_button_state()
         self.header_status.setText("Voice mode stopping.")
         self._voice_last_status = "Voice mode stopped"
         self._voice_last_emotion = "neutral"
         self._set_voice_mode_screen(False)
+        self._add_runtime_status_card("Voice Session Stopped", "Voice mode was stopped. STT, LLM, and TTS backends are now idle.", tone="warn", chips=["voice", "idle"])
 
     def _finish_voice_worker(self) -> None:
         self._voice_worker = None
         self.voice_button.setText("🎙")
         self.voice_button.setToolTip("Start voice mode")
+        self._apply_voice_button_state()
         self._set_voice_mode_screen(False)
         self._refresh_backend_hint()
 
@@ -8590,6 +9408,19 @@ class SidebarPanel(QFrame):
         clean = str(message).strip() or "Voice mode"
         self._voice_last_status = clean
         self.header_status.setText(clean)
+        lowered = clean.lower()
+        if lowered == "transcribing":
+            backend, model = self._voice_stt_backend_model()
+            self._add_runtime_status_card("Loading STT", f"Preparing {backend} ({model}) for transcription.", chips=["voice", "stt"])
+        elif lowered == "thinking":
+            backend, model = self._voice_llm_backend_model()
+            self._add_runtime_status_card("Loading LLM", f"Generating a reply with {backend} ({model}).", chips=["voice", "llm"])
+        elif lowered == "speaking":
+            config = _voice_mode_settings(self.backend_settings)
+            profile = self.profile_by_key.get(str(config.get("tts_profile", "kokorotts")).strip())
+            label = profile.label if profile is not None else "TTS"
+            model = str(self.backend_settings.get(profile.key, {}).get("model", profile.model)).strip() if profile is not None else "default"
+            self._add_runtime_status_card("Loading TTS", f"Synthesizing speech with {label} ({model}).", chips=["voice", "tts"])
         self._update_voice_mode_view(
             listening=(clean.lower() == "listening"),
             speaking=(clean.lower() == "speaking"),
@@ -8598,6 +9429,7 @@ class SidebarPanel(QFrame):
     def _handle_voice_transcript(self, transcript: str) -> None:
         stt_backend, stt_model = self._voice_stt_backend_model()
         _voice_log("stt", stt_backend, stt_model, transcript.strip())
+        self._add_runtime_status_card("STT Ready", f"{stt_backend} ({stt_model}) finished transcription.", tone="success", chips=["voice", "stt"])
         self._voice_last_transcript = transcript.strip()
         self._voice_last_emotion = "neutral"
         self._update_voice_mode_view(listening=False, speaking=False)
@@ -8610,6 +9442,7 @@ class SidebarPanel(QFrame):
 
     def _handle_voice_response(self, answer: str, audio_path_text: str, llm_label: str, llm_model: str, source: str, emotion: str) -> None:
         _voice_log("llm", llm_label, llm_model, answer.strip())
+        self._add_runtime_status_card("LLM Ready", f"{llm_label} ({llm_model}) generated a reply.", tone="success", chips=["voice", "llm"])
         self._voice_last_response = answer.strip()
         self._voice_last_emotion = emotion.strip().lower() or "neutral"
         self._voice_last_status = "Speaking"
@@ -8631,6 +9464,7 @@ class SidebarPanel(QFrame):
                 audio_waveform=waveform,
             )
         )
+        self._add_runtime_status_card("TTS Ready", f"{source} finished audio synthesis and playback started.", tone="success", chips=["voice", "tts"])
         try:
             self.chat_view.autoplay_audio(resolved_audio)
         except Exception:
@@ -8653,6 +9487,7 @@ class SidebarPanel(QFrame):
             LOGGER.exception("voice barge-in fadeout failed")
 
     def _handle_voice_failed(self, message: str) -> None:
+        LOGGER.warning("Voice mode failed: %s", message)
         self._voice_last_status = f"Voice mode: {message}"
         self._voice_last_emotion = "neutral"
         self._update_voice_mode_view(listening=False, speaking=False)
@@ -8664,6 +9499,29 @@ class SidebarPanel(QFrame):
                 meta="error",
                 body=f"<p>{html.escape(message)}</p>",
                 chips=[SourceChipData("voice")],
+            )
+        )
+
+    def _add_runtime_status_card(self, title: str, detail: str, *, tone: str = "info", chips: list[str] | None = None) -> None:
+        palette = {
+            "info": ("#d7ccff", "rgba(198,180,255,0.18)"),
+            "success": ("#b8f5d0", "rgba(121,255,186,0.16)"),
+            "warn": ("#ffe0a8", "rgba(255,191,94,0.18)"),
+            "error": ("#ffb9c7", "rgba(255,107,139,0.18)"),
+        }
+        fg, bg = palette.get(tone, palette["info"])
+        body = (
+            f'<p><span style="display:inline-flex;padding:4px 10px;border-radius:999px;'
+            f'background:{bg};color:{fg};font-weight:700;">{html.escape(title)}</span></p>'
+            f"<p>{html.escape(detail)}</p>"
+        )
+        self.add_card(
+            ChatItemData(
+                role="assistant",
+                title="Runtime",
+                meta="model status",
+                body=body,
+                chips=[SourceChipData(chip) for chip in (chips or [])],
             )
         )
 
@@ -8685,8 +9543,8 @@ class SidebarPanel(QFrame):
         host = str(payload.get("host", profile.host)).strip()
         if host and _openai_compat_alive(host):
             return True
-        process = self._local_backend_processes.get(profile.key)
-        if process is not None and process.poll() is None:
+        active, _message = _koboldcpp_status(payload)
+        if active:
             return True
         binary_path = _existing_path(payload.get("binary_path"))
         gguf_path = _existing_path(payload.get("gguf_path"))
@@ -8713,33 +9571,15 @@ class SidebarPanel(QFrame):
         return ok
 
     def _launch_koboldcpp_process(self, profile: BackendProfile, payload: dict[str, object]) -> tuple[bool, str]:
-        binary_path = _existing_path(payload.get("binary_path"))
-        gguf_path = _existing_path(payload.get("gguf_path"))
-        if binary_path is None or gguf_path is None:
-            return False, "Configure both the KoboldCpp binary path and GGUF model first."
-        command = [str(binary_path), "--model", str(gguf_path)]
-        mmproj_path = _existing_path(payload.get("mmproj_path"))
-        if mmproj_path is not None:
-            command.extend(["--mmproj", str(mmproj_path)])
-        host = str(payload.get("host", profile.host)).strip()
-        if host:
-            parsed = urlparse(_normalize_host_url(host))
-            if parsed.port:
-                command.extend(["--port", str(parsed.port)])
-        if str(payload.get("device", "cpu")).lower() == "gpu":
-            command.append("--usecublas")
-        try:
-            process = subprocess.Popen(
-                command,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                start_new_session=True,
-            )
-        except Exception as exc:
-            return False, f"Unable to start KoboldCpp: {exc}"
-        self._local_backend_processes[profile.key] = process
-        send_desktop_notification("KoboldCpp starting", f"{profile.label} is starting with {gguf_path.name}.")
-        return True, f"Starting KoboldCpp with {gguf_path.name}."
+        ok, message = _start_koboldcpp(payload)
+        if ok:
+            self.backend_settings[profile.key] = dict(payload)
+            save_backend_settings(self.backend_settings)
+            self._schedule_kobold_ready_notification(profile, payload)
+            gguf_path = _existing_path(payload.get("gguf_path"))
+            if gguf_path is not None:
+                send_desktop_notification("KoboldCpp starting", f"{profile.label} is starting with {gguf_path.name}.")
+        return ok, message
 
     def _clear_cards(self) -> None:
         self.chat_history = []
@@ -8748,6 +9588,47 @@ class SidebarPanel(QFrame):
         secure_clear_chat_history()
         self._render_chat_history()
         self._sync_web_ui()
+
+    def _archive_cards(self) -> None:
+        if not self.chat_history:
+            send_desktop_notification("Archive chat", "There are no chat messages to archive.")
+            return
+        try:
+            archive_path = archive_chat_history(self.chat_history)
+        except Exception as exc:
+            send_desktop_notification("Archive failed", str(exc))
+            return
+        self._clear_cards()
+        send_desktop_notification("Chat archived", str(archive_path))
+
+    def _export_cards(self) -> None:
+        if not self.chat_history:
+            send_desktop_notification("Export chat", "There are no chat messages to export.")
+            return
+        suggested = f"hanauta-chat-export-{time.strftime('%Y%m%d-%H%M%S', time.localtime())}.zip"
+        target, _ = QFileDialog.getSaveFileName(
+            self,
+            "Export chat",
+            str(AI_STATE_DIR / suggested),
+            "ZIP archive (*.zip);;JSON file (*.json)",
+        )
+        if not target:
+            return
+        target_path = Path(target).expanduser()
+        payload = _chat_export_payload(self.chat_history)
+        try:
+            target_path.parent.mkdir(parents=True, exist_ok=True)
+            if target_path.suffix.lower() == ".json":
+                target_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+            else:
+                if target_path.suffix.lower() != ".zip":
+                    target_path = target_path.with_suffix(".zip")
+                with zipfile.ZipFile(target_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+                    archive.writestr("conversation.json", json.dumps(payload, ensure_ascii=False, indent=2))
+                    archive.writestr("conversation.txt", str(payload.get("plain_text", "")))
+            send_desktop_notification("Chat exported", str(target_path))
+        except Exception as exc:
+            send_desktop_notification("Export failed", str(exc))
 
     def add_card(self, data: ChatItemData, animate: bool = True) -> None:
         del animate
