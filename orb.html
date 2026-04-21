@@ -1,0 +1,414 @@
+import React, { useEffect, useMemo, useState } from "react";
+import { AnimatePresence, motion } from "framer-motion";
+import { ImagePlus, Pause, Volume2 } from "lucide-react";
+
+const DEMO_CAPTIONS = [
+  "Hey. I’m here and listening.",
+  "I can answer, summarize, and keep the conversation flowing.",
+  "This orb swells and shimmers while the character is speaking.",
+  "Drop in a face photo and it becomes your voice companion core.",
+];
+
+const CHARACTER_IMAGE = "";
+
+export default function GeminiStyleVoiceOrb() {
+  const [speaking, setSpeaking] = useState(true);
+  const [captionIndex, setCaptionIndex] = useState(0);
+
+  useEffect(() => {
+    if (!speaking) return;
+    const id = window.setInterval(() => {
+      setCaptionIndex((current) => (current + 1) % DEMO_CAPTIONS.length);
+    }, 2200);
+    return () => window.clearInterval(id);
+  }, [speaking]);
+
+  const particles = useMemo(
+    () =>
+      Array.from({ length: 18 }, (_, i) => ({
+        id: i,
+        size: 6 + ((i * 9) % 12),
+        left: 10 + ((i * 17) % 80),
+        top: 12 + ((i * 11) % 76),
+        delay: i * 0.18,
+        duration: 4.2 + (i % 4) * 0.45,
+      })),
+    []
+  );
+
+  return (
+    <div className="min-h-screen overflow-hidden bg-[#050816] text-white">
+      <style>{`
+        .bg-mesh {
+          background:
+            radial-gradient(circle at 50% 18%, rgba(129, 140, 248, 0.22), transparent 22%),
+            radial-gradient(circle at 22% 30%, rgba(34, 211, 238, 0.16), transparent 24%),
+            radial-gradient(circle at 78% 38%, rgba(168, 85, 247, 0.16), transparent 24%),
+            radial-gradient(circle at 50% 78%, rgba(56, 189, 248, 0.12), transparent 30%),
+            linear-gradient(180deg, #0a0f22 0%, #050816 100%);
+        }
+
+        .orb-scene {
+          perspective: 1400px;
+          transform-style: preserve-3d;
+        }
+
+        .orb-shell,
+        .orb-core,
+        .orb-aura,
+        .orb-glow,
+        .orb-ring,
+        .orb-ring-2,
+        .orb-ring-3,
+        .orb-glass,
+        .orb-liquid,
+        .orb-photo,
+        .orb-photo-border {
+          position: absolute;
+          inset: 0;
+          border-radius: 9999px;
+          transform-style: preserve-3d;
+        }
+
+        .orb-glow {
+          inset: -16%;
+          background:
+            radial-gradient(circle at 50% 50%, rgba(96, 165, 250, 0.34), rgba(167, 139, 250, 0.18) 34%, transparent 68%);
+          filter: blur(28px);
+          transform: translateZ(-80px);
+        }
+
+        .orb-aura {
+          inset: -6%;
+          background:
+            radial-gradient(circle at 50% 50%, rgba(255,255,255,0.10), transparent 58%),
+            conic-gradient(from 180deg, rgba(34,211,238,0.12), rgba(168,85,247,0.12), rgba(96,165,250,0.18), rgba(34,211,238,0.12));
+          filter: blur(2px);
+          opacity: 0.95;
+          transform: translateZ(-8px);
+        }
+
+        .orb-core {
+          background:
+            radial-gradient(circle at 32% 24%, rgba(255,255,255,0.95) 0 6%, rgba(255,255,255,0.28) 9%, transparent 18%),
+            radial-gradient(circle at 68% 70%, rgba(191, 219, 254, 0.16), transparent 20%),
+            radial-gradient(circle at 30% 70%, rgba(34, 211, 238, 0.26), transparent 30%),
+            radial-gradient(circle at 72% 34%, rgba(168, 85, 247, 0.26), transparent 28%),
+            linear-gradient(145deg, rgba(17,24,39,0.12), rgba(9,14,30,0.46)),
+            conic-gradient(from 220deg at 50% 50%, #67e8f9, #7c3aed, #60a5fa, #22d3ee, #67e8f9);
+          box-shadow:
+            inset -26px -36px 70px rgba(0, 0, 0, 0.45),
+            inset 10px 16px 46px rgba(255, 255, 255, 0.08),
+            0 0 0 1px rgba(255,255,255,0.08);
+          overflow: hidden;
+        }
+
+        .orb-liquid {
+          inset: 5%;
+          background:
+            radial-gradient(circle at 30% 30%, rgba(255,255,255,0.18), transparent 20%),
+            radial-gradient(circle at 64% 44%, rgba(255,255,255,0.10), transparent 22%),
+            conic-gradient(from 120deg, rgba(34,211,238,0.18), rgba(96,165,250,0.10), rgba(168,85,247,0.18), rgba(34,211,238,0.18));
+          mix-blend-mode: screen;
+          opacity: 0.95;
+          filter: blur(12px);
+        }
+
+        .orb-glass {
+          inset: 6%;
+          background:
+            linear-gradient(145deg, rgba(255,255,255,0.22), rgba(255,255,255,0.02) 34%, rgba(255,255,255,0.08) 58%, rgba(255,255,255,0.04) 100%),
+            radial-gradient(circle at 32% 20%, rgba(255,255,255,0.72), rgba(255,255,255,0.14) 16%, transparent 28%);
+          mix-blend-mode: screen;
+          transform: translateZ(26px);
+          pointer-events: none;
+        }
+
+        .orb-ring,
+        .orb-ring-2,
+        .orb-ring-3 {
+          border: 1px solid rgba(255,255,255,0.16);
+        }
+
+        .orb-ring {
+          inset: -4%;
+          transform: translateZ(-4px) rotateX(76deg);
+          opacity: 0.55;
+        }
+
+        .orb-ring-2 {
+          inset: 4%;
+          transform: translateZ(14px) rotateY(76deg);
+          opacity: 0.4;
+        }
+
+        .orb-ring-3 {
+          inset: 16%;
+          transform: translateZ(30px) rotateX(84deg);
+          opacity: 0.3;
+        }
+
+        .orb-photo-border {
+          inset: 28%;
+          background: linear-gradient(145deg, rgba(255,255,255,0.24), rgba(255,255,255,0.08));
+          padding: 1px;
+          transform: translateZ(40px);
+          box-shadow: 0 16px 40px rgba(0,0,0,0.28);
+        }
+
+        .orb-photo {
+          inset: 1px;
+          overflow: hidden;
+          background:
+            radial-gradient(circle at 35% 24%, rgba(255,255,255,0.10), transparent 16%),
+            linear-gradient(180deg, rgba(255,255,255,0.12), rgba(255,255,255,0.03)),
+            rgba(9, 14, 30, 0.92);
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          backdrop-filter: blur(10px);
+        }
+
+        .caption-sheen {
+          background:
+            linear-gradient(135deg, rgba(255,255,255,0.18), rgba(255,255,255,0.04)),
+            rgba(255,255,255,0.04);
+          box-shadow:
+            inset 0 1px 0 rgba(255,255,255,0.14),
+            0 18px 40px rgba(0,0,0,0.22);
+          backdrop-filter: blur(16px);
+        }
+
+        .soft-grid {
+          background-image:
+            linear-gradient(rgba(255,255,255,0.03) 1px, transparent 1px),
+            linear-gradient(90deg, rgba(255,255,255,0.03) 1px, transparent 1px);
+          background-size: 40px 40px;
+          mask-image: radial-gradient(circle at center, black 36%, transparent 86%);
+        }
+      `}</style>
+
+      <div className="bg-mesh relative flex min-h-screen items-center justify-center px-6 py-10">
+        <div className="soft-grid pointer-events-none absolute inset-0" />
+
+        <div className="relative flex w-full max-w-5xl flex-col items-center justify-center gap-8">
+          <div className="orb-scene relative flex h-[520px] w-full items-center justify-center">
+            <motion.div
+              className="relative h-[320px] w-[320px] sm:h-[380px] sm:w-[380px]"
+              animate={
+                speaking
+                  ? {
+                      scale: [1, 1.035, 0.985, 1.05, 1],
+                      rotateZ: [0, -0.6, 0.8, -0.3, 0],
+                      y: [0, -4, 2, -6, 0],
+                    }
+                  : {
+                      scale: 1,
+                      rotateZ: 0,
+                      y: 0,
+                    }
+              }
+              transition={{
+                duration: 2.8,
+                repeat: Infinity,
+                ease: "easeInOut",
+              }}
+            >
+              <motion.div
+                className="orb-shell absolute inset-0"
+                animate={
+                  speaking
+                    ? {
+                        rotateY: [0, 8, -6, 0],
+                        rotateX: [0, -5, 4, 0],
+                      }
+                    : { rotateY: 0, rotateX: 0 }
+                }
+                transition={{ duration: 3.2, repeat: Infinity, ease: "easeInOut" }}
+              >
+                <motion.div
+                  className="orb-glow"
+                  animate={
+                    speaking
+                      ? {
+                          scale: [0.96, 1.16, 1.02, 1.12, 0.96],
+                          opacity: [0.55, 0.95, 0.7, 0.9, 0.55],
+                        }
+                      : {
+                          scale: 0.92,
+                          opacity: 0.45,
+                        }
+                  }
+                  transition={{ duration: 2.4, repeat: Infinity, ease: "easeInOut" }}
+                />
+
+                <motion.div
+                  className="orb-aura"
+                  animate={
+                    speaking
+                      ? {
+                          scale: [1, 1.08, 1.02, 1.1, 1],
+                          rotate: [0, 12, -10, 0],
+                        }
+                      : {
+                          scale: 1,
+                          rotate: 0,
+                        }
+                  }
+                  transition={{ duration: 3.8, repeat: Infinity, ease: "easeInOut" }}
+                />
+
+                <motion.div
+                  className="orb-core"
+                  animate={
+                    speaking
+                      ? {
+                          borderRadius: [
+                            "50% 50% 50% 50% / 50% 50% 50% 50%",
+                            "46% 54% 48% 52% / 52% 44% 56% 48%",
+                            "53% 47% 55% 45% / 47% 57% 43% 53%",
+                            "50% 50% 50% 50% / 50% 50% 50% 50%",
+                          ],
+                        }
+                      : {
+                          borderRadius: "50% 50% 50% 50% / 50% 50% 50% 50%",
+                        }
+                  }
+                  transition={{ duration: 2.6, repeat: Infinity, ease: "easeInOut" }}
+                />
+
+                <motion.div
+                  className="orb-liquid"
+                  animate={
+                    speaking
+                      ? {
+                          rotate: [0, 18, -14, 0],
+                          scale: [1, 1.06, 0.98, 1.04, 1],
+                        }
+                      : {
+                          rotate: 0,
+                          scale: 1,
+                        }
+                  }
+                  transition={{ duration: 4.2, repeat: Infinity, ease: "easeInOut" }}
+                />
+
+                <motion.div
+                  className="orb-ring"
+                  animate={speaking ? { rotateZ: [0, 360] } : { rotateZ: 0 }}
+                  transition={{ duration: 10, repeat: Infinity, ease: "linear" }}
+                />
+                <motion.div
+                  className="orb-ring-2"
+                  animate={speaking ? { rotateZ: [0, -360] } : { rotateZ: 0 }}
+                  transition={{ duration: 13, repeat: Infinity, ease: "linear" }}
+                />
+                <motion.div
+                  className="orb-ring-3"
+                  animate={
+                    speaking
+                      ? { scale: [1, 1.08, 1], opacity: [0.22, 0.42, 0.22] }
+                      : { scale: 1, opacity: 0.22 }
+                  }
+                  transition={{ duration: 2.1, repeat: Infinity, ease: "easeInOut" }}
+                />
+
+                <div className="orb-glass" />
+
+                <div className="orb-photo-border">
+                  <div className="orb-photo">
+                    {CHARACTER_IMAGE ? (
+                      <img
+                        src={CHARACTER_IMAGE}
+                        alt="Character"
+                        className="h-full w-full object-cover"
+                      />
+                    ) : (
+                      <div className="flex flex-col items-center gap-2 text-center text-white/72">
+                        <div className="flex h-12 w-12 items-center justify-center rounded-full border border-white/12 bg-white/8">
+                          <ImagePlus className="h-5 w-5" />
+                        </div>
+                        <div className="px-4 text-[10px] font-medium uppercase tracking-[0.24em] text-white/52">
+                          character photo
+                        </div>
+                      </div>
+                    )}
+
+                    <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_30%_20%,rgba(255,255,255,0.16),transparent_20%),linear-gradient(180deg,rgba(255,255,255,0.06),transparent_40%,rgba(255,255,255,0.02))]" />
+                  </div>
+                </div>
+
+                {particles.map((particle) => (
+                  <motion.span
+                    key={particle.id}
+                    className="absolute rounded-full bg-white/75"
+                    style={{
+                      left: `${particle.left}%`,
+                      top: `${particle.top}%`,
+                      width: particle.size,
+                      height: particle.size,
+                      boxShadow: "0 0 20px rgba(186,230,253,0.55)",
+                    }}
+                    animate={
+                      speaking
+                        ? {
+                            y: [0, -14, 0],
+                            x: [0, 4, -3, 0],
+                            opacity: [0.18, 0.9, 0.18],
+                            scale: [0.8, 1.4, 0.8],
+                          }
+                        : {
+                            y: [0, -4, 0],
+                            opacity: [0.1, 0.35, 0.1],
+                            scale: [0.7, 0.9, 0.7],
+                          }
+                    }
+                    transition={{
+                      duration: particle.duration,
+                      repeat: Infinity,
+                      ease: "easeInOut",
+                      delay: particle.delay,
+                    }}
+                  />
+                ))}
+              </motion.div>
+            </motion.div>
+          </div>
+
+          <div className="relative flex min-h-[84px] w-full max-w-2xl items-center justify-center px-4">
+            <AnimatePresence mode="wait">
+              {speaking && (
+                <motion.div
+                  key={captionIndex}
+                  initial={{ opacity: 0, y: 16, scale: 0.96 }}
+                  animate={{ opacity: 1, y: 0, scale: 1 }}
+                  exit={{ opacity: 0, y: -10, scale: 0.98 }}
+                  transition={{ duration: 0.42, ease: "easeOut" }}
+                  className="caption-sheen rounded-full border border-white/10 px-6 py-4 text-center text-sm text-white/88 sm:text-base"
+                >
+                  {DEMO_CAPTIONS[captionIndex]}
+                </motion.div>
+              )}
+            </AnimatePresence>
+
+            {!speaking && (
+              <div className="rounded-full border border-white/10 bg-white/5 px-5 py-3 text-sm text-white/45 backdrop-blur-xl">
+                Captions appear while the orb is speaking.
+              </div>
+            )}
+          </div>
+
+          <div className="flex items-center gap-3">
+            <button
+              onClick={() => setSpeaking((value) => !value)}
+              className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/7 px-4 py-2 text-sm text-white/85 backdrop-blur-xl transition hover:bg-white/10"
+            >
+              {speaking ? <Pause className="h-4 w-4" /> : <Volume2 className="h-4 w-4" />}
+              {speaking ? "Stop demo speech" : "Start demo speech"}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}

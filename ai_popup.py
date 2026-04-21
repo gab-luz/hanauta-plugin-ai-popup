@@ -44,7 +44,7 @@ for _flag in _extra_flags:
 os.environ["QTWEBENGINE_CHROMIUM_FLAGS"] = _chromium_flags
 
 from cryptography.fernet import Fernet, InvalidToken
-from PyQt6.QtCore import QEasingCurve, QObject, QPoint, QPropertyAnimation, QLocale, QThread, Qt, QTimer, QUrl, pyqtProperty, pyqtSignal, qInstallMessageHandler
+from PyQt6.QtCore import QEasingCurve, QObject, QPoint, QPropertyAnimation, QLocale, QThread, Qt, QTimer, QUrl, pyqtProperty, pyqtSignal, pyqtSlot, qInstallMessageHandler
 from PyQt6.QtGui import QColor, QCursor, QFont, QFontDatabase, QGuiApplication, QIcon, QPainter, QPen, QPixmap
 from PyQt6.QtGui import QDesktopServices
 from PyQt6.QtNetwork import QHostAddress, QTcpServer, QTcpSocket
@@ -66,6 +66,7 @@ from PyQt6.QtWidgets import (
     QPushButton,
     QMessageBox,
     QScrollArea,
+    QStackedLayout,
     QSizePolicy,
     QStyle,
     QTextBrowser,
@@ -84,14 +85,15 @@ except Exception:
 QWebEnginePage = object  # type: ignore[assignment]
 QWebEngineSettings = object  # type: ignore[assignment]
 QWebEngineView = object  # type: ignore[assignment]
+QWebChannel = object  # type: ignore[assignment]
 WEBENGINE_AVAILABLE = False
-if os.environ.get("HANAUTA_AI_POPUP_WEBENGINE", "0").strip() == "1":
-    try:
-        from PyQt6.QtWebEngineCore import QWebEnginePage, QWebEngineSettings
-        from PyQt6.QtWebEngineWidgets import QWebEngineView
-        WEBENGINE_AVAILABLE = True
-    except Exception:
-        WEBENGINE_AVAILABLE = False
+try:
+    from PyQt6.QtWebChannel import QWebChannel
+    from PyQt6.QtWebEngineCore import QWebEnginePage, QWebEngineSettings
+    from PyQt6.QtWebEngineWidgets import QWebEngineView
+    WEBENGINE_AVAILABLE = True
+except Exception:
+    WEBENGINE_AVAILABLE = False
 
 PLUGIN_ROOT = Path(__file__).resolve().parent
 
@@ -151,6 +153,7 @@ SECURE_KEY_FILE = AI_STATE_DIR / "secure_store.key"
 IMAGE_OUTPUT_DIR = AI_STATE_DIR / "generated-images"
 TTS_MODELS_DIR = AI_STATE_DIR / "tts-models"
 TTS_OUTPUT_DIR = AI_STATE_DIR / "tts-audio"
+VOICE_RECORDINGS_DIR = AI_STATE_DIR / "voice-recordings"
 CHARACTER_LIBRARY_FILE = AI_STATE_DIR / "characters.json"
 CHARACTER_AVATARS_DIR = AI_STATE_DIR / "characters-avatars"
 NOTIFICATION_CENTER_STATE_DIR = Path.home() / ".local" / "state" / "hanauta" / "notification-center"
@@ -1085,6 +1088,47 @@ def _http_post_bytes(
         return response.read(), content_type
 
 
+def _http_post_multipart(
+    url: str,
+    fields: dict[str, str],
+    files: dict[str, tuple[str, bytes, str]],
+    headers: dict[str, str] | None = None,
+    timeout: float = 240.0,
+) -> dict[str, object]:
+    boundary = f"----HanautaAIPopup{int(time.time() * 1000)}{os.getpid()}"
+    body_parts: list[bytes] = []
+    for name, value in fields.items():
+        body_parts.append(f"--{boundary}\r\n".encode("utf-8"))
+        body_parts.append(
+            f'Content-Disposition: form-data; name="{name}"\r\n\r\n'.encode("utf-8")
+        )
+        body_parts.append(str(value).encode("utf-8"))
+        body_parts.append(b"\r\n")
+    for name, (filename, data, content_type) in files.items():
+        safe_name = filename.replace('"', "")
+        body_parts.append(f"--{boundary}\r\n".encode("utf-8"))
+        body_parts.append(
+            (
+                f'Content-Disposition: form-data; name="{name}"; filename="{safe_name}"\r\n'
+                f"Content-Type: {content_type}\r\n\r\n"
+            ).encode("utf-8")
+        )
+        body_parts.append(data)
+        body_parts.append(b"\r\n")
+    body_parts.append(f"--{boundary}--\r\n".encode("utf-8"))
+    body = b"".join(body_parts)
+    merged_headers = {
+        "User-Agent": "Hanauta AI/1.0",
+        "Content-Type": f"multipart/form-data; boundary={boundary}",
+        "Content-Length": str(len(body)),
+    }
+    if headers:
+        merged_headers.update(headers)
+    req = request.Request(url, data=body, headers=merged_headers, method="POST")
+    with request.urlopen(req, timeout=timeout) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
 def _safe_slug(value: str) -> str:
     raw = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in value.strip())
     compact = "_".join(part for part in raw.split("_") if part)
@@ -1122,6 +1166,603 @@ def _play_audio_file(audio_path: Path) -> None:
                 return
         except Exception:
             continue
+
+
+def _voice_mode_defaults() -> dict[str, object]:
+    return {
+        "enabled": False,
+        "record_seconds": "5",
+        "silence_threshold": "0.012",
+        "stt_backend": "whisper",
+        "stt_model": "small",
+        "stt_device": "cpu",
+        "stt_external_api": False,
+        "stt_host": "api.openai.com",
+        "stt_remote_model": "whisper-1",
+        "stt_vosk_model_path": "",
+        "llm_backend": "profile",
+        "llm_profile": "koboldcpp",
+        "llm_device": "cpu",
+        "llm_external_api": False,
+        "llm_host": "api.openai.com",
+        "llm_model": "gpt-4.1-mini",
+        "tts_profile": "kokorotts",
+        "tts_device": "cpu",
+        "tts_external_api": False,
+        "barge_in_enabled": True,
+        "barge_in_threshold": "0.035",
+        "enable_character": True,
+        "hide_character_photo": False,
+        "hide_answer_text": False,
+        "generic_notification_text": "Notification received",
+    }
+
+
+def _voice_mode_settings(settings: dict[str, dict[str, object]]) -> dict[str, object]:
+    payload = dict(_voice_mode_defaults())
+    raw = settings.get("_voice_mode", {})
+    if isinstance(raw, dict):
+        payload.update(raw)
+    return payload
+
+
+def _with_voice_device(payload: dict[str, object], device: str) -> dict[str, object]:
+    updated = dict(payload)
+    clean = device.strip().lower()
+    if clean in {"cpu", "gpu"}:
+        updated["device"] = clean
+    return updated
+
+
+def _api_url_from_host(host: str) -> str:
+    clean = host.strip().rstrip("/")
+    if not clean:
+        return ""
+    if clean.startswith(("http://", "https://")):
+        return clean
+    if clean in {"api.openai.com", "www.api.openai.com"} or clean.endswith(".openai.com"):
+        return f"https://{clean}"
+    return f"http://{clean}"
+
+
+def _voice_recording_rms(audio_path: Path) -> float:
+    try:
+        import audioop
+
+        with wave.open(str(audio_path), "rb") as handle:
+            width = int(handle.getsampwidth() or 2)
+            frames = handle.readframes(int(handle.getnframes() or 0))
+        if not frames:
+            return 0.0
+        peak = float((1 << (8 * width - 1)) - 1)
+        return float(audioop.rms(frames, width)) / peak if peak > 0 else 0.0
+    except Exception:
+        return 0.0
+
+
+def _wav_duration_seconds(audio_path: Path) -> float:
+    try:
+        with wave.open(str(audio_path), "rb") as handle:
+            frames = int(handle.getnframes() or 0)
+            rate = int(handle.getframerate() or 0)
+        return (frames / float(rate)) if rate > 0 else 0.0
+    except Exception:
+        return 0.0
+
+
+def _record_microphone_wav(seconds: float) -> Path:
+    VOICE_RECORDINGS_DIR.mkdir(parents=True, exist_ok=True)
+    duration = max(0.25, min(30.0, float(seconds or 5.0)))
+    output = VOICE_RECORDINGS_DIR / f"voice_{int(time.time() * 1000)}.wav"
+    commands: list[list[str]] = []
+    if shutil.which("ffmpeg"):
+        commands.append([
+            "ffmpeg",
+            "-y",
+            "-f",
+            "pulse",
+            "-i",
+            "default",
+            "-t",
+            f"{duration:.2f}",
+            "-ac",
+            "1",
+            "-ar",
+            "16000",
+            str(output),
+        ])
+    if shutil.which("arecord"):
+        commands.append([
+            "arecord",
+            "-q",
+            "-f",
+            "S16_LE",
+            "-c",
+            "1",
+            "-r",
+            "16000",
+            "-d",
+            str(max(1, int(round(duration)))),
+            str(output),
+        ])
+    if shutil.which("pw-record"):
+        commands.append([
+            "pw-record",
+            "--channels",
+            "1",
+            "--rate",
+            "16000",
+            str(output),
+        ])
+    if not commands:
+        raise RuntimeError("Install ffmpeg, arecord, or pw-record to capture microphone audio.")
+    last_error = ""
+    for command in commands:
+        try:
+            timeout = duration + 4.0
+            result = subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                check=False,
+            )
+            if result.returncode == 0 and output.exists() and output.stat().st_size > 44:
+                return output
+            last_error = (result.stderr or result.stdout or "").strip()
+        except subprocess.TimeoutExpired:
+            if output.exists() and output.stat().st_size > 44:
+                return output
+            last_error = "microphone recorder timed out"
+        except Exception as exc:
+            last_error = str(exc)
+    raise RuntimeError(last_error or "Microphone recording failed.")
+
+
+def _transcribe_with_external_api(audio_path: Path, config: dict[str, object]) -> str:
+    host = str(config.get("stt_host", "")).strip()
+    if not host:
+        raise RuntimeError("External STT requires a host.")
+    api_key = secure_load_secret("voice_mode:stt_api_key").strip()
+    headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+    payload = _http_post_multipart(
+        f"{_api_url_from_host(host)}/v1/audio/transcriptions",
+        fields={
+            "model": str(config.get("stt_remote_model", "whisper-1")).strip() or "whisper-1",
+            "response_format": "json",
+        },
+        files={"file": (audio_path.name, audio_path.read_bytes(), "audio/wav")},
+        headers=headers,
+        timeout=240.0,
+    )
+    text = str(payload.get("text", "")).strip()
+    if not text:
+        raise RuntimeError("STT endpoint returned no text.")
+    return text
+
+
+def _voice_venv_dir(engine: str, model_name: str, device: str) -> Path:
+    engine_slug = _safe_slug(engine.strip().lower() or "voice")
+    model_slug = _safe_slug(model_name.strip().lower() or "model")
+    device_slug = _safe_slug(device.strip().lower() or "cpu")
+    return AI_STATE_DIR / "voice-venvs" / engine_slug / model_slug / device_slug
+
+
+def _voice_venv_python(engine: str, model_name: str, device: str) -> Path:
+    return _voice_venv_dir(engine, model_name, device) / "bin" / "python3"
+
+
+def _ensure_voice_venv(
+    engine: str,
+    model_name: str,
+    device: str,
+    requirements: list[str],
+    import_name: str,
+) -> Path:
+    venv_dir = _voice_venv_dir(engine, model_name, device)
+    python_bin = _voice_venv_python(engine, model_name, device)
+    venv_dir.parent.mkdir(parents=True, exist_ok=True)
+    if not python_bin.exists():
+        result = subprocess.run(
+            [sys.executable, "-m", "venv", str(venv_dir)],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=120,
+        )
+        if result.returncode != 0 or not python_bin.exists():
+            detail = (result.stderr or result.stdout or "").strip().splitlines()[-10:]
+            raise RuntimeError("Failed to create voice model virtualenv:\n" + "\n".join(detail).strip())
+    import_check = subprocess.run(
+        [str(python_bin), "-c", f"import {import_name}"],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=30,
+    )
+    if import_check.returncode == 0:
+        return python_bin
+    subprocess.run(
+        [str(python_bin), "-m", "pip", "install", "-U", "pip", "setuptools", "wheel"],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=240,
+    )
+    result = subprocess.run(
+        [str(python_bin), "-m", "pip", "install", *requirements],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=900,
+    )
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "").strip().splitlines()[-14:]
+        raise RuntimeError(
+            "Voice STT runtime install failed in the isolated venv:\n"
+            + "\n".join(detail).strip()
+        )
+    return python_bin
+
+
+def _voice_whisper_script_path() -> Path:
+    return AI_STATE_DIR / "voice-runtime" / "faster_whisper_transcribe.py"
+
+
+def _ensure_voice_whisper_script() -> Path:
+    script_path = _voice_whisper_script_path()
+    script_path.parent.mkdir(parents=True, exist_ok=True)
+    script_text = """#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import sys
+from pathlib import Path
+
+from faster_whisper import WhisperModel
+from huggingface_hub import snapshot_download
+
+
+MODEL_REPOS = {
+    "tiny": "Systran/faster-whisper-tiny",
+    "small": "Systran/faster-whisper-small",
+    "medium": "Systran/faster-whisper-medium",
+    "large": "Systran/faster-whisper-large-v3",
+}
+
+
+def _resolve_model_path(model_name: str, model_cache: Path) -> Path:
+    if model_name.startswith("/") or model_name.startswith("."):
+        candidate = Path(model_name).expanduser()
+        if candidate.exists():
+            return candidate
+    repo_id = MODEL_REPOS.get(model_name, model_name)
+    target = model_cache / repo_id.replace("/", "--")
+    if target.exists():
+        return target
+    os.environ.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
+    os.environ.setdefault("HF_HUB_DOWNLOAD_TIMEOUT", "35")
+    os.environ.setdefault("HF_HUB_ETAG_TIMEOUT", "20")
+    try:
+        snapshot_download(
+            repo_id=repo_id,
+            local_dir=str(target),
+            local_dir_use_symlinks=False,
+            max_workers=4,
+            etag_timeout=20,
+        )
+    except KeyboardInterrupt:
+        raise RuntimeError(
+            "Whisper model download was interrupted. "
+            "Please wait for the first model download to finish, or switch STT to External API."
+        )
+    except Exception as exc:
+        raise RuntimeError(
+            f"Unable to download the Whisper model '{model_name}' into {target}: {exc}"
+        ) from exc
+    return target
+
+
+def _try_transcribe(model_name: str, audio_path: Path, device: str, compute_type: str, model_cache: Path) -> str:
+    resolved_model = _resolve_model_path(model_name, model_cache)
+    model = WhisperModel(
+        str(resolved_model),
+        device=device,
+        compute_type=compute_type,
+    )
+    segments, _info = model.transcribe(str(audio_path), vad_filter=True, beam_size=1)
+    return " ".join(segment.text.strip() for segment in segments if segment.text.strip()).strip()
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--model", required=True)
+    parser.add_argument("--audio", required=True)
+    parser.add_argument("--device", choices=["cpu", "gpu"], default="cpu")
+    parser.add_argument("--model-cache", required=True)
+    args = parser.parse_args()
+    audio_path = Path(args.audio).expanduser()
+    model_cache = Path(args.model_cache).expanduser()
+    model_cache.mkdir(parents=True, exist_ok=True)
+    attempts = []
+    if args.device == "gpu":
+        attempts.extend([
+            ("cuda", "float16"),
+            ("cuda", "int8_float16"),
+        ])
+    attempts.extend([
+        ("cpu", "int8"),
+        ("cpu", "int8_float32"),
+    ])
+    errors = []
+    for device, compute_type in attempts:
+        try:
+            text = _try_transcribe(args.model, audio_path, device, compute_type, model_cache)
+            print(json.dumps({"text": text, "device": device, "compute_type": compute_type}))
+            return 0
+        except Exception as exc:
+            errors.append(f"{device}/{compute_type}: {exc}")
+    print(json.dumps({"error": "\\n".join(errors[-4:])}), file=sys.stderr)
+    return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+"""
+    script_path.write_text(script_text, encoding="utf-8")
+    try:
+        os.chmod(script_path, 0o700)
+    except Exception:
+        pass
+    return script_path
+
+
+def _voice_vosk_script_path() -> Path:
+    return AI_STATE_DIR / "voice-runtime" / "vosk_transcribe.py"
+
+
+def _ensure_voice_vosk_script() -> Path:
+    script_path = _voice_vosk_script_path()
+    script_path.parent.mkdir(parents=True, exist_ok=True)
+    script_text = """#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+import json
+from pathlib import Path
+import wave
+
+import vosk
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--model-path", required=True)
+    parser.add_argument("--audio", required=True)
+    args = parser.parse_args()
+    model_path = Path(args.model_path).expanduser()
+    audio_path = Path(args.audio).expanduser()
+    chunks = []
+    with wave.open(str(audio_path), "rb") as handle:
+        if handle.getnchannels() != 1 or handle.getframerate() not in {8000, 16000, 24000, 48000}:
+            raise RuntimeError("VOSK needs mono WAV audio.")
+        recognizer = vosk.KaldiRecognizer(vosk.Model(str(model_path)), handle.getframerate())
+        while True:
+            data = handle.readframes(4000)
+            if not data:
+                break
+            if recognizer.AcceptWaveform(data):
+                parsed = json.loads(recognizer.Result())
+                text = str(parsed.get("text", "")).strip()
+                if text:
+                    chunks.append(text)
+        parsed = json.loads(recognizer.FinalResult())
+        final = str(parsed.get("text", "")).strip()
+        if final:
+            chunks.append(final)
+    print(json.dumps({"text": " ".join(chunks).strip()}))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+"""
+    script_path.write_text(script_text, encoding="utf-8")
+    try:
+        os.chmod(script_path, 0o700)
+    except Exception:
+        pass
+    return script_path
+
+
+def _transcribe_with_whisper(audio_path: Path, config: dict[str, object]) -> str:
+    model_name = str(config.get("stt_model", "small")).strip().lower() or "small"
+    if model_name not in {"tiny", "small", "medium", "large"}:
+        model_name = "small"
+    device = "gpu" if str(config.get("stt_device", "cpu")).lower() == "gpu" else "cpu"
+    python_bin = _ensure_voice_venv("whisper", model_name, device, ["faster-whisper", "huggingface-hub"], "faster_whisper")
+    script_path = _ensure_voice_whisper_script()
+    model_cache = _voice_venv_dir("whisper", model_name, device) / "model-cache"
+    result = subprocess.run(
+        [
+            str(python_bin),
+            str(script_path),
+            "--model",
+            model_name,
+            "--audio",
+            str(audio_path.expanduser()),
+            "--device",
+            device,
+            "--model-cache",
+            str(model_cache),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=1800,
+    )
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "").strip().splitlines()[-12:]
+        raise RuntimeError(
+            "Whisper STT failed in its isolated faster-whisper venv:\n"
+            + "\n".join(detail).strip()
+        )
+    try:
+        payload = json.loads((result.stdout or "").strip().splitlines()[-1])
+    except Exception as exc:
+        raise RuntimeError("Whisper STT returned invalid output.") from exc
+    text = str(payload.get("text", "")).strip()
+    if not text:
+        raise RuntimeError("Whisper STT returned no text.")
+    LOGGER.debug(
+        "voice whisper transcribed with model=%s requested_device=%s actual_device=%s compute=%s",
+        model_name,
+        device,
+        payload.get("device", ""),
+        payload.get("compute_type", ""),
+    )
+    return text
+
+
+
+def _transcribe_with_vosk(audio_path: Path, config: dict[str, object]) -> str:
+    model_path = Path(str(config.get("stt_vosk_model_path", "")).strip()).expanduser()
+    if not str(model_path).strip() or not model_path.exists():
+        raise RuntimeError("Set a local VOSK English model folder in Voice Mode settings.")
+    model_key = hashlib.sha1(str(model_path.resolve()).encode("utf-8", "ignore")).hexdigest()[:12]
+    python_bin = _ensure_voice_venv("vosk", model_key, "cpu", ["vosk"], "vosk")
+    script_path = _ensure_voice_vosk_script()
+    result = subprocess.run(
+        [
+            str(python_bin),
+            str(script_path),
+            "--model-path",
+            str(model_path),
+            "--audio",
+            str(audio_path.expanduser()),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=600,
+    )
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "").strip().splitlines()[-12:]
+        raise RuntimeError(
+            "VOSK STT failed in its isolated venv:\n"
+            + "\n".join(detail).strip()
+        )
+    try:
+        payload = json.loads((result.stdout or "").strip().splitlines()[-1])
+    except Exception as exc:
+        raise RuntimeError("VOSK STT returned invalid output.") from exc
+    text = str(payload.get("text", "")).strip()
+    if not text:
+        raise RuntimeError("VOSK STT returned no text.")
+    return text
+
+
+def transcribe_voice_audio(audio_path: Path, config: dict[str, object]) -> str:
+    if bool(config.get("stt_external_api", False)):
+        return _transcribe_with_external_api(audio_path, config)
+    backend = str(config.get("stt_backend", "whisper")).strip().lower()
+    if backend == "vosk":
+        return _transcribe_with_vosk(audio_path, config)
+    return _transcribe_with_whisper(audio_path, config)
+
+
+def _chat_messages_for_prompt(prompt: str, character: CharacterCard | None) -> list[dict[str, str]]:
+    system = "You are Hanauta AI. Keep spoken replies concise, natural, and easy to listen to."
+    if character is not None:
+        character_prompt = _character_compose_prompt(character).strip()
+        if character_prompt:
+            system = f"{system}\n\nActive character:\n{character_prompt}"
+    return [
+        {"role": "system", "content": system},
+        {"role": "user", "content": prompt},
+    ]
+
+
+def _generate_openai_style_reply(
+    host: str,
+    model: str,
+    messages: list[dict[str, str]],
+    api_key: str = "",
+) -> str:
+    headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+    payload = {
+        "model": model.strip() or "gpt-4.1-mini",
+        "messages": messages,
+        "temperature": 0.8,
+    }
+    response = _http_post_json(
+        f"{_api_url_from_host(host)}/v1/chat/completions",
+        payload,
+        timeout=240.0,
+        headers=headers,
+    )
+    choices = response.get("choices", [])
+    if isinstance(choices, list) and choices:
+        first = choices[0]
+        if isinstance(first, dict):
+            message = first.get("message", {})
+            if isinstance(message, dict):
+                text = str(message.get("content", "")).strip()
+                if text:
+                    return text
+            text = str(first.get("text", "")).strip()
+            if text:
+                return text
+    raise RuntimeError("LLM endpoint returned no assistant text.")
+
+
+def generate_voice_chat_reply(
+    config: dict[str, object],
+    profiles: dict[str, BackendProfile],
+    backend_settings: dict[str, dict[str, object]],
+    prompt: str,
+    character: CharacterCard | None,
+) -> tuple[str, str]:
+    messages = _chat_messages_for_prompt(prompt, character)
+    if bool(config.get("llm_external_api", False)):
+        host = str(config.get("llm_host", "")).strip()
+        model = str(config.get("llm_model", "")).strip() or "gpt-4.1-mini"
+        text = _generate_openai_style_reply(
+            host,
+            model,
+            messages,
+            secure_load_secret("voice_mode:llm_api_key").strip(),
+        )
+        return text, model
+
+    profile_key = str(config.get("llm_profile", "koboldcpp")).strip()
+    profile = profiles.get(profile_key)
+    if profile is None:
+        raise RuntimeError("Select a valid text backend for voice mode.")
+    payload = dict(backend_settings.get(profile.key, {}))
+    if profile.key == "ollama":
+        host = str(payload.get("host", profile.host)).strip()
+        model = str(payload.get("model", profile.model)).strip() or profile.model
+        response = _http_post_json(
+            f"{_api_url_from_host(host)}/api/chat",
+            {"model": model, "messages": messages, "stream": False},
+            timeout=240.0,
+        )
+        message = response.get("message", {})
+        if isinstance(message, dict):
+            text = str(message.get("content", "")).strip()
+            if text:
+                return text, profile.label
+        raise RuntimeError("Ollama returned no assistant text.")
+    if profile.provider in {"openai", "openai_compat"}:
+        host = str(payload.get("host", profile.host)).strip()
+        model = str(payload.get("model", profile.model)).strip() or profile.model
+        api_key = secure_load_secret(f"{profile.key}:api_key").strip()
+        text = _generate_openai_style_reply(host, model, messages, api_key)
+        return text, profile.label
+    raise RuntimeError("Voice mode supports KoboldCpp/OpenAI-compatible, OpenAI-style, and Ollama text backends.")
 
 
 def _resolve_hanauta_service_binary() -> Path | None:
@@ -4743,6 +5384,961 @@ def render_chat_html(
     """
 
 
+def render_voice_mode_html(
+    *,
+    status: str,
+    transcript: str,
+    response: str,
+    character_name: str = "",
+    character_image_url: str = "",
+    listening: bool = False,
+    speaking: bool = False,
+) -> str:
+    accent_ring = "#cab7ff" if listening else "#a88cff" if speaking else "#8b76d1"
+    accent_fill = "rgba(202,183,255,0.22)" if listening else "rgba(168,140,255,0.22)" if speaking else "rgba(139,118,209,0.14)"
+    state_label = "Listening" if listening else "Speaking" if speaking else status.strip() or "Voice mode"
+    transcript_html = html.escape(transcript.strip() or "Say something whenever you're ready.")
+    response_clean = response.strip()
+    caption_html = html.escape(
+        response_clean if speaking and response_clean else "Captions appear here while the character is speaking."
+    )
+    character_html = html.escape(character_name.strip() or "Hanauta AI")
+    avatar_html = (
+        f'<img src="{html.escape(character_image_url)}" alt="{character_html}" class="orb-photo-img" />'
+        if character_image_url.strip()
+        else '<div class="orb-photo-fallback">AI</div>'
+    )
+    return f"""
+    <html>
+      <head>
+        <style>
+        html, body {{
+            margin: 0;
+            padding: 0;
+            background:
+              radial-gradient(circle at 50% 16%, rgba(196,181,253,0.12), transparent 18%),
+              radial-gradient(circle at 24% 26%, rgba(125,211,252,0.10), transparent 24%),
+              radial-gradient(circle at 76% 30%, rgba(192,132,252,0.10), transparent 24%),
+              linear-gradient(180deg, #120f20 0%, #0b0912 100%);
+            color: {TEXT};
+            font-family: Inter, system-ui, sans-serif;
+        }}
+        body {{
+            min-height: 100vh;
+            padding: 22px 18px 24px 18px;
+            box-sizing: border-box;
+            overflow: hidden;
+        }}
+        .shell {{
+            min-height: calc(100vh - 52px);
+            border-radius: 28px;
+            border: 1px solid rgba(210, 196, 255, 0.12);
+            background:
+              radial-gradient(circle at 50% 8%, rgba(186, 160, 255, 0.09), transparent 22%),
+              linear-gradient(180deg, rgba(22,18,35,0.96) 0%, rgba(12,10,20,0.98) 100%);
+            box-shadow:
+              inset 0 1px 0 rgba(255,255,255,0.05),
+              0 22px 60px rgba(0,0,0,0.36);
+            padding: 18px 18px 18px 18px;
+            box-sizing: border-box;
+            position: relative;
+            overflow: hidden;
+        }}
+        .eyebrow {{
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 8px 12px;
+            border-radius: 999px;
+            background: rgba(255,255,255,0.04);
+            border: 1px solid rgba(200,190,255,0.12);
+            color: #ddd6fe;
+            font-size: 11px;
+            letter-spacing: 0;
+        }}
+        .hero {{
+            text-align: center;
+            padding: 8px 0 4px 0;
+        }}
+        .character {{
+            margin-top: 16px;
+            font-size: 15px;
+            font-weight: 700;
+            color: #f5f3ff;
+        }}
+        .status {{
+            margin-top: 8px;
+            font-size: 30px;
+            line-height: 1.15;
+            font-weight: 700;
+            color: #ffffff;
+        }}
+        .sub {{
+            margin-top: 8px;
+            font-size: 13px;
+            line-height: 1.5;
+            color: #b7adc9;
+        }}
+        .orb-scene {{
+            position: relative;
+            margin: 22px auto 14px auto;
+            width: 100%;
+            min-height: 420px;
+        }}
+        .soft-grid {{
+            position: absolute;
+            inset: -50px;
+            background-image:
+              linear-gradient(rgba(255,255,255,0.022) 1px, transparent 1px),
+              linear-gradient(90deg, rgba(255,255,255,0.022) 1px, transparent 1px);
+            background-size: 40px 40px;
+            mask-image: radial-gradient(circle at center, black 32%, transparent 84%);
+            opacity: 0.5;
+        }}
+        .orb-wrap {{
+            margin: 0 auto;
+            width: 330px;
+            height: 330px;
+            position: relative;
+            transform-style: preserve-3d;
+        }}
+        .orb-glow, .orb-aura, .orb-core, .orb-liquid, .orb-glass,
+        .orb-ring, .orb-ring-2, .orb-ring-3, .orb-photo-border, .orb-photo {{
+            position: absolute;
+            inset: 0;
+            border-radius: 50%;
+            transform-style: preserve-3d;
+        }}
+        .orb-glow {{
+            inset: -16%;
+            background:
+              radial-gradient(circle at 50% 50%, rgba(196,181,253,0.30), rgba(129,140,248,0.16) 34%, transparent 68%);
+            filter: blur(30px);
+            animation: glowPulse 3.1s ease-in-out infinite;
+        }}
+        .orb-aura {{
+            inset: -7%;
+            background:
+              radial-gradient(circle at 50% 50%, rgba(255,255,255,0.08), transparent 58%),
+              conic-gradient(from 180deg, rgba(125,211,252,0.14), rgba(192,132,252,0.12), rgba(196,181,253,0.18), rgba(125,211,252,0.14));
+            opacity: 0.95;
+            filter: blur(2px);
+            animation: auraDrift 5.5s ease-in-out infinite;
+        }}
+        .orb-core {{
+            background:
+              radial-gradient(circle at 32% 24%, rgba(255,255,255,0.94) 0 6%, rgba(255,255,255,0.18) 10%, transparent 18%),
+              radial-gradient(circle at 68% 70%, rgba(191, 219, 254, 0.12), transparent 20%),
+              radial-gradient(circle at 28% 72%, rgba(125, 211, 252, 0.22), transparent 30%),
+              radial-gradient(circle at 72% 34%, rgba(192, 132, 252, 0.24), transparent 28%),
+              linear-gradient(145deg, rgba(17,24,39,0.12), rgba(9,14,30,0.46)),
+              conic-gradient(from 220deg at 50% 50%, #9de4ff, #a471ff, #7fb4ff, #7de2e8, #9de4ff);
+            box-shadow:
+              inset -26px -36px 70px rgba(0, 0, 0, 0.44),
+              inset 10px 16px 46px rgba(255, 255, 255, 0.08),
+              0 0 0 1px rgba(255,255,255,0.06);
+            overflow: hidden;
+            animation: coreMorph 3.1s ease-in-out infinite;
+        }}
+        .orb-liquid {{
+            inset: 5%;
+            background:
+              radial-gradient(circle at 30% 30%, rgba(255,255,255,0.16), transparent 20%),
+              radial-gradient(circle at 64% 44%, rgba(255,255,255,0.10), transparent 22%),
+              conic-gradient(from 120deg, rgba(125,211,252,0.16), rgba(167,139,250,0.10), rgba(196,181,253,0.16), rgba(125,211,252,0.16));
+            mix-blend-mode: screen;
+            opacity: 0.95;
+            filter: blur(12px);
+            animation: liquidMove 4.6s ease-in-out infinite;
+        }}
+        .orb-glass {{
+            inset: 6%;
+            background:
+              linear-gradient(145deg, rgba(255,255,255,0.22), rgba(255,255,255,0.02) 34%, rgba(255,255,255,0.08) 58%, rgba(255,255,255,0.04) 100%),
+              radial-gradient(circle at 32% 20%, rgba(255,255,255,0.70), rgba(255,255,255,0.12) 16%, transparent 28%);
+            mix-blend-mode: screen;
+            pointer-events: none;
+        }}
+        .orb-ring, .orb-ring-2, .orb-ring-3 {{
+            border: 1px solid rgba(255,255,255,0.14);
+        }}
+        .orb-ring {{
+            inset: -4%;
+            opacity: 0.58;
+            animation: ringSpin 11s linear infinite;
+        }}
+        .orb-ring-2 {{
+            inset: 4%;
+            opacity: 0.42;
+            animation: ringSpinReverse 14s linear infinite;
+        }}
+        .orb-ring-3 {{
+            inset: 16%;
+            opacity: 0.28;
+            animation: ringPulse 2.4s ease-in-out infinite;
+        }}
+        .orb-photo-border {{
+            inset: 28%;
+            background: linear-gradient(145deg, rgba(255,255,255,0.28), rgba(255,255,255,0.08));
+            padding: 1px;
+            box-shadow: 0 16px 40px rgba(0,0,0,0.30);
+        }}
+        .orb-photo {{
+            inset: 1px;
+            overflow: hidden;
+            background:
+              radial-gradient(circle at 35% 24%, rgba(255,255,255,0.10), transparent 16%),
+              linear-gradient(180deg, rgba(255,255,255,0.10), rgba(255,255,255,0.03)),
+              rgba(14, 12, 24, 0.92);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            backdrop-filter: blur(10px);
+        }}
+        .orb-photo-img {{
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            display: block;
+        }}
+        .orb-photo-fallback {{
+            width: 100%;
+            height: 100%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: #f5f3ff;
+            font-size: 30px;
+            font-weight: 700;
+            background: linear-gradient(180deg, rgba(255,255,255,0.08), rgba(255,255,255,0.02));
+        }}
+        .orb-photo::after {{
+            content: "";
+            position: absolute;
+            inset: 0;
+            background:
+              radial-gradient(circle at 30% 20%, rgba(255,255,255,0.16), transparent 20%),
+              linear-gradient(180deg, rgba(255,255,255,0.05), transparent 40%, rgba(255,255,255,0.02));
+            pointer-events: none;
+        }}
+        .particle {{
+            position: absolute;
+            border-radius: 50%;
+            background: rgba(255,255,255,0.78);
+            box-shadow: 0 0 20px rgba(186,230,253,0.50);
+        }}
+        .p1 {{ left: 10%; top: 18%; width: 12px; height: 12px; animation: particleA 4.4s ease-in-out infinite; }}
+        .p2 {{ left: 22%; top: 30%; width: 8px; height: 8px; animation: particleB 5.0s ease-in-out infinite; }}
+        .p3 {{ left: 78%; top: 26%; width: 10px; height: 10px; animation: particleC 4.0s ease-in-out infinite; }}
+        .p4 {{ left: 84%; top: 56%; width: 7px; height: 7px; animation: particleA 4.8s ease-in-out infinite; }}
+        .p5 {{ left: 18%; top: 72%; width: 9px; height: 9px; animation: particleC 5.2s ease-in-out infinite; }}
+        .p6 {{ left: 68%; top: 78%; width: 11px; height: 11px; animation: particleB 4.7s ease-in-out infinite; }}
+        .caption-wrap {{
+            min-height: 88px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin-top: -8px;
+        }}
+        .caption {{
+            max-width: 690px;
+            border-radius: 999px;
+            border: 1px solid rgba(255,255,255,0.10);
+            background:
+              linear-gradient(135deg, rgba(255,255,255,0.16), rgba(255,255,255,0.03)),
+              rgba(255,255,255,0.04);
+            box-shadow:
+              inset 0 1px 0 rgba(255,255,255,0.14),
+              0 18px 40px rgba(0,0,0,0.24);
+            backdrop-filter: blur(18px);
+            color: rgba(255,255,255,0.90);
+            font-size: 15px;
+            line-height: 1.55;
+            padding: 14px 22px;
+            text-align: center;
+        }}
+        .caption.idle {{
+            color: rgba(255,255,255,0.48);
+        }}
+        .footer-card {{
+            max-width: 620px;
+            margin: 10px auto 0 auto;
+            border-radius: 20px;
+            background: rgba(255,255,255,0.04);
+            border: 1px solid rgba(255,255,255,0.08);
+            padding: 14px 16px 16px 16px;
+        }}
+        .footer-label {{
+            color: #c4b5fd;
+            font-size: 11px;
+            font-weight: 700;
+            text-transform: uppercase;
+            margin-bottom: 8px;
+        }}
+        .footer-value {{
+            color: #f8f7ff;
+            font-size: 14px;
+            line-height: 1.6;
+        }}
+        .listening .orb-wrap {{
+            animation: sceneFloat 3.0s ease-in-out infinite;
+        }}
+        .speaking .orb-wrap {{
+            animation: scenePulse 2.6s ease-in-out infinite;
+        }}
+        @keyframes glowPulse {{
+            0%, 100% {{ transform: scale(0.96); opacity: 0.58; }}
+            50% {{ transform: scale(1.14); opacity: 0.96; }}
+        }}
+        @keyframes auraDrift {{
+            0%, 100% {{ transform: scale(1) rotate(0deg); }}
+            30% {{ transform: scale(1.05) rotate(8deg); }}
+            65% {{ transform: scale(1.02) rotate(-10deg); }}
+        }}
+        @keyframes coreMorph {{
+            0%, 100% {{ border-radius: 50% 50% 50% 50% / 50% 50% 50% 50%; }}
+            25% {{ border-radius: 46% 54% 48% 52% / 52% 44% 56% 48%; }}
+            60% {{ border-radius: 53% 47% 55% 45% / 47% 57% 43% 53%; }}
+        }}
+        @keyframes liquidMove {{
+            0%, 100% {{ transform: rotate(0deg) scale(1); }}
+            35% {{ transform: rotate(18deg) scale(1.05); }}
+            70% {{ transform: rotate(-14deg) scale(0.98); }}
+        }}
+        @keyframes ringSpin {{
+            from {{ transform: rotate(0deg); }}
+            to {{ transform: rotate(360deg); }}
+        }}
+        @keyframes ringSpinReverse {{
+            from {{ transform: rotate(0deg); }}
+            to {{ transform: rotate(-360deg); }}
+        }}
+        @keyframes ringPulse {{
+            0%, 100% {{ transform: scale(1); opacity: 0.22; }}
+            50% {{ transform: scale(1.08); opacity: 0.42; }}
+        }}
+        @keyframes particleA {{
+            0%, 100% {{ transform: translate(0, 0) scale(0.8); opacity: 0.18; }}
+            50% {{ transform: translate(5px, -14px) scale(1.35); opacity: 0.92; }}
+        }}
+        @keyframes particleB {{
+            0%, 100% {{ transform: translate(0, 0) scale(0.75); opacity: 0.14; }}
+            50% {{ transform: translate(-5px, -11px) scale(1.18); opacity: 0.82; }}
+        }}
+        @keyframes particleC {{
+            0%, 100% {{ transform: translate(0, 0) scale(0.8); opacity: 0.16; }}
+            50% {{ transform: translate(4px, -12px) scale(1.26); opacity: 0.88; }}
+        }}
+        @keyframes sceneFloat {{
+            0%, 100% {{ transform: translateY(0) scale(1); }}
+            50% {{ transform: translateY(-4px) scale(1.01); }}
+        }}
+        @keyframes scenePulse {{
+            0%, 100% {{ transform: translateY(0) scale(1); }}
+            20% {{ transform: translateY(-4px) scale(1.02) rotate(-0.5deg); }}
+            50% {{ transform: translateY(2px) scale(0.985) rotate(0.7deg); }}
+            78% {{ transform: translateY(-6px) scale(1.04) rotate(-0.2deg); }}
+        }}
+        .shell::before {{
+            content: "";
+            position: absolute;
+            inset: 0;
+            background:
+              radial-gradient(circle at top, {accent_fill} 0%, transparent 36%);
+            pointer-events: none;
+        }}
+        .hint {{
+            margin-top: 14px;
+            text-align: center;
+            color: #9f95b5;
+            font-size: 12px;
+            line-height: 1.5;
+        }}
+        </style>
+      </head>
+      <body>
+        <div class="shell {'speaking' if speaking else 'listening' if listening else 'idle'}">
+          <div class="soft-grid"></div>
+          <div class="hero">
+            <div class="eyebrow">Hands-free Voice Mode</div>
+            <div class="character">{character_html}</div>
+            <div class="status">{html.escape(state_label)}</div>
+            <div class="sub">Stay in the conversation. Start talking anytime.</div>
+            <div class="orb-scene">
+              <div class="orb-wrap">
+                <div class="orb-glow"></div>
+                <div class="orb-aura"></div>
+                <div class="orb-core"></div>
+                <div class="orb-liquid"></div>
+                <div class="orb-ring"></div>
+                <div class="orb-ring-2"></div>
+                <div class="orb-ring-3"></div>
+                <div class="orb-glass"></div>
+                <div class="orb-photo-border">
+                  <div class="orb-photo">
+                    {avatar_html}
+                  </div>
+                </div>
+                <div class="particle p1"></div>
+                <div class="particle p2"></div>
+                <div class="particle p3"></div>
+                <div class="particle p4"></div>
+                <div class="particle p5"></div>
+                <div class="particle p6"></div>
+              </div>
+            </div>
+          </div>
+          <div class="caption-wrap">
+            <div class="caption {'idle' if not speaking else ''}">{caption_html}</div>
+          </div>
+          <div class="footer-card">
+            <div class="footer-label">You</div>
+            <div class="footer-value">{transcript_html}</div>
+          </div>
+          <div class="hint">Close or stop voice mode anytime and the regular chat returns.</div>
+        </div>
+      </body>
+    </html>
+    """
+
+
+WEB_POPUP_HTML = r"""
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Hanauta AI</title>
+  <script src="qrc:///qtwebchannel/qwebchannel.js"></script>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0f0d18;
+      --panel: rgba(24, 20, 36, 0.96);
+      --panel-2: rgba(33, 28, 48, 0.86);
+      --panel-3: rgba(255,255,255,0.04);
+      --line: rgba(214, 195, 255, 0.10);
+      --line-2: rgba(214, 195, 255, 0.18);
+      --text: #f4effd;
+      --text-dim: rgba(244,239,253,0.66);
+      --accent: #c6b4ff;
+      --accent-2: #8fdfff;
+      --accent-3: #b287ff;
+      --user-bg: rgba(126, 94, 197, 0.20);
+      --assistant-bg: rgba(255,255,255,0.05);
+      --shadow: 0 24px 60px rgba(0,0,0,.38);
+    }
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      overflow-x: hidden;
+      background: transparent;
+      color: var(--text);
+      font-family: Inter, system-ui, sans-serif;
+    }
+    *::-webkit-scrollbar:horizontal { height: 0 !important; display: none; }
+    * { scrollbar-width: thin; scrollbar-color: rgba(198,180,255,.24) rgba(255,255,255,.04); }
+    body {
+      background:
+        radial-gradient(circle at 20% 10%, rgba(143,223,255,.08), transparent 24%),
+        radial-gradient(circle at 80% 10%, rgba(178,135,255,.10), transparent 26%),
+        linear-gradient(180deg, #171322 0%, #100d18 100%);
+    }
+    .app {
+      width: 100%;
+      height: 100%;
+      padding: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+    .window {
+      flex: 1;
+      min-height: 0;
+      border-radius: 30px;
+      border: 1px solid var(--line);
+      background: linear-gradient(180deg, rgba(27,22,40,.96), rgba(16,13,24,.98));
+      box-shadow: var(--shadow);
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+      position: relative;
+    }
+    .window.voice-active .header {
+      display: none;
+    }
+    .window.voice-active .body {
+      padding-top: 0;
+    }
+    .window.voice-active .chat-page {
+      display: none !important;
+    }
+    .window.voice-active .voice-page {
+      display: block !important;
+      flex: 1 1 auto;
+      min-height: 0;
+      padding: 0;
+    }
+    .header {
+      padding: 14px 16px 12px 16px;
+      border-bottom: 1px solid var(--line);
+      background: linear-gradient(180deg, rgba(255,255,255,.03), rgba(255,255,255,.01));
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+    .brand { flex: 1; min-width: 0; }
+    .title { font-size: 16px; font-weight: 700; color: var(--text); }
+    .status { font-size: 12px; color: var(--text-dim); margin-top: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .actions { display: flex; gap: 8px; }
+    .icon-btn, .pill, .send-btn, .voice-stop {
+      border: 1px solid var(--line);
+      background: rgba(255,255,255,.04);
+      color: var(--text);
+      border-radius: 999px;
+      cursor: pointer;
+      transition: transform .14s ease, background .14s ease, border-color .14s ease;
+    }
+    .icon-btn:hover, .pill:hover, .send-btn:hover, .voice-stop:hover { transform: translateY(-1px); }
+    .icon-btn { width: 34px; height: 34px; font-size: 14px; }
+    .body { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+    .chat-page { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 12px; padding: 14px 14px 14px 14px; }
+    .backend-row { display: flex; flex-wrap: wrap; gap: 8px; }
+    .pill { padding: 7px 12px; font-size: 12px; }
+    .pill.active { background: rgba(198,180,255,.16); border-color: var(--line-2); color: var(--accent); }
+    .conversation {
+      flex: 1;
+      min-height: 0;
+      border-radius: 24px;
+      border: 1px solid var(--line);
+      background: rgba(255,255,255,.03);
+      padding: 12px;
+      overflow-y: auto;
+      overflow-x: hidden;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+    .conversation::-webkit-scrollbar,
+    .voice-page::-webkit-scrollbar {
+      width: 11px;
+    }
+    .conversation::-webkit-scrollbar-track,
+    .voice-page::-webkit-scrollbar-track {
+      background: rgba(255,255,255,.04);
+      border-radius: 8px;
+    }
+    .conversation::-webkit-scrollbar-thumb,
+    .voice-page::-webkit-scrollbar-thumb {
+      background: linear-gradient(180deg, rgba(198,180,255,.30), rgba(143,223,255,.20));
+      border-radius: 8px;
+      border: 1px solid rgba(214,195,255,.12);
+    }
+    .msg { display: flex; gap: 10px; }
+    .msg.user { flex-direction: row-reverse; }
+    .avatar {
+      width: 32px;
+      min-width: 32px;
+      height: 32px;
+      border-radius: 16px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 11px;
+      font-weight: 700;
+      background: rgba(255,255,255,.08);
+      color: var(--accent);
+      border: 1px solid rgba(255,255,255,.08);
+    }
+    .msg.user .avatar {
+      background: rgba(198,180,255,.16);
+      color: #f6f0ff;
+    }
+    .bubble {
+      flex: 1;
+      max-width: calc(100% - 48px);
+      min-width: 0;
+      border-radius: 24px;
+      padding: 14px 16px 16px 16px;
+      background: var(--assistant-bg);
+      border: 1px solid rgba(255,255,255,.06);
+      overflow-wrap: anywhere;
+      word-break: break-word;
+    }
+    .msg.user .bubble { background: var(--user-bg); border-color: rgba(198,180,255,.14); }
+    .bubble-head { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+    .bubble-title { font-size: 13px; font-weight: 700; color: var(--accent); }
+    .msg.user .bubble-title { color: #efe7ff; }
+    .bubble-meta { font-size: 11px; color: var(--text-dim); }
+    .bubble-body { font-size: 13px; line-height: 1.58; color: var(--text); }
+    .bubble-body p { margin: 0 0 8px 0; }
+    .bubble-body img { max-width: 100%; height: auto; }
+    .bubble-body pre, .bubble-body code { white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; }
+    .chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+    .chip { padding: 7px 11px; border-radius: 999px; background: rgba(255,255,255,.05); border: 1px solid rgba(255,255,255,.05); font-size: 11px; color: var(--text); }
+    .audio-btn {
+      margin-top: 10px;
+      border-radius: 16px;
+      border: 1px solid rgba(198,180,255,.18);
+      background: linear-gradient(180deg, rgba(42,35,64,.96), rgba(27,22,40,.98));
+      padding: 10px 12px;
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      color: #f5f2ff;
+      cursor: pointer;
+    }
+    .composer {
+      border-radius: 22px;
+      border: 1px solid var(--line);
+      background: rgba(255,255,255,.04);
+      padding: 12px;
+    }
+    .composer textarea {
+      width: 100%;
+      min-height: 76px;
+      resize: none;
+      border: 1px solid rgba(255,255,255,.06);
+      background: rgba(255,255,255,.04);
+      color: var(--text);
+      border-radius: 18px;
+      padding: 12px 14px;
+      font: inherit;
+      outline: none;
+      overflow-x: hidden;
+    }
+    .composer-row { display: flex; align-items: center; gap: 10px; margin-top: 10px; }
+    .provider { flex: 1; font-size: 12px; color: var(--text-dim); }
+    .send-btn { padding: 8px 14px; background: rgba(198,180,255,.18); color: #fff; }
+    .voice-page {
+      flex: 1;
+      min-height: 0;
+      padding: 16px;
+      overflow-y: auto;
+      overflow-x: hidden;
+    }
+    .voice-page[hidden],
+    .chat-page[hidden] {
+      display: none !important;
+    }
+    .voice-shell {
+      min-height: 100%;
+      border-radius: 26px;
+      border: 1px solid rgba(214,195,255,.10);
+      background:
+        radial-gradient(circle at 50% 8%, rgba(186,160,255,0.09), transparent 22%),
+        linear-gradient(180deg, rgba(22,18,35,0.96) 0%, rgba(12,10,20,0.98) 100%);
+      padding: 18px;
+      position: relative;
+      overflow: hidden;
+    }
+    .voice-top { text-align: center; }
+    .voice-pill { display: inline-flex; padding: 8px 12px; border-radius: 999px; background: rgba(255,255,255,.04); border: 1px solid rgba(214,195,255,.12); font-size: 11px; color: #ddd6fe; }
+    .voice-name { margin-top: 16px; font-size: 15px; font-weight: 700; }
+    .voice-status { margin-top: 8px; font-size: 30px; font-weight: 700; }
+    .voice-sub { margin-top: 8px; font-size: 13px; color: var(--text-dim); }
+    .orb-scene { position: relative; margin: 22px auto 14px auto; width: 330px; height: 330px; }
+    .orb-wrap, .orb-glow, .orb-aura, .orb-core, .orb-liquid, .orb-glass, .orb-ring, .orb-ring-2, .orb-ring-3, .orb-photo-border, .orb-photo {
+      position: absolute; inset: 0; border-radius: 50%;
+    }
+    .orb-wrap.speaking { animation: scenePulse 2.6s ease-in-out infinite; }
+    .orb-wrap.listening { animation: sceneFloat 3.0s ease-in-out infinite; }
+    .orb-glow { inset: -16%; background: radial-gradient(circle at 50% 50%, rgba(196,181,253,0.30), rgba(129,140,248,0.16) 34%, transparent 68%); filter: blur(30px); animation: glowPulse 3.1s ease-in-out infinite; }
+    .orb-aura { inset: -7%; background: radial-gradient(circle at 50% 50%, rgba(255,255,255,0.08), transparent 58%), conic-gradient(from 180deg, rgba(125,211,252,0.14), rgba(192,132,252,0.12), rgba(196,181,253,0.18), rgba(125,211,252,0.14)); animation: auraDrift 5.5s ease-in-out infinite; }
+    .orb-core { background: radial-gradient(circle at 32% 24%, rgba(255,255,255,0.94) 0 6%, rgba(255,255,255,0.18) 10%, transparent 18%), radial-gradient(circle at 68% 70%, rgba(191,219,254,0.12), transparent 20%), radial-gradient(circle at 28% 72%, rgba(125,211,252,0.22), transparent 30%), radial-gradient(circle at 72% 34%, rgba(192,132,252,0.24), transparent 28%), linear-gradient(145deg, rgba(17,24,39,0.12), rgba(9,14,30,0.46)), conic-gradient(from 220deg at 50% 50%, #9de4ff, #a471ff, #7fb4ff, #7de2e8, #9de4ff); box-shadow: inset -26px -36px 70px rgba(0,0,0,0.44), inset 10px 16px 46px rgba(255,255,255,0.08), 0 0 0 1px rgba(255,255,255,0.06); overflow: hidden; animation: coreMorph 3.1s ease-in-out infinite; }
+    .orb-liquid { inset: 5%; background: radial-gradient(circle at 30% 30%, rgba(255,255,255,0.16), transparent 20%), radial-gradient(circle at 64% 44%, rgba(255,255,255,0.10), transparent 22%), conic-gradient(from 120deg, rgba(125,211,252,0.16), rgba(167,139,250,0.10), rgba(196,181,253,0.16), rgba(125,211,252,0.16)); mix-blend-mode: screen; filter: blur(12px); animation: liquidMove 4.6s ease-in-out infinite; }
+    .orb-glass { inset: 6%; background: linear-gradient(145deg, rgba(255,255,255,0.22), rgba(255,255,255,0.02) 34%, rgba(255,255,255,0.08) 58%, rgba(255,255,255,0.04) 100%), radial-gradient(circle at 32% 20%, rgba(255,255,255,0.70), rgba(255,255,255,0.12) 16%, transparent 28%); mix-blend-mode: screen; }
+    .orb-ring, .orb-ring-2, .orb-ring-3 { border: 1px solid rgba(255,255,255,0.14); }
+    .orb-ring { inset: -4%; animation: ringSpin 11s linear infinite; }
+    .orb-ring-2 { inset: 4%; animation: ringSpinReverse 14s linear infinite; }
+    .orb-ring-3 { inset: 16%; animation: ringPulse 2.4s ease-in-out infinite; }
+    .orb-photo-border { inset: 28%; background: linear-gradient(145deg, rgba(255,255,255,0.28), rgba(255,255,255,0.08)); padding: 1px; box-shadow: 0 16px 40px rgba(0,0,0,0.30); }
+    .orb-photo { inset: 1px; overflow: hidden; background: radial-gradient(circle at 35% 24%, rgba(255,255,255,0.10), transparent 16%), linear-gradient(180deg, rgba(255,255,255,0.10), rgba(255,255,255,0.03)), rgba(14,12,24,0.92); display: flex; align-items: center; justify-content: center; }
+    .orb-photo img { width: 100%; height: 100%; object-fit: cover; display: block; }
+    .orb-fallback { width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; font-size: 30px; font-weight: 700; }
+    .caption-wrap { min-height: 88px; display: flex; align-items: center; justify-content: center; margin-top: -8px; }
+    .caption { max-width: 680px; border-radius: 999px; border: 1px solid rgba(255,255,255,0.10); background: linear-gradient(135deg, rgba(255,255,255,0.16), rgba(255,255,255,0.03)), rgba(255,255,255,0.04); box-shadow: inset 0 1px 0 rgba(255,255,255,0.14), 0 18px 40px rgba(0,0,0,0.24); color: rgba(255,255,255,0.90); font-size: 15px; line-height: 1.55; padding: 14px 22px; text-align: center; }
+    .caption.idle { color: rgba(255,255,255,0.48); }
+    .voice-card { max-width: 620px; margin: 10px auto 0 auto; border-radius: 20px; background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08); padding: 14px 16px 16px 16px; }
+    .voice-card .label { color: #c4b5fd; font-size: 11px; font-weight: 700; text-transform: uppercase; margin-bottom: 8px; }
+    .voice-card .value { color: #f8f7ff; font-size: 14px; line-height: 1.6; }
+    .voice-controls { display: flex; justify-content: center; margin-top: 16px; }
+    .voice-stop { padding: 10px 16px; }
+    @keyframes glowPulse { 0%,100% { transform: scale(.96); opacity:.58; } 50% { transform: scale(1.14); opacity:.96; } }
+    @keyframes auraDrift { 0%,100% { transform: scale(1) rotate(0deg);} 30% { transform: scale(1.05) rotate(8deg);} 65% { transform: scale(1.02) rotate(-10deg);} }
+    @keyframes coreMorph { 0%,100% { border-radius:50%; } 25% { border-radius:46% 54% 48% 52% / 52% 44% 56% 48%; } 60% { border-radius:53% 47% 55% 45% / 47% 57% 43% 53%; } }
+    @keyframes liquidMove { 0%,100% { transform: rotate(0deg) scale(1);} 35% { transform: rotate(18deg) scale(1.05);} 70% { transform: rotate(-14deg) scale(0.98);} }
+    @keyframes ringSpin { from { transform: rotate(0deg);} to { transform: rotate(360deg);} }
+    @keyframes ringSpinReverse { from { transform: rotate(0deg);} to { transform: rotate(-360deg);} }
+    @keyframes ringPulse { 0%,100% { transform: scale(1); opacity:.22;} 50% { transform: scale(1.08); opacity:.42;} }
+    @keyframes sceneFloat { 0%,100% { transform: translateY(0) scale(1);} 50% { transform: translateY(-4px) scale(1.01);} }
+    @keyframes scenePulse { 0%,100% { transform: translateY(0) scale(1);} 20% { transform: translateY(-4px) scale(1.02) rotate(-0.5deg);} 50% { transform: translateY(2px) scale(0.985) rotate(0.7deg);} 78% { transform: translateY(-6px) scale(1.04) rotate(-0.2deg);} }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <div class="window">
+      <div class="header">
+        <div class="brand">
+          <div class="title">Hanauta AI</div>
+          <div class="status" id="headerStatus"></div>
+        </div>
+        <div class="actions">
+          <button class="icon-btn" id="voiceBtn" title="Voice mode">🎙</button>
+          <button class="icon-btn" id="settingsBtn" title="Settings">⚙</button>
+          <button class="icon-btn" id="charactersBtn" title="Characters">☺</button>
+          <button class="icon-btn" id="closeBtn" title="Close">✕</button>
+        </div>
+      </div>
+      <div class="body">
+        <div class="chat-page" id="chatPage">
+          <div class="backend-row" id="backendRow"></div>
+          <div class="conversation" id="conversation"></div>
+          <div class="composer">
+            <textarea id="composerInput" placeholder="Message the model... Enter to send"></textarea>
+            <div class="composer-row">
+              <div class="provider" id="providerLabel"></div>
+              <button class="send-btn" id="clearBtn">Clear</button>
+              <button class="send-btn" id="sendBtn">Send</button>
+            </div>
+          </div>
+        </div>
+        <div class="voice-page" id="voicePage" hidden>
+          <div class="voice-shell">
+            <div class="voice-top">
+              <div class="voice-pill">Hands-free Voice Mode</div>
+              <div class="voice-name" id="voiceName"></div>
+              <div class="voice-status" id="voiceStatus"></div>
+              <div class="voice-sub">Stay in the conversation. Start talking anytime.</div>
+              <div class="orb-scene">
+                <div class="orb-wrap" id="orbWrap">
+                  <div class="orb-glow"></div>
+                  <div class="orb-aura"></div>
+                  <div class="orb-core"></div>
+                  <div class="orb-liquid"></div>
+                  <div class="orb-ring"></div>
+                  <div class="orb-ring-2"></div>
+                  <div class="orb-ring-3"></div>
+                  <div class="orb-glass"></div>
+                  <div class="orb-photo-border">
+                    <div class="orb-photo" id="orbPhoto"></div>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div class="caption-wrap">
+              <div class="caption" id="voiceCaption"></div>
+            </div>
+            <div class="voice-card">
+              <div class="label">You</div>
+              <div class="value" id="voiceTranscript"></div>
+            </div>
+            <div class="voice-controls">
+              <button class="voice-stop" id="voiceStopBtn">Return to chat</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <script>
+    let bridge = null;
+    let state = {};
+    const esc = (value) => String(value ?? '').replace(/[&<>"]/g, (ch) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[ch]));
+    const nl2br = (value) => esc(value).replace(/\n/g, '<br>');
+
+    function renderMessages(messages) {
+      const root = document.getElementById('conversation');
+      if (!Array.isArray(messages) || !messages.length) {
+        root.innerHTML = '<div class="bubble"><div class="bubble-body"><p>No conversation yet.</p></div></div>';
+        return;
+      }
+      root.innerHTML = messages.map((item) => {
+        const chips = (item.chips || []).map((chip) => `<span class="chip">${esc(chip)}</span>`).join('');
+        const audio = item.audio_path ? `<button class="audio-btn" onclick="toggleAudio(${JSON.stringify(item.audio_path)})">${item.is_active_audio && item.audio_playing ? 'Pause' : 'Play'} audio</button>` : '';
+        return `
+          <article class="msg ${item.role === 'user' ? 'user' : 'assistant'}">
+            <div class="avatar">${item.role === 'user' ? 'Y' : 'AI'}</div>
+            <div class="bubble">
+              <div class="bubble-head">
+                <div class="bubble-title">${esc(item.title || '')}</div>
+                <div class="bubble-meta">${esc(item.meta || '')}</div>
+              </div>
+              <div class="bubble-body">${item.body_html || ''}</div>
+              ${audio}
+              ${chips ? `<div class="chips">${chips}</div>` : ''}
+            </div>
+          </article>
+        `;
+      }).join('');
+      root.scrollTop = root.scrollHeight;
+    }
+
+    function renderBackends(backends) {
+      const row = document.getElementById('backendRow');
+      row.innerHTML = (backends || []).map((backend) => `
+        <button class="pill ${backend.active ? 'active' : ''}" onclick="selectBackend(${JSON.stringify(backend.key)})">${esc(backend.label)}</button>
+      `).join('');
+    }
+
+    function renderVoice(voice) {
+      const speaking = !!voice.speaking;
+      const listening = !!voice.listening;
+      document.getElementById('voiceName').textContent = voice.character_name || 'Hanauta AI';
+      document.getElementById('voiceStatus').textContent = voice.status || 'Voice mode';
+      document.getElementById('voiceTranscript').textContent = voice.transcript || "Say something whenever you're ready.";
+      document.getElementById('voiceCaption').textContent = speaking && voice.response ? voice.response : 'Captions appear here while the character is speaking.';
+      document.getElementById('voiceCaption').classList.toggle('idle', !(speaking && voice.response));
+      const orb = document.getElementById('orbWrap');
+      orb.className = `orb-wrap ${speaking ? 'speaking' : listening ? 'listening' : ''}`;
+      const photo = document.getElementById('orbPhoto');
+      photo.innerHTML = voice.character_image_url ? `<img src="${esc(voice.character_image_url)}" alt="${esc(voice.character_name || 'Character')}" />` : '<div class="orb-fallback">AI</div>';
+    }
+
+    function render(payload) {
+      state = payload || {};
+      const inVoice = state.mode === 'voice';
+      const windowEl = document.querySelector('.window');
+      if (windowEl) windowEl.classList.toggle('voice-active', inVoice);
+      document.getElementById('headerStatus').textContent = state.header_status || '';
+      document.getElementById('providerLabel').textContent = state.provider_label || '';
+      renderBackends(state.backends || []);
+      renderMessages(state.messages || []);
+      renderVoice(state.voice || {});
+      document.getElementById('chatPage').hidden = inVoice;
+      document.getElementById('voicePage').hidden = !inVoice;
+      document.getElementById('voiceBtn').textContent = inVoice ? '■' : '🎙';
+    }
+
+    function sendNow() {
+      const el = document.getElementById('composerInput');
+      const text = (el.value || '').trim();
+      if (!text || !bridge || !bridge.sendPrompt) return;
+      bridge.sendPrompt(text);
+      el.value = '';
+    }
+    function selectBackend(key) { if (bridge && bridge.selectBackend) bridge.selectBackend(key); }
+    function toggleAudio(path) { if (bridge && bridge.toggleAudio) bridge.toggleAudio(path); }
+
+    document.getElementById('sendBtn').addEventListener('click', sendNow);
+    document.getElementById('clearBtn').addEventListener('click', () => bridge && bridge.clearChat && bridge.clearChat());
+    document.getElementById('settingsBtn').addEventListener('click', () => bridge && bridge.openSettings && bridge.openSettings());
+    document.getElementById('charactersBtn').addEventListener('click', () => bridge && bridge.openCharacters && bridge.openCharacters());
+    document.getElementById('voiceBtn').addEventListener('click', () => bridge && bridge.toggleVoiceMode && bridge.toggleVoiceMode());
+    document.getElementById('voiceStopBtn').addEventListener('click', () => bridge && bridge.toggleVoiceMode && bridge.toggleVoiceMode());
+    document.getElementById('closeBtn').addEventListener('click', () => bridge && bridge.closeWindow && bridge.closeWindow());
+    document.getElementById('composerInput').addEventListener('keydown', (event) => {
+      if (event.key === 'Enter' && !event.shiftKey) {
+        event.preventDefault();
+        sendNow();
+      }
+    });
+
+    new QWebChannel(qt.webChannelTransport, function(channel) {
+      bridge = channel.objects.bridge;
+      bridge.stateChanged.connect(function(raw) {
+        try { render(JSON.parse(raw)); } catch (_err) {}
+      });
+      if (bridge && bridge.jsReady) bridge.jsReady();
+    });
+  </script>
+</body>
+</html>
+"""
+
+
+class PopupWebBridge(QObject):
+    stateChanged = pyqtSignal(str)
+
+    def __init__(self, owner: "SidebarPanel") -> None:
+        super().__init__(owner)
+        self.owner = owner
+
+    @pyqtSlot()
+    def jsReady(self) -> None:
+        self.owner._sync_web_ui()
+
+    @pyqtSlot(str)
+    def sendPrompt(self, text: str) -> None:
+        self.owner.add_user_message(text)
+
+    @pyqtSlot()
+    def openSettings(self) -> None:
+        self.owner._open_backend_settings()
+
+    @pyqtSlot()
+    def openCharacters(self) -> None:
+        self.owner._open_character_library()
+
+    @pyqtSlot()
+    def toggleVoiceMode(self) -> None:
+        self.owner._toggle_voice_mode()
+
+    @pyqtSlot()
+    def clearChat(self) -> None:
+        self.owner._clear_cards()
+
+    @pyqtSlot(str)
+    def selectBackend(self, key: str) -> None:
+        self.owner._select_backend_from_key(key)
+
+    @pyqtSlot(str)
+    def toggleAudio(self, path: str) -> None:
+        self.owner._toggle_audio_from_web(path)
+
+    @pyqtSlot()
+    def closeWindow(self) -> None:
+        self.owner._close_popup_window()
+
+
+class PopupWebView(QWidget):
+    def __init__(self, owner: "SidebarPanel", parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.owner = owner
+        self._loaded = False
+        self._pending_state = ""
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+        if not WEBENGINE_AVAILABLE:
+            fallback = QTextBrowser(self)
+            fallback.setHtml("<p>QtWebEngine is required for the web-first Hanauta AI popup.</p>")
+            layout.addWidget(fallback, 1)
+            self.view = fallback  # type: ignore[assignment]
+            return
+        self.view = QWebEngineView(self)
+        self.view.setContextMenuPolicy(Qt.ContextMenuPolicy.NoContextMenu)
+        self.view.page().setBackgroundColor(QColor(0, 0, 0, 0))
+        settings = self.view.settings()
+        settings.setAttribute(QWebEngineSettings.WebAttribute.LocalContentCanAccessFileUrls, True)
+        settings.setAttribute(QWebEngineSettings.WebAttribute.LocalContentCanAccessRemoteUrls, True)
+        settings.setAttribute(QWebEngineSettings.WebAttribute.PlaybackRequiresUserGesture, False)
+        settings.setAttribute(QWebEngineSettings.WebAttribute.ScrollAnimatorEnabled, True)
+        settings.setAttribute(QWebEngineSettings.WebAttribute.JavascriptEnabled, True)
+        settings.setAttribute(QWebEngineSettings.WebAttribute.WebGLEnabled, True)
+        self.channel = QWebChannel(self.view.page())
+        self.bridge = PopupWebBridge(owner)
+        self.channel.registerObject("bridge", self.bridge)
+        self.view.page().setWebChannel(self.channel)
+        self.view.loadFinished.connect(self._on_loaded)
+        base_url = QUrl.fromLocalFile(str(PLUGIN_ROOT) + os.sep)
+        self.view.setHtml(WEB_POPUP_HTML, base_url)
+        layout.addWidget(self.view, 1)
+
+    def _on_loaded(self, ok: bool) -> None:
+        self._loaded = bool(ok)
+        if ok and self._pending_state:
+            self.bridge.stateChanged.emit(self._pending_state)
+
+    def set_state(self, payload: dict[str, object]) -> None:
+        raw = json.dumps(payload, ensure_ascii=False)
+        self._pending_state = raw
+        if self._loaded and hasattr(self, "bridge"):
+            self.bridge.stateChanged.emit(raw)
+
 class _AudioWebPage(QWebEnginePage):
     link_clicked = pyqtSignal(QUrl)
 
@@ -4754,6 +6350,8 @@ class _AudioWebPage(QWebEnginePage):
 
 
 class ChatWebView(QWidget):
+    audio_state_changed = pyqtSignal()
+
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setStyleSheet(f"background: {CHAT_SURFACE_BG}; border: none;")
@@ -4769,6 +6367,8 @@ class ChatWebView(QWidget):
         self._view: QWebEngineView | QTextBrowser
         self._audio_output: QAudioOutput | None = None
         self._media_player: QMediaPlayer | None = None
+        self._fade_timer: QTimer | None = None
+        self._default_volume = 1.0
 
         shell = QVBoxLayout(self)
         shell.setContentsMargins(0, 0, 0, 0)
@@ -4925,6 +6525,51 @@ class ChatWebView(QWidget):
         self._active_audio_path = str(path.expanduser().resolve())
         self._audio_playing = bool(playing)
         self._rerender(preserve_scroll=True)
+        self.audio_state_changed.emit()
+
+    def _stop_fade_timer(self) -> None:
+        if self._fade_timer is not None:
+            self._fade_timer.stop()
+            self._fade_timer.deleteLater()
+            self._fade_timer = None
+
+    def fade_out_current_audio(self, duration_ms: int = 420) -> None:
+        if self._media_player is None or self._audio_output is None:
+            return
+        if self._media_player.playbackState() != QMediaPlayer.PlaybackState.PlayingState:
+            return
+        self._pending_play_path = ""
+        self._stop_fade_timer()
+        try:
+            start_volume = float(self._audio_output.volume())
+        except Exception:
+            start_volume = self._default_volume
+        steps = max(4, min(18, int(duration_ms / 35)))
+        interval = max(16, int(duration_ms / steps))
+        state = {"step": 0}
+        timer = QTimer(self)
+
+        def _tick() -> None:
+            state["step"] += 1
+            ratio = max(0.0, 1.0 - (state["step"] / float(steps)))
+            try:
+                self._audio_output.setVolume(max(0.0, start_volume * ratio))
+            except Exception:
+                pass
+            if state["step"] < steps:
+                return
+            self._stop_fade_timer()
+            self._media_player.stop()
+            try:
+                self._audio_output.setVolume(self._default_volume)
+            except Exception:
+                pass
+            if self._active_audio_path:
+                self._set_audio_state(Path(self._active_audio_path), False)
+
+        timer.timeout.connect(_tick)
+        self._fade_timer = timer
+        timer.start(interval)
 
     def _on_playback_state_changed(self, state) -> None:
         if self._media_player is None:
@@ -4936,6 +6581,7 @@ class ChatWebView(QWidget):
             return
         self._audio_playing = playing
         self._rerender()
+        self.audio_state_changed.emit()
 
     def _on_media_error(self, *_args) -> None:
         if not self._pending_play_path:
@@ -4973,6 +6619,12 @@ class ChatWebView(QWidget):
             _play_audio_file(absolute)
             self._set_audio_state(absolute, True)
             return
+        self._stop_fade_timer()
+        if self._audio_output is not None:
+            try:
+                self._audio_output.setVolume(self._default_volume)
+            except Exception:
+                pass
         current = self._active_audio_path
         is_current = bool(current and current == str(absolute))
         state = self._media_player.playbackState()
@@ -5047,6 +6699,79 @@ class ChatWebView(QWidget):
             self._save_audio_as(audio_path)
 
 
+class VoiceModeWebView(QWidget):
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._using_webengine = WEBENGINE_AVAILABLE and os.environ.get("HANAUTA_AI_POPUP_WEBENGINE", "0").strip() == "1"
+        self._view: QWebEngineView | QTextBrowser
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+        if self._using_webengine:
+            view = QWebEngineView(self)
+            page = QWebEnginePage(view)
+            page.setBackgroundColor(QColor(CHAT_SURFACE_BG))
+            view.setPage(page)
+            view.setContextMenuPolicy(Qt.ContextMenuPolicy.NoContextMenu)
+            self._view = view
+        else:
+            view = QTextBrowser(self)
+            view.setOpenExternalLinks(False)
+            view.setOpenLinks(False)
+            view.setReadOnly(True)
+            view.setFrameShape(QFrame.Shape.NoFrame)
+            self._view = view
+        layout.addWidget(self._view, 1)
+        self._view.setStyleSheet(
+            f"""
+            QTextBrowser, QWebEngineView {{
+                background: transparent;
+                border: none;
+                color: {TEXT};
+            }}
+            QScrollBar:vertical {{
+                background: {rgba(CARD_BG_SOFT, 0.30)};
+                width: 12px;
+                margin: 6px 2px 6px 2px;
+                border-radius: 6px;
+            }}
+            QScrollBar::handle:vertical {{
+                background: {rgba(ACCENT, 0.82)};
+                min-height: 28px;
+                border-radius: 6px;
+                border: 1px solid {rgba(BORDER_ACCENT, 0.92)};
+            }}
+            """
+        )
+
+    def set_state(
+        self,
+        *,
+        status: str,
+        transcript: str,
+        response: str,
+        character_name: str = "",
+        character_image_url: str = "",
+        listening: bool = False,
+        speaking: bool = False,
+    ) -> None:
+        doc = render_voice_mode_html(
+            status=status,
+            transcript=transcript,
+            response=response,
+            character_name=character_name,
+            character_image_url=character_image_url,
+            listening=listening,
+            speaking=speaking,
+        )
+        if self._using_webengine:
+            assert isinstance(self._view, QWebEngineView)
+            self._view.setHtml(doc)
+            return
+        assert isinstance(self._view, QTextBrowser)
+        self._view.setHtml(doc)
+
+
 class SdImageWorker(QThread):
     finished_ok = pyqtSignal(str, str, str)
     failed = pyqtSignal(str)
@@ -5113,6 +6838,117 @@ class TtsSynthesisWorker(QThread):
             self.failed.emit(details)
             return
         self.finished_ok.emit(str(audio_path), self.profile.label, source)
+
+
+class VoiceConversationWorker(QThread):
+    status_changed = pyqtSignal(str)
+    transcript_ready = pyqtSignal(str)
+    response_ready = pyqtSignal(str, str, str, str)
+    barge_in_detected = pyqtSignal()
+    failed = pyqtSignal(str)
+
+    def __init__(
+        self,
+        config: dict[str, object],
+        profiles: dict[str, BackendProfile],
+        backend_settings: dict[str, dict[str, object]],
+        character: CharacterCard | None,
+    ) -> None:
+        super().__init__()
+        self.config = dict(config)
+        self.profiles = dict(profiles)
+        self.backend_settings = json.loads(json.dumps(backend_settings))
+        self.character = CharacterCard(**character.__dict__) if character is not None else None
+        self._running = True
+
+    def stop(self) -> None:
+        self._running = False
+
+    def _record_seconds(self) -> int:
+        try:
+            return int(float(str(self.config.get("record_seconds", "5"))))
+        except Exception:
+            return 5
+
+    def _silence_threshold(self) -> float:
+        try:
+            return float(str(self.config.get("silence_threshold", "0.012")))
+        except Exception:
+            return 0.012
+
+    def _barge_in_threshold(self) -> float:
+        try:
+            configured = float(str(self.config.get("barge_in_threshold", "0.035")))
+        except Exception:
+            configured = 0.035
+        return max(self._silence_threshold() * 1.8, configured)
+
+    def _tts_profile(self) -> BackendProfile:
+        key = str(self.config.get("tts_profile", "kokorotts")).strip()
+        profile = self.profiles.get(key)
+        if profile is None or profile.provider != "tts_local":
+            raise RuntimeError("Select KokoroTTS or PocketTTS for voice replies.")
+        return profile
+
+    def _tts_payload(self, profile: BackendProfile) -> dict[str, object]:
+        payload = dict(self.backend_settings.get(profile.key, {}))
+        payload = _with_voice_device(payload, str(self.config.get("tts_device", payload.get("device", "cpu"))))
+        if bool(self.config.get("tts_external_api", False)):
+            payload["tts_mode"] = "external_api"
+        return payload
+
+    def run(self) -> None:
+        while self._running:
+            try:
+                self.status_changed.emit("Listening")
+                audio_path = _record_microphone_wav(self._record_seconds())
+                if not self._running:
+                    break
+                rms = _voice_recording_rms(audio_path)
+                if rms < self._silence_threshold():
+                    self.status_changed.emit("Silence skipped")
+                    continue
+                self.status_changed.emit("Transcribing")
+                transcript = transcribe_voice_audio(audio_path, self.config)
+                if not self._running:
+                    break
+                if not transcript.strip():
+                    self.status_changed.emit("No speech detected")
+                    continue
+                self.transcript_ready.emit(transcript)
+                self.status_changed.emit("Thinking")
+                answer, llm_label = generate_voice_chat_reply(
+                    self.config,
+                    self.profiles,
+                    self.backend_settings,
+                    transcript,
+                    self.character if bool(self.config.get("enable_character", True)) else None,
+                )
+                if not self._running:
+                    break
+                self.status_changed.emit("Speaking")
+                tts_profile = self._tts_profile()
+                audio_out, source = synthesize_tts(tts_profile, self._tts_payload(tts_profile), answer)
+                if not self._running:
+                    break
+                self.response_ready.emit(answer, str(audio_out), llm_label, source)
+                pause_until = time.time() + min(45.0, max(1.0, _wav_duration_seconds(audio_out) + 0.6))
+                while self._running and time.time() < pause_until:
+                    if not bool(self.config.get("barge_in_enabled", True)):
+                        time.sleep(0.1)
+                        continue
+                    try:
+                        sample = _record_microphone_wav(0.55)
+                        if _voice_recording_rms(sample) >= self._barge_in_threshold():
+                            self.barge_in_detected.emit()
+                            self.status_changed.emit("Listening")
+                            break
+                    except Exception:
+                        time.sleep(0.2)
+            except Exception as exc:
+                self.failed.emit(str(exc).strip() or exc.__class__.__name__)
+                time.sleep(0.8)
+        self.status_changed.emit("Voice mode stopped")
 
 
 class MessageCard(FadeCard):
@@ -5575,6 +7411,280 @@ class CharacterLibraryDialog(QDialog):
         self.accept()
 
 
+class VoiceModeDialog(QDialog):
+    def __init__(
+        self,
+        profiles: list[BackendProfile],
+        settings: dict[str, dict[str, object]],
+        ui_font: str,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.profiles = profiles
+        self.settings = settings
+        self.config = _voice_mode_settings(settings)
+        self.ui_font = ui_font
+        self.setWindowTitle("Voice Mode")
+        self.resize(600, 680)
+        self.setStyleSheet(
+            f"""
+            QDialog, QScrollArea, QWidget {{
+                background: {PANEL_BG_FLOAT};
+                color: {TEXT};
+            }}
+            QLabel, QCheckBox {{
+                color: {TEXT};
+            }}
+            QLineEdit, QComboBox {{
+                background: {INPUT_BG};
+                color: {TEXT};
+                border: 1px solid {BORDER_SOFT};
+                border-radius: 12px;
+                padding: 8px 10px;
+            }}
+            QPushButton {{
+                background: {rgba(CARD_BG_SOFT, 0.90)};
+                color: {TEXT};
+                border: 1px solid {rgba(BORDER_SOFT, 0.98)};
+                border-radius: 12px;
+                padding: 8px 12px;
+                font-weight: {_button_css_weight(ui_font)};
+            }}
+            QPushButton:hover {{
+                background: {HOVER_BG};
+                border: 1px solid {BORDER_ACCENT};
+            }}
+            """
+        )
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(14, 14, 14, 14)
+        root.setSpacing(10)
+
+        title = QLabel("Voice mode")
+        title.setFont(QFont(ui_font, 14, QFont.Weight.DemiBold))
+        title.setStyleSheet(f"color: {UI_TEXT_STRONG};")
+        root.addWidget(title)
+
+        subtitle = QLabel("Hands-free loop: listen, transcribe, ask the text model, speak the answer.")
+        subtitle.setWordWrap(True)
+        subtitle.setStyleSheet(f"color: {TEXT_DIM};")
+        root.addWidget(subtitle)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        root.addWidget(scroll, 1)
+
+        body = QWidget()
+        form = QVBoxLayout(body)
+        form.setContentsMargins(0, 0, 0, 0)
+        form.setSpacing(10)
+        scroll.setWidget(body)
+
+        self.enabled_check = QCheckBox("Enable voice mode after saving")
+        self.enabled_check.setChecked(bool(self.config.get("enabled", False)))
+        form.addWidget(self.enabled_check)
+
+        self.record_seconds_input = QLineEdit(str(self.config.get("record_seconds", "5")))
+        self.record_seconds_input.setPlaceholderText("Listening window in seconds")
+        form.addWidget(self._labeled("Listen window", self.record_seconds_input))
+        self.silence_threshold_input = QLineEdit(str(self.config.get("silence_threshold", "0.012")))
+        self.silence_threshold_input.setPlaceholderText("Silence threshold, e.g. 0.012")
+        form.addWidget(self._labeled("Silence skip threshold", self.silence_threshold_input))
+
+        form.addWidget(self._section_label("Speech to text"))
+        self.stt_external_check = QCheckBox("Use external STT API")
+        self.stt_external_check.setChecked(bool(self.config.get("stt_external_api", False)))
+        self.stt_external_check.toggled.connect(self._refresh_visibility)
+        form.addWidget(self.stt_external_check)
+        self.stt_backend_combo = QComboBox()
+        self.stt_backend_combo.addItem("Faster Whisper local", "whisper")
+        self.stt_backend_combo.addItem("VOSK English local", "vosk")
+        self._set_combo_selected(self.stt_backend_combo, str(self.config.get("stt_backend", "whisper")))
+        self.stt_backend_combo.currentIndexChanged.connect(self._refresh_visibility)
+        form.addWidget(self._labeled("Local STT engine", self.stt_backend_combo))
+        self.stt_model_combo = QComboBox()
+        for name in ("tiny", "small", "medium", "large"):
+            self.stt_model_combo.addItem(f"Whisper {name}", name)
+        self._set_combo_selected(self.stt_model_combo, str(self.config.get("stt_model", "small")))
+        form.addWidget(self._labeled("Whisper model", self.stt_model_combo))
+        self.stt_device_combo = self._device_combo(str(self.config.get("stt_device", "cpu")))
+        form.addWidget(self._labeled("STT device", self.stt_device_combo))
+        self.stt_vosk_model_input = QLineEdit(str(self.config.get("stt_vosk_model_path", "")))
+        self.stt_vosk_model_input.setPlaceholderText("VOSK English model folder")
+        form.addWidget(self._labeled("VOSK model folder", self.stt_vosk_model_input))
+        self.stt_host_input = QLineEdit(str(self.config.get("stt_host", "api.openai.com")))
+        self.stt_host_input.setPlaceholderText("STT API host")
+        form.addWidget(self._labeled("STT API host", self.stt_host_input))
+        self.stt_remote_model_input = QLineEdit(str(self.config.get("stt_remote_model", "whisper-1")))
+        self.stt_remote_model_input.setPlaceholderText("Remote STT model")
+        form.addWidget(self._labeled("Remote STT model", self.stt_remote_model_input))
+        self.stt_api_key_input = QLineEdit(secure_load_secret("voice_mode:stt_api_key"))
+        self.stt_api_key_input.setPlaceholderText("STT API key")
+        self.stt_api_key_input.setEchoMode(QLineEdit.EchoMode.Password)
+        form.addWidget(self._labeled("STT API key", self.stt_api_key_input))
+
+        form.addWidget(self._section_label("Text model"))
+        self.llm_external_check = QCheckBox("Use external OpenAI-compatible text API")
+        self.llm_external_check.setChecked(bool(self.config.get("llm_external_api", False)))
+        self.llm_external_check.toggled.connect(self._refresh_visibility)
+        form.addWidget(self.llm_external_check)
+        self.llm_profile_combo = QComboBox()
+        for profile in profiles:
+            if profile.provider in {"openai", "openai_compat"} or profile.key == "ollama":
+                self.llm_profile_combo.addItem(profile.label, profile.key)
+        self._set_combo_selected(self.llm_profile_combo, str(self.config.get("llm_profile", "koboldcpp")))
+        form.addWidget(self._labeled("Local/profile backend", self.llm_profile_combo))
+        self.llm_host_input = QLineEdit(str(self.config.get("llm_host", "api.openai.com")))
+        self.llm_host_input.setPlaceholderText("OpenAI-compatible API host")
+        form.addWidget(self._labeled("External text host", self.llm_host_input))
+        self.llm_model_input = QLineEdit(str(self.config.get("llm_model", "gpt-4.1-mini")))
+        self.llm_model_input.setPlaceholderText("Text model")
+        form.addWidget(self._labeled("External text model", self.llm_model_input))
+        self.llm_device_combo = self._device_combo(str(self.config.get("llm_device", "cpu")))
+        form.addWidget(self._labeled("Text model device", self.llm_device_combo))
+        self.llm_api_key_input = QLineEdit(secure_load_secret("voice_mode:llm_api_key"))
+        self.llm_api_key_input.setPlaceholderText("External text API key")
+        self.llm_api_key_input.setEchoMode(QLineEdit.EchoMode.Password)
+        form.addWidget(self._labeled("External text API key", self.llm_api_key_input))
+
+        form.addWidget(self._section_label("Speech output"))
+        self.tts_profile_combo = QComboBox()
+        for profile in profiles:
+            if profile.provider == "tts_local":
+                self.tts_profile_combo.addItem(profile.label, profile.key)
+        self._set_combo_selected(self.tts_profile_combo, str(self.config.get("tts_profile", "kokorotts")))
+        form.addWidget(self._labeled("TTS backend", self.tts_profile_combo))
+        self.tts_device_combo = self._device_combo(str(self.config.get("tts_device", "cpu")))
+        form.addWidget(self._labeled("TTS device", self.tts_device_combo))
+        self.tts_external_check = QCheckBox("Use selected TTS backend in external API mode")
+        self.tts_external_check.setChecked(bool(self.config.get("tts_external_api", False)))
+        form.addWidget(self.tts_external_check)
+        self.barge_in_check = QCheckBox("Stop speech when I start talking")
+        self.barge_in_check.setChecked(bool(self.config.get("barge_in_enabled", True)))
+        form.addWidget(self.barge_in_check)
+        self.barge_in_threshold_input = QLineEdit(str(self.config.get("barge_in_threshold", "0.035")))
+        self.barge_in_threshold_input.setPlaceholderText("Barge-in threshold, e.g. 0.035")
+        form.addWidget(self._labeled("Barge-in threshold", self.barge_in_threshold_input))
+
+        form.addWidget(self._section_label("Character and notifications"))
+        self.character_check = QCheckBox("Enable character")
+        self.character_check.setChecked(bool(self.config.get("enable_character", True)))
+        form.addWidget(self.character_check)
+        self.hide_photo_check = QCheckBox("Hide character photo in closed-popup notifications")
+        self.hide_photo_check.setChecked(bool(self.config.get("hide_character_photo", False)))
+        form.addWidget(self.hide_photo_check)
+        self.hide_answer_check = QCheckBox("Hide answer text in closed-popup notifications")
+        self.hide_answer_check.setChecked(bool(self.config.get("hide_answer_text", False)))
+        form.addWidget(self.hide_answer_check)
+        self.generic_text_input = QLineEdit(str(self.config.get("generic_notification_text", "Notification received")))
+        self.generic_text_input.setPlaceholderText("Generic notification text")
+        form.addWidget(self._labeled("Generic notification", self.generic_text_input))
+
+        actions = QHBoxLayout()
+        actions.addStretch(1)
+        save_button = QPushButton("Save")
+        save_button.clicked.connect(self._save)
+        actions.addWidget(save_button)
+        close_button = QPushButton("Cancel")
+        close_button.clicked.connect(self.reject)
+        actions.addWidget(close_button)
+        root.addLayout(actions)
+        self._refresh_visibility()
+
+    def _section_label(self, text: str) -> QLabel:
+        label = QLabel(text)
+        label.setFont(QFont(self.ui_font, 12, QFont.Weight.DemiBold))
+        label.setStyleSheet(f"color: {ACCENT}; margin-top: 8px;")
+        return label
+
+    def _labeled(self, label_text: str, widget: QWidget) -> QWidget:
+        wrap = QWidget()
+        layout = QVBoxLayout(wrap)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(4)
+        label = QLabel(label_text)
+        label.setStyleSheet(f"color: {TEXT_DIM};")
+        layout.addWidget(label)
+        layout.addWidget(widget)
+        return wrap
+
+    def _device_combo(self, selected: str) -> QComboBox:
+        combo = QComboBox()
+        combo.addItem("CPU", "cpu")
+        combo.addItem("GPU", "gpu")
+        self._set_combo_selected(combo, selected)
+        return combo
+
+    def _set_combo_selected(self, combo: QComboBox, value: str) -> None:
+        idx = combo.findData(value)
+        combo.setCurrentIndex(idx if idx >= 0 else 0)
+
+    def _refresh_visibility(self) -> None:
+        stt_external = self.stt_external_check.isChecked()
+        stt_is_vosk = str(self.stt_backend_combo.currentData() or "") == "vosk"
+        for widget in (self.stt_backend_combo, self.stt_model_combo, self.stt_device_combo, self.stt_vosk_model_input):
+            wrapper = widget.parentWidget()
+            if wrapper is not None:
+                wrapper.setVisible(not stt_external)
+        if self.stt_model_combo.parentWidget() is not None:
+            self.stt_model_combo.parentWidget().setVisible((not stt_external) and not stt_is_vosk)
+        if self.stt_vosk_model_input.parentWidget() is not None:
+            self.stt_vosk_model_input.parentWidget().setVisible((not stt_external) and stt_is_vosk)
+        for widget in (self.stt_host_input, self.stt_remote_model_input, self.stt_api_key_input):
+            wrapper = widget.parentWidget()
+            if wrapper is not None:
+                wrapper.setVisible(stt_external)
+
+        llm_external = self.llm_external_check.isChecked()
+        for widget in (self.llm_profile_combo, self.llm_device_combo):
+            wrapper = widget.parentWidget()
+            if wrapper is not None:
+                wrapper.setVisible(not llm_external)
+        for widget in (self.llm_host_input, self.llm_model_input, self.llm_api_key_input):
+            wrapper = widget.parentWidget()
+            if wrapper is not None:
+                wrapper.setVisible(llm_external)
+
+    def _save(self) -> None:
+        config = dict(_voice_mode_defaults())
+        config.update(
+            {
+                "enabled": bool(self.enabled_check.isChecked()),
+                "record_seconds": self.record_seconds_input.text().strip() or "5",
+                "silence_threshold": self.silence_threshold_input.text().strip() or "0.012",
+                "stt_backend": str(self.stt_backend_combo.currentData() or "whisper"),
+                "stt_model": str(self.stt_model_combo.currentData() or "small"),
+                "stt_device": str(self.stt_device_combo.currentData() or "cpu"),
+                "stt_external_api": bool(self.stt_external_check.isChecked()),
+                "stt_host": self.stt_host_input.text().strip(),
+                "stt_remote_model": self.stt_remote_model_input.text().strip() or "whisper-1",
+                "stt_vosk_model_path": self.stt_vosk_model_input.text().strip(),
+                "llm_profile": str(self.llm_profile_combo.currentData() or "koboldcpp"),
+                "llm_device": str(self.llm_device_combo.currentData() or "cpu"),
+                "llm_external_api": bool(self.llm_external_check.isChecked()),
+                "llm_host": self.llm_host_input.text().strip(),
+                "llm_model": self.llm_model_input.text().strip() or "gpt-4.1-mini",
+                "tts_profile": str(self.tts_profile_combo.currentData() or "kokorotts"),
+                "tts_device": str(self.tts_device_combo.currentData() or "cpu"),
+                "tts_external_api": bool(self.tts_external_check.isChecked()),
+                "barge_in_enabled": bool(self.barge_in_check.isChecked()),
+                "barge_in_threshold": self.barge_in_threshold_input.text().strip() or "0.035",
+                "enable_character": bool(self.character_check.isChecked()),
+                "hide_character_photo": bool(self.hide_photo_check.isChecked()),
+                "hide_answer_text": bool(self.hide_answer_check.isChecked()),
+                "generic_notification_text": self.generic_text_input.text().strip() or "Notification received",
+            }
+        )
+        self.settings["_voice_mode"] = config
+        secure_store_secret("voice_mode:stt_api_key", self.stt_api_key_input.text().strip())
+        secure_store_secret("voice_mode:llm_api_key", self.llm_api_key_input.text().strip())
+        save_backend_settings(self.settings)
+        self.config = config
+        self.accept()
+
+
 class SidebarPanel(QFrame):
     def __init__(self, ui_font: str) -> None:
         super().__init__()
@@ -5601,8 +7711,15 @@ class SidebarPanel(QFrame):
         self._sd_seen_outputs: dict[str, tuple[str, float]] = {}
         self._image_worker: SdImageWorker | None = None
         self._tts_worker: TtsSynthesisWorker | None = None
+        self._voice_worker: VoiceConversationWorker | None = None
         self._local_backend_processes: dict[str, subprocess.Popen[str]] = {}
         self._pending_item: ChatItemData | None = None
+        self._voice_last_status = "Voice mode"
+        self._voice_last_transcript = ""
+        self._voice_last_response = ""
+        self._voice_listening = False
+        self._voice_speaking = False
+        self._web_mode = "chat"
         self._text_response_timer = QTimer(self)
         self._text_response_timer.setSingleShot(True)
         self._text_response_timer.timeout.connect(self._finish_mock_text_response)
@@ -5640,31 +7757,23 @@ class SidebarPanel(QFrame):
         root.setContentsMargins(16, 16, 16, 16)
         root.setSpacing(13)
 
-        root.addWidget(self._build_hero())
-        root.addWidget(self._build_backend_strip())
-
-        convo_shell = SurfaceFrame(bg=rgba(CARD_BG, 0.78), border=rgba(BORDER_SOFT, 0.90), radius=28)
-        convo_layout = QVBoxLayout(convo_shell)
-        convo_layout.setContentsMargins(10, 10, 10, 10)
-        convo_layout.setSpacing(8)
-
-        convo_label = QLabel("Conversation")
-        convo_label.setFont(QFont(self.ui_font, 11, QFont.Weight.DemiBold))
-        convo_label.setStyleSheet(f"color: {UI_TEXT_STRONG}; padding-left: 4px;")
-        convo_layout.addWidget(convo_label)
-
+        # Keep the legacy widget tree alive off-screen for state plumbing and audio playback,
+        # but render the actual popup as a web app via QtWebEngine.
+        self._hidden_hero = self._build_hero()
+        self._hidden_backend_strip = self._build_backend_strip()
         self.chat_view = ChatWebView()
-        convo_layout.addWidget(self.chat_view, 1)
-
-        root.addWidget(convo_shell, 1)
-
+        self.chat_view.audio_state_changed.connect(self._sync_web_ui)
         self.composer = ComposerBar(ui_font)
         self.composer.send_requested.connect(self.add_user_message)
         self.composer.character_requested.connect(self._open_character_library)
-        root.addWidget(self.composer)
+        self.voice_mode_view = VoiceModeWebView()
+        self.web_view = PopupWebView(self, self)
+        root.addWidget(self.web_view, 1)
 
         self._render_chat_history()
         self._refresh_available_backends()
+        self._update_voice_mode_view()
+        self._sync_web_ui()
         self.monitor_timer = QTimer(self)
         self.monitor_timer.timeout.connect(self._poll_sd_output_monitors)
         self.monitor_timer.start(8000)
@@ -5730,6 +7839,10 @@ class SidebarPanel(QFrame):
         title_wrap.addWidget(subtitle)
         top.addLayout(title_wrap, 1)
 
+        self.voice_button = ActionIcon("🎙", "Start voice mode", self.ui_font)
+        self.voice_button.clicked.connect(self._toggle_voice_mode)
+        top.addWidget(self.voice_button)
+
         settings_button = ActionIcon("⚙", "Backend settings", self.ui_font)
         settings_button.clicked.connect(self._open_backend_settings)
         top.addWidget(settings_button)
@@ -5780,6 +7893,12 @@ class SidebarPanel(QFrame):
 
     def _close_popup_window(self) -> None:
         host = self.window()
+        if self._voice_worker is not None and self._voice_worker.isRunning():
+            if isinstance(host, QWidget):
+                host.hide()
+                return
+            self.hide()
+            return
         if isinstance(host, QWidget):
             host.close()
             return
@@ -5820,6 +7939,7 @@ class SidebarPanel(QFrame):
     def _refresh_backend_hint(self) -> None:
         if self.current_profile is None:
             self.header_status.setText("No active backend.")
+            self._sync_web_ui()
             return
         payload = self.backend_settings.get(self.current_profile.key, {})
         host = str(payload.get("host", self.current_profile.host))
@@ -5831,8 +7951,10 @@ class SidebarPanel(QFrame):
                 self.header_status.setText(f"{self.current_profile.label}  •  external API  •  {host}")
             else:
                 self.header_status.setText(f"{self.current_profile.label}  •  local ONNX  •  {model_dir}")
+            self._sync_web_ui()
             return
         self.header_status.setText(f"{self.current_profile.label}  •  {model}  •  {host}")
+        self._sync_web_ui()
 
     def _active_character(self) -> CharacterCard | None:
         if not self.active_character_id:
@@ -5857,6 +7979,7 @@ class SidebarPanel(QFrame):
             send_desktop_notification("Character disabled", "No character card is active.")
         else:
             send_desktop_notification("Character selected", active.name)
+        self._sync_web_ui()
 
     def _select_backend(self, profile: BackendProfile, active_button: BackendPill) -> None:
         settings = self.backend_settings.get(profile.key, {})
@@ -5873,6 +7996,7 @@ class SidebarPanel(QFrame):
         active_button.setChecked(True)
         self._refresh_backend_hint()
         self.composer.set_profile(profile)
+        self._sync_web_ui()
 
     def _refresh_available_backends(self) -> None:
         available: list[BackendProfile] = []
@@ -5900,12 +8024,273 @@ class SidebarPanel(QFrame):
             self.composer.entry.setEnabled(False)
             self.composer.entry.setPlaceholderText("Open backend settings to configure a provider")
         self._refresh_backend_hint()
+        self._sync_web_ui()
 
     def _open_backend_settings(self) -> None:
         dialog = BackendSettingsDialog(self.profiles, self.backend_settings, self.ui_font, self)
         dialog.exec()
         self.backend_settings = load_backend_settings()
         self._refresh_available_backends()
+        self._sync_web_ui()
+
+    def _open_voice_mode_settings(self) -> bool:
+        dialog = VoiceModeDialog(self.profiles, self.backend_settings, self.ui_font, self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return False
+        self.backend_settings = load_backend_settings()
+        return True
+
+    def _voice_character_name(self) -> str:
+        config = _voice_mode_settings(self.backend_settings)
+        active = self._active_character() if bool(config.get("enable_character", True)) else None
+        return active.name if active is not None else "Hanauta AI"
+
+    def _voice_character_image_url(self) -> str:
+        config = _voice_mode_settings(self.backend_settings)
+        active = self._active_character() if bool(config.get("enable_character", True)) else None
+        if active is None:
+            return ""
+        avatar = Path(str(active.avatar_path or "").strip()).expanduser()
+        if not str(avatar).strip() or not avatar.exists():
+            return ""
+        try:
+            return avatar.resolve().as_uri()
+        except Exception:
+            return ""
+
+    def _set_voice_mode_screen(self, enabled: bool) -> None:
+        self._web_mode = "voice" if enabled else "chat"
+        self._sync_web_ui()
+
+    def _update_voice_mode_view(self, *, listening: bool = False, speaking: bool = False) -> None:
+        if not hasattr(self, "voice_mode_view"):
+            return
+        self.voice_mode_view.set_state(
+            status=self._voice_last_status,
+            transcript=self._voice_last_transcript,
+            response=self._voice_last_response,
+            character_name=self._voice_character_name(),
+            character_image_url=self._voice_character_image_url(),
+            listening=listening,
+            speaking=speaking,
+        )
+        self._voice_listening = bool(listening)
+        self._voice_speaking = bool(speaking)
+        self._sync_web_ui()
+
+    def _html_message_payload(self, item: ChatItemData) -> dict[str, object]:
+        current_audio = str(getattr(self.chat_view, "_active_audio_path", "") or "")
+        audio_playing = bool(getattr(self.chat_view, "_audio_playing", False))
+        item_audio = str(Path(item.audio_path).expanduser().resolve()) if item.audio_path.strip() else ""
+        return {
+            "role": item.role,
+            "title": item.title,
+            "meta": item.meta,
+            "body_html": item.body,
+            "chips": [chip.text for chip in item.chips],
+            "audio_path": item_audio,
+            "audio_playing": audio_playing,
+            "is_active_audio": bool(item_audio and current_audio == item_audio),
+        }
+
+    def _build_web_payload(self) -> dict[str, object]:
+        header_status = self.header_status.text().strip() if hasattr(self, "header_status") else ""
+        provider_label = self.composer.provider_label.text().strip() if hasattr(self, "composer") else ""
+        available_backends = []
+        for profile in self.profiles:
+            payload = self.backend_settings.get(profile.key, {})
+            ready = bool(payload.get("enabled", True) and payload.get("tested", False))
+            if ready:
+                available_backends.append(
+                    {
+                        "key": profile.key,
+                        "label": profile.label,
+                        "active": bool(self.current_profile is not None and self.current_profile.key == profile.key),
+                    }
+                )
+        history = list(self.chat_history)
+        if self._pending_item is not None:
+            history.append(self._pending_item)
+        return {
+            "mode": getattr(self, "_web_mode", "chat"),
+            "header_status": header_status,
+            "provider_label": provider_label,
+            "backends": available_backends,
+            "messages": [self._html_message_payload(item) for item in history],
+            "voice": {
+                "status": self._voice_last_status,
+                "transcript": self._voice_last_transcript,
+                "response": self._voice_last_response,
+                "character_name": self._voice_character_name(),
+                "character_image_url": self._voice_character_image_url(),
+                "listening": bool(getattr(self, "_voice_listening", False)),
+                "speaking": bool(getattr(self, "_voice_speaking", False)),
+            },
+        }
+
+    def _sync_web_ui(self) -> None:
+        if hasattr(self, "web_view"):
+            self.web_view.set_state(self._build_web_payload())
+
+    def _select_backend_from_key(self, key: str) -> None:
+        profile = self.profile_by_key.get(key)
+        button = self.backend_buttons.get(key)
+        if profile is None or button is None:
+            return
+        self._select_backend(profile, button)
+
+    def _toggle_audio_from_web(self, path_text: str) -> None:
+        clean = str(path_text).strip()
+        if not clean:
+            return
+        self.chat_view._toggle_audio_path(Path(clean))
+        self._sync_web_ui()
+
+    def _toggle_voice_mode(self) -> None:
+        if self._voice_worker is not None and self._voice_worker.isRunning():
+            self._stop_voice_mode()
+            return
+        config = _voice_mode_settings(self.backend_settings)
+        if not bool(config.get("enabled", False)):
+            if not self._open_voice_mode_settings():
+                return
+            config = _voice_mode_settings(self.backend_settings)
+        if not bool(config.get("enabled", False)):
+            return
+        self._start_voice_mode(config)
+
+    def _start_voice_mode(self, config: dict[str, object]) -> None:
+        if self._voice_worker is not None and self._voice_worker.isRunning():
+            return
+        if not bool(config.get("llm_external_api", False)):
+            profile = self.profile_by_key.get(str(config.get("llm_profile", "koboldcpp")).strip())
+            if profile is not None and profile.key == "koboldcpp":
+                self.backend_settings.setdefault(profile.key, {})["device"] = str(config.get("llm_device", "cpu"))
+                self._maybe_launch_koboldcpp(profile)
+        character = self._active_character() if bool(config.get("enable_character", True)) else None
+        worker = VoiceConversationWorker(config, self.profile_by_key, self.backend_settings, character)
+        self._voice_worker = worker
+        worker.status_changed.connect(self._handle_voice_status)
+        worker.transcript_ready.connect(self._handle_voice_transcript)
+        worker.response_ready.connect(self._handle_voice_response)
+        worker.barge_in_detected.connect(self._handle_voice_barge_in)
+        worker.failed.connect(self._handle_voice_failed)
+        worker.finished.connect(self._finish_voice_worker)
+        worker.start()
+        self._voice_last_status = "Listening"
+        self._voice_last_transcript = ""
+        self._voice_last_response = ""
+        self.voice_button.setText("■")
+        self.voice_button.setToolTip("Stop voice mode")
+        self.header_status.setText("Voice mode listening.")
+        self._set_voice_mode_screen(True)
+        self._update_voice_mode_view(listening=True)
+        self.add_card(
+            ChatItemData(
+                role="assistant",
+                title="Voice mode",
+                meta="started",
+                body="<p>Voice mode is listening. Speak naturally; replies will be spoken automatically.</p>",
+            )
+        )
+
+    def _stop_voice_mode(self) -> None:
+        worker = self._voice_worker
+        if worker is not None:
+            worker.stop()
+        try:
+            self.chat_view.fade_out_current_audio(220)
+        except Exception:
+            LOGGER.exception("voice mode stop fadeout failed")
+        self.voice_button.setText("🎙")
+        self.voice_button.setToolTip("Start voice mode")
+        self.header_status.setText("Voice mode stopping.")
+        self._voice_last_status = "Voice mode stopped"
+        self._set_voice_mode_screen(False)
+
+    def _finish_voice_worker(self) -> None:
+        self._voice_worker = None
+        self.voice_button.setText("🎙")
+        self.voice_button.setToolTip("Start voice mode")
+        self._set_voice_mode_screen(False)
+        self._refresh_backend_hint()
+
+    def _handle_voice_status(self, message: str) -> None:
+        clean = str(message).strip() or "Voice mode"
+        self._voice_last_status = clean
+        self.header_status.setText(clean)
+        self._update_voice_mode_view(
+            listening=(clean.lower() == "listening"),
+            speaking=(clean.lower() == "speaking"),
+        )
+
+    def _handle_voice_transcript(self, transcript: str) -> None:
+        LOGGER.info("Voice STT transcript: %s", transcript.strip())
+        self._voice_last_transcript = transcript.strip()
+        self._update_voice_mode_view(listening=False, speaking=False)
+        safe = html.escape(transcript).replace("\n", "<br>")
+        chips: list[SourceChipData] = [SourceChipData("voice")]
+        active_character = self._active_character()
+        if active_character is not None:
+            chips.append(SourceChipData(f"character:{active_character.name}"))
+        self.add_card(ChatItemData(role="user", title="You", body=f"<p>{safe}</p>", meta="voice prompt", chips=chips))
+
+    def _handle_voice_response(self, answer: str, audio_path_text: str, llm_label: str, source: str) -> None:
+        LOGGER.info("Voice LLM reply (%s): %s", llm_label, answer.strip())
+        self._voice_last_response = answer.strip()
+        self._voice_last_status = "Speaking"
+        self._update_voice_mode_view(speaking=True)
+        resolved_audio = Path(audio_path_text).expanduser().resolve()
+        waveform = _waveform_from_hanauta_service(resolved_audio, bars=24)
+        config = _voice_mode_settings(self.backend_settings)
+        active_character = self._active_character() if bool(config.get("enable_character", True)) else None
+        title = active_character.name if active_character is not None else "Hanauta AI"
+        chips = [SourceChipData("voice"), SourceChipData(llm_label), SourceChipData(source)]
+        self.add_card(
+            ChatItemData(
+                role="assistant",
+                title=title,
+                meta="voice reply",
+                body=f"<p>{html.escape(answer).replace(chr(10), '<br>')}</p>",
+                chips=chips,
+                audio_path=str(resolved_audio),
+                audio_waveform=waveform,
+            )
+        )
+        try:
+            self.chat_view.autoplay_audio(resolved_audio)
+        except Exception:
+            LOGGER.exception("voice mode autoplay failed for %s", resolved_audio)
+        body = str(config.get("generic_notification_text", "Notification received")).strip() or "Notification received"
+        if not bool(config.get("hide_answer_text", False)):
+            body = answer.strip() or body
+        icon_path = ""
+        if active_character is not None and not bool(config.get("hide_character_photo", False)):
+            icon_path = self._active_character_avatar_icon()
+        self._notify_if_popup_closed(title, body, icon_path=icon_path)
+
+    def _handle_voice_barge_in(self) -> None:
+        self._voice_last_status = "Listening"
+        self._update_voice_mode_view(listening=True)
+        self.header_status.setText("Listening")
+        try:
+            self.chat_view.fade_out_current_audio(420)
+        except Exception:
+            LOGGER.exception("voice barge-in fadeout failed")
+
+    def _handle_voice_failed(self, message: str) -> None:
+        self._voice_last_status = f"Voice mode: {message}"
+        self._update_voice_mode_view(listening=False, speaking=False)
+        self.header_status.setText(f"Voice mode: {message}")
+        self.add_card(
+            ChatItemData(
+                role="assistant",
+                title="Voice mode",
+                meta="error",
+                body=f"<p>{html.escape(message)}</p>",
+                chips=[SourceChipData("voice")],
+            )
+        )
 
     def _render_chat_history(self) -> None:
         history = list(self.chat_history)
@@ -5918,6 +8303,7 @@ class SidebarPanel(QFrame):
             len(history),
         )
         self.chat_view.set_history(history)
+        self._sync_web_ui()
 
     def _maybe_launch_koboldcpp(self, profile: BackendProfile) -> bool:
         payload = dict(self.backend_settings.get(profile.key, {}))
@@ -5986,6 +8372,7 @@ class SidebarPanel(QFrame):
         self._text_response_timer.stop()
         secure_clear_chat_history()
         self._render_chat_history()
+        self._sync_web_ui()
 
     def add_card(self, data: ChatItemData, animate: bool = True) -> None:
         del animate
@@ -5999,6 +8386,7 @@ class SidebarPanel(QFrame):
         self.chat_history.append(data)
         secure_append_chat(data)
         self._render_chat_history()
+        self._sync_web_ui()
 
     def _set_pending_state(self, profile_label: str, message: str, meta: str) -> None:
         LOGGER.debug("set_pending_state: profile=%r meta=%r message=%r", profile_label, meta, message)
@@ -6014,12 +8402,14 @@ class SidebarPanel(QFrame):
         )
         self.composer.entry.setEnabled(False)
         self._render_chat_history()
+        self._sync_web_ui()
 
     def _clear_pending_state(self) -> None:
         LOGGER.debug("clear_pending_state")
         self._pending_item = None
         self.composer.entry.setEnabled(self.current_profile is not None)
         self._render_chat_history()
+        self._sync_web_ui()
 
     def _build_image_response(self, image_path: Path, prompt: str) -> str:
         image_url = image_path.resolve().as_uri()
@@ -6223,6 +8613,14 @@ class SidebarPanel(QFrame):
         if command == "/tts":
             LOGGER.debug("command /tts")
             self._open_backend_settings()
+            return
+        if command == "/voice":
+            LOGGER.debug("command /voice")
+            self._toggle_voice_mode()
+            return
+        if command == "/voice settings":
+            LOGGER.debug("command /voice settings")
+            self._open_voice_mode_settings()
             return
         if self.current_profile is None:
             LOGGER.warning("message ignored because no current_profile")
