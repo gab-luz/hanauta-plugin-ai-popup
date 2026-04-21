@@ -1,0 +1,32 @@
+{
+  "llm_gguf": [
+    {
+      "id": "phi3_mini_4k_q4",
+      "title": "Phi-3 Mini 4K Instruct (Q4_K_M)",
+      "repo_id": "microsoft/Phi-3-mini-4k-instruct-gguf",
+      "file": "Phi-3-mini-4k-instruct-q4.gguf",
+      "params": "3.8B",
+      "context": 4096,
+      "quant": "Q4_K_M",
+      "license": "MIT",
+      "size_bytes": 2200000000,
+      "notes": "Good default small model. Fast on CPU, very usable on 8GB RAM."
+    },
+    {
+      "id": "qwen25_3b_q4_k_m",
+      "title": "Qwen2.5 3B Instruct (Q4_K_M)",
+      "repo_id": "Qwen/Qwen2.5-3B-Instruct-GGUF",
+      "file": "qwen2.5-3b-instruct-q4_k_m.gguf",
+      "params": "3.1B",
+      "context": 32768,
+      "quant": "Q4_K_M",
+      "license": "qwen-research",
+      "size_bytes": 2100000000,
+      "notes": "Great multilingual model. Strong for chat and general tasks at small size."
+    }
+  ],
+  "stt_whisper": [],
+  "stt_whisper_distill": [],
+  "stt_whisper_onnx": []
+}
+

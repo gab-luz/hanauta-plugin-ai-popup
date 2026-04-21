@@ -84,7 +84,11 @@ AI_POPUP_ERROR_LOG_FILE = AI_STATE_DIR / "ai_popup-errors.log"
 AI_POPUP_CRASH_FILE = AI_STATE_DIR / "ai_popup.crash.log"
 KOKORO_SYNTH_LOG_FILE = AI_STATE_DIR / "kokoro_synth_worker.log"
 KOBOLDCPP_RELEASE_STATE_FILE = AI_STATE_DIR / "koboldcpp-release-state.json"
-MODEL_CATALOG_FILE = PLUGIN_ROOT / "model_catalog.json"
+CURATED_MODEL_GALLERY_FILE = PLUGIN_ROOT / "curated-model-gallery.json"
+LEGACY_MODEL_CATALOG_FILE = PLUGIN_ROOT / "model_catalog.json"
+
+# Prefer curated gallery file (owner-curated). Fall back to legacy filename for older checkouts.
+MODEL_CATALOG_FILE = CURATED_MODEL_GALLERY_FILE if CURATED_MODEL_GALLERY_FILE.exists() else LEGACY_MODEL_CATALOG_FILE
 GGUF_GALLERY_DIR = AI_STATE_DIR / "gguf-gallery"
 
 VOICE_STOP_EXPRESSIONS_FILE = PLUGIN_ROOT / "voice-stop-expressions.json"
