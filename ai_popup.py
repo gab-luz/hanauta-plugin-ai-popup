@@ -45,12 +45,13 @@ for _flag in _extra_flags:
 os.environ["QTWEBENGINE_CHROMIUM_FLAGS"] = _chromium_flags
 
 from cryptography.fernet import Fernet, InvalidToken
-from PyQt6.QtCore import QEasingCurve, QObject, QPoint, QPropertyAnimation, QLocale, QThread, Qt, QTimer, QUrl, pyqtProperty, pyqtSignal, pyqtSlot, qInstallMessageHandler
-from PyQt6.QtGui import QColor, QCursor, QFont, QFontDatabase, QGuiApplication, QIcon, QPainter, QPen, QPixmap
+from PyQt6.QtCore import QEasingCurve, QObject, QPoint, QPropertyAnimation, QLocale, QThread, Qt, QTimer, QUrl, QSize, QRectF, pyqtProperty, pyqtSignal, pyqtSlot, qInstallMessageHandler
+from PyQt6.QtGui import QColor, QCursor, QFont, QFontDatabase, QGuiApplication, QIcon, QPainter, QPen, QPixmap, QBrush, QLinearGradient
 from PyQt6.QtGui import QDesktopServices
 from PyQt6.QtNetwork import QHostAddress, QTcpServer, QTcpSocket
 from PyQt6.QtWidgets import (
     QApplication,
+    QAbstractItemView,
     QCheckBox,
     QComboBox,
     QDialog,
@@ -60,6 +61,9 @@ from PyQt6.QtWidgets import (
     QHBoxLayout,
     QFileDialog,
     QLabel,
+    QListView,
+    QListWidget,
+    QListWidgetItem,
     QLineEdit,
     QMainWindow,
     QPlainTextEdit,
