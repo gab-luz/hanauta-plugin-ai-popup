@@ -3588,6 +3588,10 @@ def _start_kokoro_server(payload: dict[str, object]) -> tuple[bool, str]:
     except Exception as exc:
         return False, f"Unable to start Kokoro server: {exc}"
     payload["tts_server_pid"] = int(process.pid or 0)
+    try:
+        payload["tts_server_pgid"] = int(os.getpgid(int(process.pid or 0))) if int(process.pid or 0) else 0
+    except Exception:
+        payload["tts_server_pgid"] = int(payload.get("tts_server_pgid", 0) or 0)
     return True, f"Kokoro server started with: {' '.join(command)}"
 
 
@@ -3596,6 +3600,16 @@ def _is_pid_alive(pid: int) -> bool:
         return False
     try:
         os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
+
+
+def _is_pgid_alive(pgid: int) -> bool:
+    if pgid <= 0:
+        return False
+    try:
+        os.killpg(pgid, 0)
         return True
     except OSError:
         return False
@@ -3826,14 +3840,20 @@ def _kokoro_server_status(payload: dict[str, object]) -> tuple[bool, str]:
 
 def _stop_kokoro_server(payload: dict[str, object]) -> tuple[bool, str]:
     pid = int(payload.get("tts_server_pid", 0) or 0)
-    if not _is_pid_alive(pid):
+    pgid = int(payload.get("tts_server_pgid", 0) or 0)
+    if not _is_pid_alive(pid) and not _is_pgid_alive(pgid):
         payload["tts_server_pid"] = 0
+        payload["tts_server_pgid"] = 0
         return False, "No tracked Kokoro server process is running."
     try:
-        os.kill(pid, signal.SIGTERM)
+        if _is_pgid_alive(pgid):
+            os.killpg(pgid, signal.SIGTERM)
+        elif _is_pid_alive(pid):
+            os.kill(pid, signal.SIGTERM)
     except OSError as exc:
         return False, f"Unable to stop Kokoro server: {exc}"
     payload["tts_server_pid"] = 0
+    payload["tts_server_pgid"] = 0
     return True, f"Stopped Kokoro server process {pid}."
 
 
@@ -3842,7 +3862,8 @@ def _koboldcpp_status(payload: dict[str, object]) -> tuple[bool, str]:
     if host and _openai_compat_alive(host):
         return True, f"Server active at {host}"
     pid = int(payload.get("koboldcpp_pid", 0) or 0)
-    if _is_pid_alive(pid):
+    pgid = int(payload.get("koboldcpp_pgid", 0) or 0)
+    if _is_pid_alive(pid) or _is_pgid_alive(pgid):
         return True, f"Server process running (pid {pid})"
     return False, "Server inactive"
 
@@ -3877,24 +3898,34 @@ def _start_koboldcpp(payload: dict[str, object]) -> tuple[bool, str]:
     except Exception as exc:
         return False, f"Unable to start KoboldCpp: {exc}"
     payload["koboldcpp_pid"] = int(process.pid or 0)
+    try:
+        payload["koboldcpp_pgid"] = int(os.getpgid(int(process.pid or 0))) if int(process.pid or 0) else 0
+    except Exception:
+        payload["koboldcpp_pgid"] = int(payload.get("koboldcpp_pgid", 0) or 0)
     return True, f"KoboldCpp started with {gguf_path.name}."
 
 
 def _stop_koboldcpp(payload: dict[str, object]) -> tuple[bool, str]:
     pid = int(payload.get("koboldcpp_pid", 0) or 0)
-    if not _is_pid_alive(pid):
+    pgid = int(payload.get("koboldcpp_pgid", 0) or 0)
+    if not _is_pid_alive(pid) and not _is_pgid_alive(pgid):
         payload["koboldcpp_pid"] = 0
+        payload["koboldcpp_pgid"] = 0
         return False, "No tracked KoboldCpp process is running."
     try:
         # KoboldCpp can spawn worker children. When we started it with start_new_session=True,
         # it becomes a process group leader, so stop the whole group if possible.
-        try:
-            os.killpg(pid, signal.SIGTERM)
-        except Exception:
-            os.kill(pid, signal.SIGTERM)
+        if _is_pgid_alive(pgid):
+            os.killpg(pgid, signal.SIGTERM)
+        else:
+            try:
+                os.killpg(pid, signal.SIGTERM)
+            except Exception:
+                os.kill(pid, signal.SIGTERM)
     except OSError as exc:
         return False, f"Unable to stop KoboldCpp: {exc}"
     payload["koboldcpp_pid"] = 0
+    payload["koboldcpp_pgid"] = 0
     return True, f"Stopped KoboldCpp process {pid}."
 
 
@@ -3998,7 +4029,8 @@ def _pocket_server_status(payload: dict[str, object]) -> tuple[bool, str]:
         if _openai_compat_alive(host) or _host_reachable(host):
             return True, f"Server active at {host}"
     pid = int(payload.get("tts_server_pid", 0) or 0)
-    if _is_pid_alive(pid):
+    pgid = int(payload.get("tts_server_pgid", 0) or 0)
+    if _is_pid_alive(pid) or _is_pgid_alive(pgid):
         return True, f"Server process running (pid {pid})"
     return False, "Server inactive"
 
@@ -4020,19 +4052,29 @@ def _start_pocket_server(payload: dict[str, object]) -> tuple[bool, str]:
     except Exception as exc:
         return False, f"Unable to start PocketTTS server: {exc}"
     payload["tts_server_pid"] = int(process.pid or 0)
+    try:
+        payload["tts_server_pgid"] = int(os.getpgid(int(process.pid or 0))) if int(process.pid or 0) else 0
+    except Exception:
+        payload["tts_server_pgid"] = int(payload.get("tts_server_pgid", 0) or 0)
     return True, f"PocketTTS server started with: {' '.join(command)}"
 
 
 def _stop_pocket_server(payload: dict[str, object]) -> tuple[bool, str]:
     pid = int(payload.get("tts_server_pid", 0) or 0)
-    if not _is_pid_alive(pid):
+    pgid = int(payload.get("tts_server_pgid", 0) or 0)
+    if not _is_pid_alive(pid) and not _is_pgid_alive(pgid):
         payload["tts_server_pid"] = 0
+        payload["tts_server_pgid"] = 0
         return False, "No tracked PocketTTS server process is running."
     try:
-        os.kill(pid, signal.SIGTERM)
+        if _is_pgid_alive(pgid):
+            os.killpg(pgid, signal.SIGTERM)
+        elif _is_pid_alive(pid):
+            os.kill(pid, signal.SIGTERM)
     except OSError as exc:
         return False, f"Unable to stop PocketTTS server: {exc}"
     payload["tts_server_pid"] = 0
+    payload["tts_server_pgid"] = 0
     return True, f"Stopped PocketTTS server process {pid}."
 
 
