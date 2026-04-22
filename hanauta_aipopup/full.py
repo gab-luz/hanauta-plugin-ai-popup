@@ -508,6 +508,83 @@ def _openai_compat_alive(host: str) -> bool:
         return False
 
 
+def _looks_like_gemma4_model_name(text: str) -> bool:
+    lowered = str(text or "").strip().lower()
+    return "gemma-4" in lowered or "gemma4" in lowered
+
+
+def _looks_like_gemma4_audio_variant(text: str) -> bool:
+    lowered = str(text or "").strip().lower()
+    # KoboldCpp release notes: Gemma4 E4B and E2B now support audio inputs.
+    return _looks_like_gemma4_model_name(lowered) and ("e4b" in lowered or "e2b" in lowered)
+
+
+def _probe_openai_style_audio_input_support(host: str, model: str, api_key: str = "") -> bool:
+    """
+    Best-effort capability probe: send a tiny silent WAV via Chat Completions input_audio.
+    If the endpoint accepts it and returns assistant content, assume audio input is supported.
+    """
+    try:
+        import wave
+        import struct
+        import io
+    except Exception:
+        return False
+    try:
+        sample_rate = 16000
+        frames = int(sample_rate * 0.15)
+        buf = io.BytesIO()
+        with wave.open(buf, "wb") as wav:
+            wav.setnchannels(1)
+            wav.setsampwidth(2)
+            wav.setframerate(sample_rate)
+            wav.writeframes(struct.pack("<" + "h" * frames, *([0] * frames)))
+        audio_b64 = b64encode(buf.getvalue()).decode("ascii")
+    except Exception:
+        return False
+    headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+    payload = {
+        "model": str(model or "").strip() or "koboldcpp",
+        "messages": [
+            {
+                "role": "system",
+                "content": "You are a speech-to-text transcriber. Output only plain text.",
+            },
+            {
+                "role": "user",
+                "content": [
+                    {"type": "input_audio", "input_audio": {"data": audio_b64, "format": "wav"}},
+                    {"type": "text", "text": "Say OK."},
+                ],
+            },
+        ],
+        "temperature": 0,
+        "max_tokens": 8,
+    }
+    try:
+        response = _http_post_json(
+            f"{_api_url_from_host(host)}/v1/chat/completions",
+            payload,
+            timeout=30.0,
+            headers=headers,
+        )
+    except Exception:
+        return False
+    try:
+        choices = response.get("choices", [])
+        if isinstance(choices, list) and choices:
+            first = choices[0]
+            if isinstance(first, dict):
+                message = first.get("message", {})
+                if isinstance(message, dict) and str(message.get("content", "")).strip():
+                    return True
+                if str(first.get("text", "")).strip():
+                    return True
+    except Exception:
+        return False
+    return False
+
+
 def _apply_antialias_font(widget: QWidget) -> None:
     font = widget.font()
     font.setStyleStrategy(QFont.StyleStrategy.PreferAntialias)
@@ -1351,6 +1428,26 @@ def _voice_mode_settings(settings: dict[str, dict[str, object]]) -> dict[str, ob
     raw = settings.get("_voice_mode", {})
     if isinstance(raw, dict):
         payload.update(raw)
+    # Auto-switch STT to "LLM audio" when KoboldCpp is running Gemma 4 audio variants and the user opted in.
+    # This avoids loading Whisper entirely (lower VRAM), and uses the same LLM for STT+chat.
+    try:
+        if (
+            not bool(payload.get("stt_external_api", False))
+            and not bool(payload.get("llm_external_api", False))
+            and str(payload.get("stt_backend", "whisper")).strip().lower() == "whisper"
+            and str(payload.get("llm_profile", "koboldcpp")).strip() == "koboldcpp"
+        ):
+            kobold = dict(settings.get("koboldcpp", {}) or {})
+            if bool(kobold.get("gemma4_audio_stt_enabled", False)) and bool(kobold.get("gemma4_audio_supported", False)):
+                gguf = str(kobold.get("gguf_path", "")).strip()
+                gguf_name = Path(gguf).name if gguf else ""
+                checked_gguf = str(kobold.get("gemma4_audio_checked_gguf", "")).strip()
+                if checked_gguf and checked_gguf != gguf_name:
+                    pass
+                elif _looks_like_gemma4_model_name(gguf_name):
+                    payload["stt_backend"] = "llm_audio"
+    except Exception:
+        pass
     return payload
 
 
@@ -4859,6 +4956,12 @@ class BackendSettingsDialog(QDialog):
         self.kobold_jinja_check = QCheckBox("Enable Jinja chat template support")
         self.kobold_jinja_check.setToolTip("Useful for Gemma 4 and other chat templates that expect Jinja support in KoboldCpp.")
         shell_layout.addWidget(self.kobold_jinja_check)
+        self.kobold_gemma4_audio_stt_check = QCheckBox("Use Gemma 4 audio for STT (Whisper won't be used)")
+        self.kobold_gemma4_audio_stt_check.setToolTip(
+            "Voice mode only: when enabled and supported by your KoboldCpp build/model, STT runs through the same Gemma 4 model via audio input. "
+            "This avoids loading Whisper and can reduce VRAM usage."
+        )
+        shell_layout.addWidget(self.kobold_gemma4_audio_stt_check)
         self.kobold_test_prompt_input = QLineEdit()
         self.kobold_test_prompt_input.setPlaceholderText("Test prompt for KoboldCpp")
         self.kobold_test_prompt_input.setToolTip("This message is sent by the Test button to confirm the model is answering.")
@@ -5057,7 +5160,7 @@ class BackendSettingsDialog(QDialog):
         self._gguf_download_manager.progress_changed.connect(self._on_gguf_download_progress)
         self._gguf_download_manager.download_finished.connect(self._on_gguf_download_finished)
         self._gguf_download_manager.download_failed.connect(self._on_gguf_download_failed)
-        self.gguf_path_input.textChanged.connect(lambda _=None: self._refresh_gguf_info())
+        self.gguf_path_input.textChanged.connect(lambda _=None: (self._refresh_gguf_info(), self._refresh_kobold_gemma4_audio_toggle()))
         self.binary_path_input.textChanged.connect(lambda _=None: self._refresh_binary_info())
         self._populate_gguf_gallery()
         self._load_selected_backend()
@@ -5143,6 +5246,7 @@ class BackendSettingsDialog(QDialog):
                 "text_model_path": self.text_model_path_input.text().strip(),
                 "mmproj_path": self.mmproj_path_input.text().strip(),
                 "jinja": bool(self.kobold_jinja_check.isChecked()),
+                "gemma4_audio_stt_enabled": bool(self.kobold_gemma4_audio_stt_check.isChecked()) if hasattr(self, "kobold_gemma4_audio_stt_check") else False,
                 "test_prompt": self.kobold_test_prompt_input.text().strip(),
                 "device": str(self.device_combo.currentData()),
                 "token_saver_enabled": bool(self.token_saver_check.isChecked()),
@@ -5159,6 +5263,19 @@ class BackendSettingsDialog(QDialog):
                 "monitor_enabled": bool(self.monitor_check.isChecked()),
             }
         )
+        if profile.key == "koboldcpp":
+            gguf_name = Path(str(existing.get("gguf_path", "")).strip()).name
+            if not _looks_like_gemma4_model_name(gguf_name):
+                existing["gemma4_audio_stt_enabled"] = False
+                existing["gemma4_audio_supported"] = False
+                existing["gemma4_audio_checked_at"] = 0.0
+                existing["gemma4_audio_checked_gguf"] = ""
+            else:
+                checked_gguf = str(existing.get("gemma4_audio_checked_gguf", "")).strip()
+                if checked_gguf and checked_gguf != gguf_name:
+                    existing["gemma4_audio_supported"] = False
+                    existing["gemma4_audio_checked_at"] = 0.0
+                    existing["gemma4_audio_checked_gguf"] = ""
         return existing
 
     def _load_selected_backend(self) -> None:
@@ -5198,6 +5315,7 @@ class BackendSettingsDialog(QDialog):
         self.text_model_path_input.setText(str(payload.get("text_model_path", "")))
         self.mmproj_path_input.setText(str(payload.get("mmproj_path", "")))
         self.kobold_jinja_check.setChecked(bool(payload.get("jinja", False)))
+        self.kobold_gemma4_audio_stt_check.setChecked(bool(payload.get("gemma4_audio_stt_enabled", False)))
         self.kobold_test_prompt_input.setText(str(payload.get("test_prompt", "Tell me that KoboldCpp is working.")))
         self.token_saver_check.setChecked(bool(payload.get("token_saver_enabled", True)))
         self.voice_barge_in_check.setChecked(bool(payload.get("voice_barge_in_enabled", True)))
@@ -5259,6 +5377,7 @@ class BackendSettingsDialog(QDialog):
         self.text_model_path_input.setVisible(is_kobold)
         self.mmproj_path_input.setVisible(is_kobold)
         self.kobold_jinja_check.setVisible(is_kobold)
+        self.kobold_gemma4_audio_stt_check.setVisible(is_kobold)
         self.kobold_test_prompt_input.setVisible(is_kobold)
         self.device_combo.setVisible(device_enabled)
         self.negative_prompt_input.setVisible(is_sd)
@@ -5305,6 +5424,7 @@ class BackendSettingsDialog(QDialog):
         self.validation_badge.setStyleSheet(
             f"color: {ACCENT if tested else TEXT_DIM}; font-weight: 700; border: none;"
         )
+        self._refresh_kobold_gemma4_audio_toggle()
 
     def _test_current_backend(self) -> None:
         profile = self._selected_profile()
@@ -5328,6 +5448,18 @@ class BackendSettingsDialog(QDialog):
                     ).strip()
                     preview = reply[:220] + ("..." if len(reply) > 220 else "")
                     message = f"Reply ok: {preview}" if preview else "KoboldCpp answered successfully."
+                    gguf_name = Path(str(payload.get("gguf_path", "")).strip()).name
+                    if bool(payload.get("gemma4_audio_stt_enabled", False)) and _looks_like_gemma4_model_name(gguf_name):
+                        ok_audio = _probe_openai_style_audio_input_support(
+                            host,
+                            str(payload.get("model", profile.model)).strip() or profile.model,
+                            secure_load_secret(f"{profile.key}:api_key").strip(),
+                        )
+                        payload["gemma4_audio_supported"] = bool(ok_audio)
+                        payload["gemma4_audio_checked_at"] = float(time.time())
+                        payload["gemma4_audio_checked_gguf"] = gguf_name
+                        suffix = "supported" if ok_audio else "NOT supported"
+                        message = f"{message} (Gemma 4 audio: {suffix})"
                 except Exception as exc:
                     ok = False
                     message = str(exc).strip() or "KoboldCpp test failed."
@@ -6005,6 +6137,53 @@ class BackendSettingsDialog(QDialog):
                 extra = " • " + " • ".join(bits)
         suffix = f" • {quant}" if quant else ""
         self.gguf_info_label.setText(f"{name} — {_format_bytes(size)}{suffix}{extra}")
+
+    def _refresh_kobold_gemma4_audio_toggle(self) -> None:
+        if not hasattr(self, "kobold_gemma4_audio_stt_check"):
+            return
+        profile = self._selected_profile()
+        is_kobold = profile.key == "koboldcpp"
+        self.kobold_gemma4_audio_stt_check.setVisible(is_kobold)
+        if not is_kobold:
+            self.kobold_gemma4_audio_stt_check.setChecked(False)
+            self.kobold_gemma4_audio_stt_check.setEnabled(False)
+            return
+
+        gguf_name = Path(str(self.gguf_path_input.text() or "").strip()).name
+        is_gemma4 = _looks_like_gemma4_model_name(gguf_name)
+        if not is_gemma4:
+            self.kobold_gemma4_audio_stt_check.setChecked(False)
+            self.kobold_gemma4_audio_stt_check.setEnabled(False)
+            self.kobold_gemma4_audio_stt_check.setToolTip("Select a Gemma 4 GGUF to enable Gemma 4 audio STT.")
+            return
+
+        supported = False
+        checked_at = 0.0
+        try:
+            payload = dict(self.settings.get("koboldcpp", {}) or {})
+            supported = bool(payload.get("gemma4_audio_supported", False))
+            checked_at = float(payload.get("gemma4_audio_checked_at", 0.0) or 0.0)
+            checked_gguf = str(payload.get("gemma4_audio_checked_gguf", "")).strip()
+            if checked_gguf and checked_gguf != gguf_name:
+                supported = False
+                checked_at = 0.0
+        except Exception:
+            supported = False
+            checked_at = 0.0
+
+        self.kobold_gemma4_audio_stt_check.setEnabled(True)
+        hint = ""
+        if supported:
+            hint = "Audio input verified."
+        elif checked_at > 0:
+            hint = "Audio input not supported on this build/model."
+        else:
+            hint = "Click Test to verify audio input support."
+        if _looks_like_gemma4_audio_variant(gguf_name):
+            variant_hint = "Gemma 4 audio variant detected."
+        else:
+            variant_hint = "Gemma 4 variant unknown (audio may or may not work)."
+        self.kobold_gemma4_audio_stt_check.setToolTip(f"{variant_hint} {hint}")
 
     def _populate_gguf_gallery(self) -> None:
         # Clear previous widgets.
@@ -8194,6 +8373,9 @@ class VoiceModelsWarmupWorker(QThread):
             return updates
         backend = str(self.config.get("stt_backend", "whisper")).strip().lower()
         if backend == "llm_audio":
+            # If LLM is also being started, let the LLM warmup own the startup.
+            if bool(self.selection.get("llm", False)):
+                return updates
             return self._warm_llm()
         if backend == "vosk":
             model_path = Path(str(self.config.get("stt_vosk_model_path", "")).strip()).expanduser()
@@ -10436,6 +10618,8 @@ class SidebarPanel(QFrame):
         tts_backend, tts_model, tts_device, tts_mode = self._voice_tts_backend_model()
         stt_device = "gpu" if str(config.get("stt_device", "cpu")).strip().lower() == "gpu" else "cpu"
         llm_device = "gpu" if str(config.get("llm_device", "cpu")).strip().lower() == "gpu" else "cpu"
+        if str(config.get("stt_backend", "whisper")).strip().lower() == "llm_audio":
+            stt_device = llm_device
         selection = dict(self._voice_models_last_selection or {})
         return {
             "active": bool(any(self._voice_models_loaded.values())),
@@ -10674,7 +10858,42 @@ class SidebarPanel(QFrame):
             config = _voice_mode_settings(self.backend_settings)
         if not bool(config.get("enabled", False)):
             return
+        self._maybe_probe_kobold_gemma4_audio_support()
+        config = _voice_mode_settings(self.backend_settings)
         self._start_voice_mode(config)
+
+    def _maybe_probe_kobold_gemma4_audio_support(self) -> None:
+        """
+        If the user opted into Gemma 4 audio STT on KoboldCpp, probe support and cache it.
+        This enables voice mode to auto-switch STT to LLM-audio and avoid loading Whisper.
+        """
+        kobold_payload = dict(self.backend_settings.get("koboldcpp", {}) or {})
+        if not bool(kobold_payload.get("gemma4_audio_stt_enabled", False)):
+            return
+        gguf_name = Path(str(kobold_payload.get("gguf_path", "")).strip()).name
+        if not _looks_like_gemma4_model_name(gguf_name):
+            return
+        # If we've already checked, don't re-probe during normal operation.
+        try:
+            checked_at = float(kobold_payload.get("gemma4_audio_checked_at", 0.0) or 0.0)
+            if checked_at > 0 and (time.time() - checked_at) < (24 * 60 * 60):
+                return
+        except Exception:
+            pass
+        profile = self.profile_by_key.get("koboldcpp")
+        default_host = profile.host if profile is not None else ""
+        default_model = profile.model if profile is not None else "koboldcpp"
+        host = str(kobold_payload.get("host", default_host)).strip()
+        if not host or not _openai_compat_alive(host):
+            return
+        model = str(kobold_payload.get("model", default_model)).strip() or default_model
+        api_key = secure_load_secret("koboldcpp:api_key").strip()
+        ok_audio = _probe_openai_style_audio_input_support(host, model, api_key)
+        kobold_payload["gemma4_audio_supported"] = bool(ok_audio)
+        kobold_payload["gemma4_audio_checked_at"] = float(time.time())
+        kobold_payload["gemma4_audio_checked_gguf"] = gguf_name
+        self.backend_settings["koboldcpp"] = kobold_payload
+        save_backend_settings(self.backend_settings)
 
     def _voice_models_preflight_warning(self, selection: dict[str, bool]) -> str:
         config = _voice_mode_settings(self.backend_settings)
@@ -10793,6 +11012,7 @@ class SidebarPanel(QFrame):
         self._voice_models_needs_confirm = False
         self._voice_models_last_selection = selection
 
+        self._maybe_probe_kobold_gemma4_audio_support()
         config = _voice_mode_settings(self.backend_settings)
         self._voice_models_busy = True
         self._sync_web_ui()
