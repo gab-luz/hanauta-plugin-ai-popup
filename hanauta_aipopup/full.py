@@ -2061,10 +2061,95 @@ def _transcribe_with_vosk(audio_path: Path, config: dict[str, object]) -> str:
     return text
 
 
-def transcribe_voice_audio(audio_path: Path, config: dict[str, object]) -> str:
+def _resolve_voice_llm_endpoint(
+    config: dict[str, object],
+    profiles: dict[str, BackendProfile] | None,
+    backend_settings: dict[str, dict[str, object]] | None,
+) -> tuple[str, str, str]:
+    if bool(config.get("llm_external_api", False)):
+        host = str(config.get("llm_host", "")).strip()
+        model = str(config.get("llm_model", "")).strip() or "gpt-4.1-mini"
+        api_key = secure_load_secret("voice_mode:llm_api_key").strip()
+        return host, model, api_key
+    if profiles is None or backend_settings is None:
+        raise RuntimeError("LLM-audio STT needs the voice mode LLM backend settings.")
+    profile_key = str(config.get("llm_profile", "koboldcpp")).strip()
+    profile = profiles.get(profile_key)
+    if profile is None:
+        raise RuntimeError("Select an LLM backend in Voice Mode settings.")
+    payload = dict(backend_settings.get(profile.key, {}))
+    host = str(payload.get("host", profile.host)).strip()
+    model = str(payload.get("model", profile.model)).strip() or profile.model
+    api_key = secure_load_secret(f"{profile.key}:api_key").strip()
+    return host, model, api_key
+
+
+def _transcribe_with_llm_audio(
+    audio_path: Path,
+    config: dict[str, object],
+    profiles: dict[str, BackendProfile] | None,
+    backend_settings: dict[str, dict[str, object]] | None,
+) -> str:
+    host, model, api_key = _resolve_voice_llm_endpoint(config, profiles, backend_settings)
+    if not host:
+        raise RuntimeError("Set a voice mode LLM host before using LLM-audio STT.")
+    audio_bytes = audio_path.expanduser().read_bytes()
+    audio_b64 = b64encode(audio_bytes).decode("ascii")
+    headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+    payload = {
+        "model": model.strip() or "koboldcpp",
+        "messages": [
+            {
+                "role": "system",
+                "content": (
+                    "You are a speech-to-text transcriber. "
+                    "Return only the spoken words as plain text. "
+                    "No markdown, no extra commentary."
+                ),
+            },
+            {
+                "role": "user",
+                "content": [
+                    {"type": "input_audio", "input_audio": {"data": audio_b64, "format": "wav"}},
+                    {"type": "text", "text": "Transcribe the audio. Return only the transcription text."},
+                ],
+            },
+        ],
+        "temperature": 0,
+        "max_tokens": 520,
+    }
+    response = _http_post_json(
+        f"{_api_url_from_host(host)}/v1/chat/completions",
+        payload,
+        timeout=240.0,
+        headers=headers,
+    )
+    choices = response.get("choices", [])
+    if isinstance(choices, list) and choices:
+        first = choices[0]
+        if isinstance(first, dict):
+            message = first.get("message", {})
+            if isinstance(message, dict):
+                text = str(message.get("content", "")).strip()
+                if text:
+                    return text
+            text = str(first.get("text", "")).strip()
+            if text:
+                return text
+    raise RuntimeError("LLM-audio STT returned no transcript text.")
+
+
+def transcribe_voice_audio(
+    audio_path: Path,
+    config: dict[str, object],
+    profiles: dict[str, BackendProfile] | None = None,
+    backend_settings: dict[str, dict[str, object]] | None = None,
+) -> str:
     if bool(config.get("stt_external_api", False)):
         return _transcribe_with_external_api(audio_path, config)
     backend = str(config.get("stt_backend", "whisper")).strip().lower()
+    if backend == "llm_audio":
+        return _transcribe_with_llm_audio(audio_path, config, profiles, backend_settings)
     if backend == "vosk":
         return _transcribe_with_vosk(audio_path, config)
     if backend == "whisperlive":
@@ -7903,9 +7988,16 @@ class OneShotSttWorker(QThread):
     failed = pyqtSignal(str)
     status = pyqtSignal(str)
 
-    def __init__(self, config: dict[str, object]) -> None:
+    def __init__(
+        self,
+        config: dict[str, object],
+        profiles: dict[str, BackendProfile] | None = None,
+        backend_settings: dict[str, dict[str, object]] | None = None,
+    ) -> None:
         super().__init__()
         self.config = dict(config)
+        self.profiles = dict(profiles) if profiles is not None else None
+        self.backend_settings = json.loads(json.dumps(backend_settings)) if backend_settings is not None else None
 
     def _silence_threshold(self) -> float:
         try:
@@ -8029,7 +8121,7 @@ class OneShotSttWorker(QThread):
             self.status.emit("Listening")
             audio_path = self._record_until_silence() if self._speech_end_silence_ms() > 0 else _record_microphone_wav(self._record_seconds())
             self.status.emit("Transcribing")
-            text = transcribe_voice_audio(audio_path, self.config).strip()
+            text = transcribe_voice_audio(audio_path, self.config, self.profiles, self.backend_settings).strip()
             if not text:
                 raise RuntimeError("No speech detected.")
             self.finished_ok.emit(text)
@@ -8065,7 +8157,9 @@ class VoiceModelsWarmupWorker(QThread):
 
             if self.selection.get("stt", False):
                 self._emit("Starting STT", "Preparing speech-to-text backend.")
-                self._warm_stt()
+                stt_updates = self._warm_stt()
+                if stt_updates:
+                    updates.update(stt_updates)
                 loaded["stt"] = True
 
             if self.selection.get("llm", False):
@@ -8089,22 +8183,25 @@ class VoiceModelsWarmupWorker(QThread):
             message = str(exc).strip() or exc.__class__.__name__
             self.failed.emit(message)
 
-    def _warm_stt(self) -> None:
+    def _warm_stt(self) -> dict[str, dict[str, object]]:
+        updates: dict[str, dict[str, object]] = {}
         if bool(self.config.get("stt_external_api", False)):
             host = str(self.config.get("stt_host", "")).strip()
             if not host:
                 raise RuntimeError("STT external API host is not configured.")
             if not _host_reachable(host):
                 raise RuntimeError(f"Unable to reach STT host: {_normalize_host_url(host)}")
-            return
+            return updates
         backend = str(self.config.get("stt_backend", "whisper")).strip().lower()
+        if backend == "llm_audio":
+            return self._warm_llm()
         if backend == "vosk":
             model_path = Path(str(self.config.get("stt_vosk_model_path", "")).strip()).expanduser()
             if not model_path.exists():
                 raise RuntimeError("Set a valid VOSK model folder in Voice Mode settings.")
             # Ensure venv and import; do not transcribe in warmup (fast feedback).
             _ensure_voice_venv("vosk", "warmup", "cpu", ["vosk"], "vosk")
-            return
+            return updates
 
         if backend == "whisperlive":
             host = str(self.config.get("stt_whisperlive_host", "")).strip()
@@ -8112,7 +8209,7 @@ class VoiceModelsWarmupWorker(QThread):
                 raise RuntimeError("WhisperLive host is not configured.")
             if not _host_reachable(host):
                 raise RuntimeError(f"Unable to reach WhisperLive: {_normalize_host_url(host)}")
-            return
+            return updates
 
         # Whisper (faster-whisper): ensure venv and do one short transcribe to warm model cache.
         raw_model = str(self.config.get("stt_model", "small")).strip()
@@ -8137,6 +8234,7 @@ class VoiceModelsWarmupWorker(QThread):
             wav.setframerate(sample_rate)
             wav.writeframes(struct.pack("<" + "h" * frames, *([0] * frames)))
         _transcribe_with_whisper(warmup_wav, self.config)
+        return updates
 
     def _warm_llm(self) -> dict[str, dict[str, object]]:
         updates: dict[str, dict[str, object]] = {}
@@ -8302,14 +8400,14 @@ class VoiceConversationWorker(QThread):
         proc = self._whisper_stream_proc
         if proc is None or proc.stdin is None or proc.stdout is None:
             # Fallback to one-shot transcription.
-            return transcribe_voice_audio(audio_path, self.config)
+            return transcribe_voice_audio(audio_path, self.config, self.profiles, self.backend_settings)
         payload = {"cmd": "transcribe", "audio": str(audio_path.expanduser()), "prompt": prompt}
         try:
             proc.stdin.write(json.dumps(payload, ensure_ascii=False) + "\n")
             proc.stdin.flush()
             line = proc.stdout.readline()
         except Exception:
-            return transcribe_voice_audio(audio_path, self.config)
+            return transcribe_voice_audio(audio_path, self.config, self.profiles, self.backend_settings)
         try:
             msg = json.loads((line or "").strip())
         except Exception:
@@ -8535,7 +8633,7 @@ class VoiceConversationWorker(QThread):
                         self.status_changed.emit("Silence skipped")
                         continue
                     self.status_changed.emit("Transcribing")
-                    transcript = transcribe_voice_audio(audio_path, self.config)
+                    transcript = transcribe_voice_audio(audio_path, self.config, self.profiles, self.backend_settings)
                 if not self._running:
                     break
                 if not transcript.strip():
@@ -9478,6 +9576,7 @@ class VoiceModeDialog(QDialog):
         form.addWidget(self.stt_external_check)
         self.stt_backend_combo = QComboBox()
         self.stt_backend_combo.addItem("Faster Whisper local", "whisper")
+        self.stt_backend_combo.addItem("LLM audio (Gemma 4 / KoboldCpp)", "llm_audio")
         self.stt_backend_combo.addItem("WhisperLive (OpenAI REST)", "whisperlive")
         self.stt_backend_combo.addItem("VOSK English local", "vosk")
         self._set_combo_selected(self.stt_backend_combo, str(self.config.get("stt_backend", "whisper")))
@@ -9698,6 +9797,7 @@ class VoiceModeDialog(QDialog):
         stt_external = self.stt_external_check.isChecked()
         stt_is_vosk = str(self.stt_backend_combo.currentData() or "") == "vosk"
         stt_is_whisperlive = str(self.stt_backend_combo.currentData() or "") == "whisperlive"
+        stt_is_llm_audio = str(self.stt_backend_combo.currentData() or "") == "llm_audio"
         for widget in (
             self.stt_backend_combo,
             self.stt_model_combo,
@@ -9710,9 +9810,9 @@ class VoiceModeDialog(QDialog):
             if wrapper is not None:
                 wrapper.setVisible(not stt_external)
         if self.stt_model_combo.parentWidget() is not None:
-            self.stt_model_combo.parentWidget().setVisible((not stt_external) and (not stt_is_vosk) and (not stt_is_whisperlive))
+            self.stt_model_combo.parentWidget().setVisible((not stt_external) and (not stt_is_vosk) and (not stt_is_whisperlive) and (not stt_is_llm_audio))
         if self.stt_device_combo.parentWidget() is not None:
-            self.stt_device_combo.parentWidget().setVisible((not stt_external) and (not stt_is_whisperlive))
+            self.stt_device_combo.parentWidget().setVisible((not stt_external) and (not stt_is_whisperlive) and (not stt_is_llm_audio))
         if self.stt_vosk_model_input.parentWidget() is not None:
             self.stt_vosk_model_input.parentWidget().setVisible((not stt_external) and stt_is_vosk)
         if self.whisperlive_host_input.parentWidget() is not None:
@@ -10210,6 +10310,9 @@ class SidebarPanel(QFrame):
         if bool(config.get("stt_external_api", False)):
             return "External STT", str(config.get("stt_remote_model", "whisper-1")).strip() or "whisper-1"
         backend = str(config.get("stt_backend", "whisper")).strip().lower()
+        if backend == "llm_audio":
+            llm_backend, llm_model = self._voice_llm_backend_model()
+            return "LLM Audio", f"{llm_backend} • {llm_model}"
         if backend == "vosk":
             path = Path(str(config.get("stt_vosk_model_path", "")).strip()).expanduser()
             return "VOSK", path.name or "english model"
@@ -10265,6 +10368,25 @@ class SidebarPanel(QFrame):
         except Exception:
             return ""
 
+    def _assistant_display_name(self) -> str:
+        active = self._active_character()
+        return active.name if active is not None else "Hanauta AI"
+
+    def _assistant_avatar_url(self) -> str:
+        active = self._active_character()
+        if active is None:
+            return ""
+        config = _voice_mode_settings(self.backend_settings)
+        if bool(config.get("hide_character_photo", False)):
+            return ""
+        avatar = Path(str(active.avatar_path or "").strip()).expanduser()
+        if not str(avatar).strip() or not avatar.exists():
+            return ""
+        try:
+            return avatar.resolve().as_uri()
+        except Exception:
+            return ""
+
     def _voice_stack_ready(self) -> bool:
         config = _voice_mode_settings(self.backend_settings)
         if not bool(config.get("enabled", False)):
@@ -10276,6 +10398,8 @@ class SidebarPanel(QFrame):
             backend = str(config.get("stt_backend", "whisper")).strip().lower()
             if backend == "vosk":
                 stt_ready = bool(str(config.get("stt_vosk_model_path", "")).strip())
+            elif backend == "llm_audio":
+                stt_ready = True
             else:
                 stt_ready = bool(str(config.get("stt_model", "small")).strip())
         if bool(config.get("llm_external_api", False)):
@@ -10496,11 +10620,14 @@ class SidebarPanel(QFrame):
         history = list(self.chat_history)
         if self._pending_item is not None:
             history.append(self._pending_item)
+        assistant_name = self._assistant_display_name()
+        assistant_avatar = self._assistant_avatar_url()
         return {
             "mode": getattr(self, "_web_mode", "chat"),
             "header_status": header_status,
             "provider_label": provider_label,
             "draft": {"id": int(self._web_draft_id or 0), "text": str(self._web_draft_text or "")},
+            "assistant": {"name": assistant_name, "avatar_url": assistant_avatar},
             "info": self._web_info_payload(),
             "models": self._voice_models_payload(),
             "backends": available_backends,
@@ -10577,7 +10704,7 @@ class SidebarPanel(QFrame):
         stt_est = 0
         if selection.get("stt", False) and not bool(config.get("stt_external_api", False)):
             backend = str(config.get("stt_backend", "whisper")).strip().lower()
-            if backend != "vosk":
+            if backend == "whisper":
                 model = str(config.get("stt_model", "small")).strip().lower() or "small"
                 stt_est = {
                     "tiny": 180 * 1024 * 1024,
@@ -10793,7 +10920,7 @@ class SidebarPanel(QFrame):
         if not bool(config.get("enabled", False)):
             return
         self._add_runtime_status_card("STT", "Listening for dictation…", chips=["stt", "dictation"])
-        worker = OneShotSttWorker(config)
+        worker = OneShotSttWorker(config, self.profile_by_key, self.backend_settings)
         self._stt_once_worker = worker
 
         def _on_status(label: str) -> None:

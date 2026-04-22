@@ -39,6 +39,27 @@ POPUP_CSS = r"""
       overflow: hidden;
     }
 
+    /* Material Design 3 icon ligatures (Material Symbols). */
+    .md3-icon {
+      font-family: "Material Symbols Outlined", "Material Symbols Rounded", "Material Icons", var(--font);
+      font-weight: 400;
+      font-style: normal;
+      font-size: 20px;
+      line-height: 1;
+      letter-spacing: normal;
+      text-transform: none;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      white-space: nowrap;
+      word-wrap: normal;
+      direction: ltr;
+      -webkit-font-feature-settings: "liga";
+      -webkit-font-smoothing: antialiased;
+      font-variation-settings: "FILL" 0, "wght" 360, "GRAD" 0, "opsz" 20;
+      user-select: none;
+    }
+
     .window {
       display: flex;
       flex-direction: column;
@@ -153,25 +174,29 @@ POPUP_CSS = r"""
       flex: 0 0 auto;
     }
     .icon-btn {
-      width: 38px;
-      height: 38px;
-      border-radius: 14px;
-      border: 1px solid rgba(214,195,255,.12);
-      background: rgba(255,255,255,0.04);
+      width: 36px;
+      height: 36px;
+      border-radius: 12px;
+      border: 0;
+      background: transparent;
       color: rgba(255,255,255,0.90);
       cursor: pointer;
       font-weight: 900;
+      appearance: none;
       transition: transform .16s ease, background .16s ease, border-color .16s ease, box-shadow .16s ease;
-      box-shadow: inset 0 1px 0 rgba(255,255,255,0.08);
+      box-shadow: none;
     }
+    .icon-btn .md3-icon { font-size: 21px; }
     .icon-btn:hover {
       transform: translateY(-1px);
-      background: rgba(255,255,255,0.06);
-      border-color: rgba(214,195,255,.22);
+      background: rgba(255,255,255,0.05);
     }
     .icon-btn.magic-ready {
-      border-color: rgba(57,255,136,.55);
-      box-shadow: 0 0 0 2px rgba(57,255,136,.14), inset 0 1px 0 rgba(255,255,255,0.10);
+      box-shadow: 0 0 0 1px rgba(57,255,136,.22);
+    }
+    .icon-btn:focus-visible {
+      outline: 1px solid rgba(196,181,253,.45);
+      outline-offset: 2px;
     }
 
     .body {
@@ -241,6 +266,14 @@ POPUP_CSS = r"""
       border: 1px solid rgba(214,195,255,.12);
       color: rgba(255,255,255,0.86);
       flex: 0 0 auto;
+      overflow: hidden;
+    }
+    .avatar.has-photo {
+      color: transparent;
+      border: 0;
+      background-size: cover;
+      background-position: center;
+      box-shadow: 0 0 0 1px rgba(214,195,255,.10);
     }
     .bubble {
       max-width: 88%;
@@ -296,25 +329,37 @@ POPUP_CSS = r"""
     .composer-row { display: flex; align-items: center; gap: 10px; margin-top: 10px; }
     .provider { flex: 1; font-size: 12px; font-weight: 600; color: var(--text-dim); }
     .send-btn {
-      min-width: 40px;
-      height: 40px;
-      padding: 0 12px;
+      min-width: 36px;
+      height: 36px;
+      padding: 0 10px;
       display: inline-flex;
       align-items: center;
       justify-content: center;
       gap: 8px;
-      background: rgba(198,180,255,.18);
+      border: 0;
+      border-radius: 12px;
+      appearance: none;
+      background: rgba(198,180,255,.16);
       color: #fff;
       font-weight: 800;
       font-size: 15px;
+      cursor: pointer;
+      transition: transform .16s ease, background .16s ease, box-shadow .16s ease;
     }
-    .send-btn.secondary { background: rgba(255,255,255,.06); color: var(--text); }
+    .send-btn.secondary { background: transparent; color: rgba(255,255,255,0.86); }
     .send-btn .btn-icon {
       display: inline-flex;
       align-items: center;
       justify-content: center;
       line-height: 1;
       transform: translateY(-0.5px);
+    }
+    .send-btn:hover { transform: translateY(-1px); background: rgba(198,180,255,.22); }
+    .send-btn.secondary:hover { background: rgba(255,255,255,.05); }
+    .send-btn:active { transform: translateY(0px); }
+    .send-btn:focus-visible {
+      outline: 1px solid rgba(196,181,253,.45);
+      outline-offset: 2px;
     }
 
     .voice-page {

@@ -36,19 +36,33 @@ POPUP_JS = r"""
       const convo = document.getElementById('conversation');
       if (!convo) return;
       convo.innerHTML = '';
+      const assistant = (state && state.assistant) ? state.assistant : {};
+      const assistantName = assistant && assistant.name ? String(assistant.name) : 'Hanauta AI';
+      const assistantPhoto = assistant && assistant.avatar_url ? String(assistant.avatar_url) : '';
       (messages || []).forEach((m) => {
         const outer = document.createElement('div');
-        outer.className = 'message ' + (m.role === 'user' ? 'you' : 'ai');
+        const isUser = (m.role === 'user');
+        const eligibleAssistant = (!isUser) && (!m.title || String(m.title) === 'Hanauta AI');
+        outer.className = 'message ' + (isUser ? 'you' : 'ai');
         const avatar = document.createElement('div');
         avatar.className = 'avatar';
-        avatar.textContent = (m.role === 'user') ? 'Y' : 'AI';
+        if (isUser) {
+          avatar.textContent = 'Y';
+        } else if (eligibleAssistant && assistantPhoto) {
+          avatar.classList.add('has-photo');
+          avatar.style.backgroundImage = `url("${esc(assistantPhoto)}")`;
+          avatar.textContent = '';
+        } else {
+          const fallback = eligibleAssistant ? assistantName : (m.title || 'AI');
+          avatar.textContent = String(fallback || 'AI').trim().slice(0, 2).toUpperCase();
+        }
         const bubble = document.createElement('div');
-        bubble.className = 'bubble ' + ((m.role === 'user') ? 'you' : 'ai');
+        bubble.className = 'bubble ' + (isUser ? 'you' : 'ai');
         const meta = document.createElement('div');
         meta.className = 'meta';
         const name = document.createElement('div');
         name.className = 'name';
-        name.textContent = m.title || ((m.role === 'user') ? 'You' : 'Hanauta AI');
+        name.textContent = isUser ? 'You' : (eligibleAssistant ? assistantName : (m.title || 'Hanauta AI'));
         const time = document.createElement('div');
         time.className = 'time';
         time.textContent = m.time || '';
@@ -75,8 +89,12 @@ POPUP_JS = r"""
       const orb = document.getElementById('orbWrap');
       const photo = document.getElementById('orbPhoto');
       const aiName = document.getElementById('voiceAiName');
-      if (name) name.textContent = voice && voice.character_name ? String(voice.character_name) : '';
-      if (aiName) aiName.textContent = voice && voice.ai_name ? String(voice.ai_name) : 'Hanauta AI';
+      const assistant = (state && state.assistant) ? state.assistant : {};
+      const assistantName = assistant && assistant.name ? String(assistant.name) : 'Hanauta AI';
+      const assistantPhoto = assistant && assistant.avatar_url ? String(assistant.avatar_url) : '';
+      const charName = voice && voice.character_name ? String(voice.character_name) : '';
+      if (name) name.textContent = charName;
+      if (aiName) aiName.textContent = charName || assistantName;
       if (status) status.textContent = voice && voice.status ? String(voice.status) : '';
       if (note) note.textContent = voice && voice.note ? String(voice.note) : '';
       function hlLastWord(text) {
@@ -106,7 +124,7 @@ POPUP_JS = r"""
         if (emotion && emotion !== 'neutral') orb.classList.add('emotion-' + emotion);
       }
       if (photo) {
-        const url = voice && voice.character_photo ? String(voice.character_photo) : '';
+        const url = voice && voice.character_image_url ? String(voice.character_image_url) : (assistantPhoto || '');
         photo.innerHTML = url ? `<img src="${esc(url)}" alt="character"/>` : '';
       }
       document.getElementById('voiceAiCard').classList.toggle('idle', !(voice && voice.response));
@@ -151,7 +169,8 @@ POPUP_JS = r"""
       if (!btn) return;
       const active = !!(models && models.active);
       const ready = !!(voice && voice.stack_ready);
-      btn.textContent = active ? '■' : '▶';
+      const icon = document.getElementById('modelsIcon');
+      if (icon) icon.textContent = active ? 'stop' : 'play_arrow';
       btn.classList.toggle('magic-ready', ready);
 
       const warnBox = document.getElementById('modelWarn');
@@ -201,7 +220,8 @@ POPUP_JS = r"""
       renderModelLauncher(state.models || {}, state.voice || {});
       document.getElementById('chatPage').hidden = inVoice;
       document.getElementById('voicePage').hidden = !inVoice;
-      document.getElementById('voiceBtn').textContent = inVoice ? '■' : '🎙';
+      const voiceIcon = document.getElementById('voiceIcon');
+      if (voiceIcon) voiceIcon.textContent = inVoice ? 'stop' : 'mic';
       document.getElementById('voiceBtn').classList.toggle('magic-ready', !!(state.voice && state.voice.stack_ready));
 
       try {

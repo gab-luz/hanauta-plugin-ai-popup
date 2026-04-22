@@ -17,6 +17,7 @@ __POPUP_CSS__
   </style>
 </head>
 <body>
+  <!-- Material Symbols (MD3) ligature icons: we rely on system-installed fonts. -->
   <div class="window">
     <div class="topbar">
       <div class="brand">
@@ -33,11 +34,11 @@ __POPUP_CSS__
         </div>
       </div>
       <div class="actions">
-        <button class="icon-btn" id="modelsBtn" title="Start/Stop voice backends" aria-label="Start/Stop models">▶</button>
-        <button class="icon-btn" id="voiceBtn" title="Voice mode">🎙</button>
-        <button class="icon-btn" id="settingsBtn" title="Settings">⚙</button>
-        <button class="icon-btn" id="charactersBtn" title="Characters">☺</button>
-        <button class="icon-btn" id="closeBtn" title="Close">✕</button>
+        <button class="icon-btn" id="modelsBtn" title="Start/Stop voice backends" aria-label="Start/Stop models"><span class="md3-icon" id="modelsIcon" aria-hidden="true">play_arrow</span></button>
+        <button class="icon-btn" id="voiceBtn" title="Voice mode" aria-label="Voice mode"><span class="md3-icon" id="voiceIcon" aria-hidden="true">mic</span></button>
+        <button class="icon-btn" id="settingsBtn" title="Settings" aria-label="Settings"><span class="md3-icon" aria-hidden="true">settings</span></button>
+        <button class="icon-btn" id="charactersBtn" title="Characters" aria-label="Characters"><span class="md3-icon" aria-hidden="true">person</span></button>
+        <button class="icon-btn" id="closeBtn" title="Close" aria-label="Close"><span class="md3-icon" aria-hidden="true">close</span></button>
       </div>
     </div>
     <div class="body">
@@ -48,11 +49,11 @@ __POPUP_CSS__
           <textarea id="composerInput" placeholder="Message the model... Enter to send"></textarea>
           <div class="composer-row">
             <div class="provider" id="providerLabel"></div>
-            <button class="send-btn secondary" id="sttBtn" title="Dictate (speech to text)" aria-label="Dictate"><span class="btn-icon">🎤</span></button>
-            <button class="send-btn secondary" id="archiveBtn" title="Archive chat" aria-label="Archive chat"><span class="btn-icon">🗄</span></button>
-            <button class="send-btn secondary" id="exportBtn" title="Export chat" aria-label="Export chat"><span class="btn-icon">⤴</span></button>
-            <button class="send-btn secondary" id="clearBtn" title="Clear chat" aria-label="Clear chat"><span class="btn-icon">🧹</span></button>
-            <button class="send-btn" id="sendBtn" title="Send message" aria-label="Send message"><span class="btn-icon">➤</span></button>
+            <button class="send-btn secondary" id="sttBtn" title="Dictate (speech to text)" aria-label="Dictate"><span class="md3-icon btn-icon" aria-hidden="true">mic</span></button>
+            <button class="send-btn secondary" id="archiveBtn" title="Archive chat" aria-label="Archive chat"><span class="md3-icon btn-icon" aria-hidden="true">archive</span></button>
+            <button class="send-btn secondary" id="exportBtn" title="Export chat" aria-label="Export chat"><span class="md3-icon btn-icon" aria-hidden="true">download</span></button>
+            <button class="send-btn secondary" id="clearBtn" title="Clear chat" aria-label="Clear chat"><span class="md3-icon btn-icon" aria-hidden="true">delete_sweep</span></button>
+            <button class="send-btn" id="sendBtn" title="Send message" aria-label="Send message"><span class="md3-icon btn-icon" aria-hidden="true">send</span></button>
           </div>
         </div>
       </div>
@@ -125,7 +126,7 @@ __POPUP_CSS__
               <div class="sheet-title">Voice Backends</div>
               <div class="sheet-sub" id="modelModalSub">Preload models for hands-free voice mode.</div>
             </div>
-            <button class="icon-btn" id="modelModalCloseBtn" title="Close">✕</button>
+            <button class="icon-btn" id="modelModalCloseBtn" title="Close" aria-label="Close"><span class="md3-icon" aria-hidden="true">close</span></button>
           </div>
           <div class="sheet-body">
             <div class="sheet-warn" id="modelWarn" hidden></div>
@@ -169,4 +170,3 @@ __POPUP_JS__
 """
 
 WEB_POPUP_HTML = _TEMPLATE.replace("__POPUP_CSS__", POPUP_CSS).replace("__POPUP_JS__", POPUP_JS)
-
