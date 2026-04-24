@@ -28,7 +28,11 @@ POPUP_CSS = r"""
     }
 
     * { box-sizing: border-box; }
-    html, body { height: 100%; }
+    html, body {
+      height: 100%;
+      border-radius: 28px;
+      overflow: hidden;
+    }
     body {
       margin: 0;
       font-family: var(--font);
@@ -64,8 +68,11 @@ POPUP_CSS = r"""
       display: flex;
       flex-direction: column;
       height: 100%;
-      padding: 12px;
-      gap: 12px;
+      padding: 0;
+      gap: 0;
+      border-radius: 28px;
+      overflow: hidden;
+      background: var(--bg);
     }
 
     .topbar {
@@ -73,15 +80,16 @@ POPUP_CSS = r"""
       align-items: center;
       justify-content: space-between;
       gap: 12px;
-      padding: 12px 12px;
+      padding: 10px 12px;
       flex-wrap: nowrap;
-      border-radius: 26px;
-      border: 1px solid rgba(214,195,255,.10);
+      border-radius: 0;
+      border: 0;
+      border-bottom: 1px solid rgba(214,195,255,.10);
       background:
         radial-gradient(circle at 20% 20%, rgba(125,211,252,0.08), transparent 28%),
         radial-gradient(circle at 80% 10%, rgba(196,181,253,0.09), transparent 28%),
         linear-gradient(180deg, rgba(22,18,35,0.96) 0%, rgba(12,10,20,0.98) 100%);
-      box-shadow: 0 16px 46px rgba(0,0,0,.24);
+      box-shadow: none;
       position: relative;
       overflow: hidden;
     }
@@ -202,9 +210,9 @@ POPUP_CSS = r"""
     .body {
       flex: 1;
       min-height: 0;
-      border-radius: 26px;
-      border: 1px solid rgba(214,195,255,.10);
-      background: rgba(9, 8, 16, 0.42);
+      border-radius: 0;
+      border: 0;
+      background: transparent;
       overflow: hidden;
     }
 
@@ -212,14 +220,16 @@ POPUP_CSS = r"""
       display: flex;
       flex-direction: column;
       height: 100%;
-      padding: 12px;
-      gap: 12px;
+      padding: 0;
+      gap: 0;
     }
 
     .backend-row {
       display: flex;
       gap: 10px;
       flex-wrap: wrap;
+      padding: 10px 12px;
+      border-bottom: 1px solid rgba(214,195,255,.08);
     }
     .backend-pill {
       display: inline-flex;
@@ -245,20 +255,25 @@ POPUP_CSS = r"""
       min-height: 0;
       overflow-y: auto;
       overflow-x: hidden;
-      padding-right: 4px;
+      padding: 14px 12px 12px 12px;
     }
 
     .message {
       display: flex;
       gap: 10px;
-      margin: 10px 2px;
-      align-items: flex-start;
+      margin: 8px 2px;
+      align-items: flex-end;
+      justify-content: flex-start;
+      width: 100%;
     }
-    .message.you { flex-direction: row-reverse; }
+    .message.you { justify-content: flex-end; }
+    .message.you .avatar { order: 2; }
+    .message.you .bubble { order: 1; }
+    .message.ai { justify-content: flex-start; }
     .avatar {
-      width: 34px;
-      height: 34px;
-      border-radius: 12px;
+      width: 30px;
+      height: 30px;
+      border-radius: 50%;
       display: grid;
       place-items: center;
       font-weight: 900;
@@ -276,15 +291,22 @@ POPUP_CSS = r"""
       box-shadow: 0 0 0 1px rgba(214,195,255,.10);
     }
     .bubble {
-      max-width: 88%;
+      max-width: min(74%, 340px);
       border-radius: 18px;
       border: 1px solid rgba(214,195,255,.10);
       background: rgba(255,255,255,0.04);
-      padding: 10px 12px;
-      box-shadow: 0 12px 26px rgba(0,0,0,0.18);
+      padding: 9px 12px;
+      box-shadow: 0 8px 18px rgba(0,0,0,0.12);
       overflow: hidden;
     }
-    .bubble.you { background: rgba(125,211,252,0.10); border-color: rgba(125,211,252,0.20); }
+    .bubble.ai {
+      border-bottom-left-radius: 6px;
+    }
+    .bubble.you {
+      background: rgba(125,211,252,0.10);
+      border-color: rgba(125,211,252,0.20);
+      border-bottom-right-radius: 6px;
+    }
     .meta {
       display: flex;
       align-items: center;
@@ -307,26 +329,63 @@ POPUP_CSS = r"""
     }
 
     .composer {
-      border-radius: 22px;
+      border-radius: 0;
       border: 0;
       background: rgba(255,255,255,.04);
-      padding: 12px;
+      padding: 10px 12px 12px 12px;
+      border-top: 1px solid rgba(214,195,255,.08);
+    }
+    .attachment-tray {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin-bottom: 8px;
+    }
+    .attachment-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      min-height: 28px;
+      max-width: 100%;
+      padding: 0 8px;
+      border-radius: 999px;
+      border: 1px solid rgba(214,195,255,.14);
+      background: rgba(255,255,255,.05);
+      color: var(--text);
+      font-size: 11px;
+      font-weight: 800;
+    }
+    .attachment-chip .attachment-name {
+      max-width: 220px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .attachment-remove {
+      border: 0;
+      background: transparent;
+      color: var(--text-dim);
+      cursor: pointer;
+      font-size: 16px;
+      line-height: 1;
+      padding: 0;
     }
     .composer textarea {
       width: 100%;
-      min-height: 76px;
+      min-height: 46px;
+      max-height: 140px;
       resize: none;
       border: 0;
       background: rgba(255,255,255,.04);
       color: var(--text);
-      border-radius: 18px;
+      border-radius: 20px;
       padding: 12px 14px;
       font: inherit;
       font-weight: 500;
       outline: none;
       overflow-x: hidden;
     }
-    .composer-row { display: flex; align-items: center; gap: 10px; margin-top: 10px; }
+    .composer-row { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
     .provider { flex: 1; font-size: 12px; font-weight: 600; color: var(--text-dim); }
     .send-btn {
       min-width: 36px;

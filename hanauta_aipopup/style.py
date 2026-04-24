@@ -210,6 +210,7 @@ def popup_web_theme_css() -> str:
 /* Theme overrides (generated from Hanauta palette). */
 :root {{
   color-scheme: {"dark" if dark else "light"};
+  --bg: {page_bottom};
   --text: {text};
   --text-mid: {text_mid};
   --text-dim: {text_dim};
@@ -230,12 +231,13 @@ body {{
 }}
 
 .topbar {{
-  border: 1px solid var(--border);
+  border: 0;
+  border-bottom: 1px solid var(--border);
   background:
     radial-gradient(circle at 20% 20%, {_rgba_css(theme.secondary, 0.10 if dark else 0.08)}, transparent 28%),
     radial-gradient(circle at 80% 10%, {_rgba_css(theme.primary, 0.10 if dark else 0.08)}, transparent 28%),
     linear-gradient(180deg, {topbar_top} 0%, {topbar_bottom} 100%);
-  box-shadow: 0 16px 46px var(--shadow);
+  box-shadow: none;
 }}
 
 .topbar::after {{
@@ -286,7 +288,7 @@ body {{
 }}
 
 .body {{
-  border: 1px solid var(--border);
+  border: 0;
   background: {_rgba_css(theme.surface_container, 0.44 if dark else 0.62)};
 }}
 
@@ -311,7 +313,7 @@ body {{
 .bubble {{
   border: 1px solid var(--border);
   background: {card_bg};
-  box-shadow: 0 12px 26px var(--shadow);
+  box-shadow: 0 8px 18px var(--shadow);
 }}
 
 .bubble.you {{
@@ -337,6 +339,17 @@ body {{
 
 .composer {{
   background: {chip_bg};
+  border-top: 1px solid var(--border-2);
+}}
+
+.attachment-chip {{
+  background: {card_bg};
+  border: 1px solid var(--border);
+  color: var(--text);
+}}
+
+.attachment-remove {{
+  color: var(--text-dim);
 }}
 
 .composer textarea {{

@@ -50,7 +50,7 @@ os.environ["QTWEBENGINE_CHROMIUM_FLAGS"] = _chromium_flags
 
 from cryptography.fernet import Fernet, InvalidToken
 from PyQt6.QtCore import QEasingCurve, QObject, QPoint, QPropertyAnimation, QLocale, QThread, Qt, QTimer, QUrl, QSize, QRectF, pyqtProperty, pyqtSignal, pyqtSlot, qInstallMessageHandler
-from PyQt6.QtGui import QColor, QCursor, QFont, QFontDatabase, QGuiApplication, QIcon, QPainter, QPen, QPixmap, QBrush, QLinearGradient
+from PyQt6.QtGui import QColor, QCursor, QFont, QFontDatabase, QGuiApplication, QIcon, QPainter, QPainterPath, QPen, QPixmap, QBrush, QLinearGradient, QRegion
 from PyQt6.QtGui import QDesktopServices
 from PyQt6.QtNetwork import QHostAddress, QTcpServer, QTcpSocket
 from PyQt6.QtWidgets import (
@@ -11967,6 +11967,7 @@ class DemoWindow(QMainWindow):
         self._build_panel()
 
         self.resize(452, 930)
+        self._apply_window_mask()
         self._place_window()
         self.setWindowOpacity(1.0)
 
@@ -12032,6 +12033,16 @@ class DemoWindow(QMainWindow):
             if handle is not None:
                 handle.setScreen(screen)
         self._place_window()
+
+    def _apply_window_mask(self) -> None:
+        path = QPainterPath()
+        path.addRoundedRect(QRectF(self.rect()), 28, 28)
+        region = QRegion(path.toFillPolygon().toPolygon())
+        self.setMask(region)
+
+    def resizeEvent(self, event) -> None:  # type: ignore[override]
+        super().resizeEvent(event)
+        self._apply_window_mask()
 
     def _animate_in(self) -> None:
         self._slide_animation = None

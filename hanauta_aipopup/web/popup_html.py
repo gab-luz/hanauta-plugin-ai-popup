@@ -47,9 +47,12 @@ __POPUP_THEME_CSS__
         <div class="backend-row" id="backendRow"></div>
         <div class="conversation" id="conversation"></div>
         <div class="composer">
+          <div class="attachment-tray" id="attachmentTray" hidden></div>
           <textarea id="composerInput" placeholder="Message the model... Enter to send"></textarea>
           <div class="composer-row">
             <div class="provider" id="providerLabel"></div>
+            <input type="file" id="attachmentInput" multiple hidden />
+            <button class="send-btn secondary" id="attachBtn" title="Add attachments" aria-label="Add attachments"><span class="md3-icon btn-icon" aria-hidden="true">attach_file</span></button>
             <button class="send-btn secondary" id="sttBtn" title="Dictate (speech to text)" aria-label="Dictate"><span class="md3-icon btn-icon" aria-hidden="true">mic</span></button>
             <button class="send-btn secondary" id="archiveBtn" title="Archive chat" aria-label="Archive chat"><span class="md3-icon btn-icon" aria-hidden="true">archive</span></button>
             <button class="send-btn secondary" id="exportBtn" title="Export chat" aria-label="Export chat"><span class="md3-icon btn-icon" aria-hidden="true">download</span></button>

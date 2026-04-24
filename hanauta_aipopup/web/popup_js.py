@@ -4,6 +4,7 @@ POPUP_JS = r"""
     let bridge = null;
     let state = {};
     let lastDraftId = 0;
+    let attachments = [];
 
     function esc(s) {
       const map = {"&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#39;"};
@@ -78,6 +79,76 @@ POPUP_JS = r"""
         convo.appendChild(outer);
       });
       convo.scrollTop = convo.scrollHeight;
+    }
+
+    function renderAttachments() {
+      const tray = document.getElementById('attachmentTray');
+      if (!tray) return;
+      tray.innerHTML = '';
+      tray.hidden = attachments.length === 0;
+      attachments.forEach((attachment, index) => {
+        const chip = document.createElement('div');
+        chip.className = 'attachment-chip';
+        const icon = document.createElement('span');
+        icon.className = 'md3-icon';
+        icon.textContent = attachment.kind === 'text' ? 'description' : 'attach_file';
+        const name = document.createElement('span');
+        name.className = 'attachment-name';
+        name.textContent = attachment.name || 'Attachment';
+        const remove = document.createElement('button');
+        remove.className = 'attachment-remove';
+        remove.type = 'button';
+        remove.title = 'Remove attachment';
+        remove.textContent = '×';
+        remove.addEventListener('click', () => {
+          attachments.splice(index, 1);
+          renderAttachments();
+        });
+        chip.appendChild(icon);
+        chip.appendChild(name);
+        chip.appendChild(remove);
+        tray.appendChild(chip);
+      });
+    }
+
+    function attachmentPromptBlock() {
+      if (!attachments.length) return '';
+      const parts = attachments.map((attachment) => {
+        const name = attachment.name || 'attachment';
+        if (attachment.kind === 'text' && attachment.text) {
+          return `File: ${name}\n${attachment.text}`;
+        }
+        return `File: ${name}\n${attachment.note || 'Binary or unsupported file selected.'}`;
+      });
+      return `\n\n[Attachments]\n${parts.join('\n\n---\n')}`;
+    }
+
+    function addFiles(files) {
+      const list = Array.from(files || []);
+      if (!list.length) return;
+      list.slice(0, 8).forEach((file) => {
+        const item = {
+          name: file.name || 'attachment',
+          kind: 'file',
+          note: `${file.type || 'unknown type'}, ${file.size || 0} bytes`,
+        };
+        attachments.push(item);
+        const isText = /^text\//.test(file.type || '') || /\.(txt|md|json|csv|log|py|js|ts|css|html|xml|yaml|yml|toml)$/i.test(file.name || '');
+        if (isText && file.size <= 256000) {
+          const reader = new FileReader();
+          reader.onload = () => {
+            item.kind = 'text';
+            item.text = String(reader.result || '').slice(0, 24000);
+            renderAttachments();
+          };
+          reader.onerror = () => {
+            item.note = 'Could not read this text file.';
+            renderAttachments();
+          };
+          reader.readAsText(file);
+        }
+      });
+      renderAttachments();
     }
 
     function renderVoice(voice) {
@@ -243,14 +314,25 @@ POPUP_JS = r"""
     function sendNow() {
       const el = document.getElementById('composerInput');
       const text = (el.value || '').trim();
-      if (!text || !bridge || !bridge.sendPrompt) return;
-      bridge.sendPrompt(text);
+      const extra = attachmentPromptBlock();
+      if ((!text && !extra) || !bridge || !bridge.sendPrompt) return;
+      bridge.sendPrompt((text || 'Please review the attached content.') + extra);
       el.value = '';
+      attachments = [];
+      renderAttachments();
     }
     function selectBackend(key) { if (bridge && bridge.selectBackend) bridge.selectBackend(key); }
     function toggleAudio(path) { if (bridge && bridge.toggleAudio) bridge.toggleAudio(path); }
 
     document.getElementById('sendBtn').addEventListener('click', sendNow);
+    document.getElementById('attachBtn').addEventListener('click', () => {
+      const input = document.getElementById('attachmentInput');
+      if (input) input.click();
+    });
+    document.getElementById('attachmentInput').addEventListener('change', (event) => {
+      addFiles(event.target && event.target.files ? event.target.files : []);
+      event.target.value = '';
+    });
     document.getElementById('sttBtn').addEventListener('click', () => bridge && bridge.transcribeOnce && bridge.transcribeOnce());
     document.getElementById('clearBtn').addEventListener('click', () => bridge && bridge.clearChat && bridge.clearChat());
     document.getElementById('archiveBtn').addEventListener('click', () => bridge && bridge.archiveChat && bridge.archiveChat());
