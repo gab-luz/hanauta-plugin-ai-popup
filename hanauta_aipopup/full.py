@@ -9707,12 +9707,25 @@ class VoiceModeDialog(QDialog):
         self.ui_font = ui_font
         self.setWindowTitle("Voice Mode")
         self.resize(600, 680)
+        try:
+            fusion = QStyleFactory.create("Fusion")
+        except Exception:
+            fusion = None
+        if fusion is not None:
+            self.setStyle(fusion)
+        palette = self.palette()
+        palette.setColor(palette.ColorRole.Window, QColor(PANEL_BG_FLOAT))
+        palette.setColor(palette.ColorRole.Base, QColor(CARD_BG))
+        palette.setColor(palette.ColorRole.AlternateBase, QColor(CARD_BG_SOFT))
+        palette.setColor(palette.ColorRole.Text, QColor(TEXT))
+        palette.setColor(palette.ColorRole.WindowText, QColor(TEXT))
+        palette.setColor(palette.ColorRole.Button, QColor(CARD_BG_SOFT))
+        palette.setColor(palette.ColorRole.ButtonText, QColor(TEXT))
+        palette.setColor(palette.ColorRole.Highlight, QColor(ACCENT))
+        palette.setColor(palette.ColorRole.HighlightedText, QColor(THEME.on_primary))
+        self.setPalette(palette)
         self.setStyleSheet(
             f"""
-            QDialog, QScrollArea, QWidget {{
-                background: {PANEL_BG_FLOAT};
-                color: {TEXT};
-            }}
             QLabel, QCheckBox {{
                 color: {TEXT};
             }}
@@ -9722,6 +9735,54 @@ class VoiceModeDialog(QDialog):
                 border: 1px solid {BORDER_SOFT};
                 border-radius: 12px;
                 padding: 8px 10px;
+            }}
+            QPlainTextEdit {{
+                background: {INPUT_BG};
+                color: {TEXT};
+                border: 1px solid {BORDER_SOFT};
+                border-radius: 12px;
+                padding: 8px 10px;
+            }}
+            QComboBox QAbstractItemView {{
+                background: {PANEL_BG_FLOAT};
+                color: {TEXT};
+                border: 1px solid {BORDER_SOFT};
+                selection-background-color: {ACCENT_SOFT};
+                selection-color: {TEXT};
+                outline: none;
+            }}
+            QScrollArea {{
+                background: transparent;
+                border: none;
+            }}
+            QScrollArea QWidget#qt_scrollarea_viewport {{
+                background: transparent;
+            }}
+            QWidget#fieldWrap {{
+                background: {rgba(CARD_BG_SOFT, 0.62)};
+                border: 1px solid {rgba(BORDER_SOFT, 0.95)};
+                border-radius: 16px;
+                padding: 10px 12px;
+            }}
+            QLabel#fieldLabel {{
+                color: {TEXT_DIM};
+                font-weight: 750;
+            }}
+            QLabel#sectionLabel {{
+                color: {ACCENT};
+                font-weight: 800;
+                margin-top: 12px;
+            }}
+            QCheckBox::indicator {{
+                width: 18px;
+                height: 18px;
+                border-radius: 6px;
+                border: 1px solid {rgba(BORDER_SOFT, 0.95)};
+                background: {rgba(CARD_BG_SOFT, 0.72)};
+            }}
+            QCheckBox::indicator:checked {{
+                background: {ACCENT};
+                border: 1px solid {rgba(BORDER_ACCENT, 0.95)};
             }}
             QPushButton {{
                 background: {rgba(CARD_BG_SOFT, 0.90)};
@@ -9994,16 +10055,18 @@ class VoiceModeDialog(QDialog):
     def _section_label(self, text: str) -> QLabel:
         label = QLabel(text)
         label.setFont(QFont(self.ui_font, 12, QFont.Weight.DemiBold))
-        label.setStyleSheet(f"color: {ACCENT}; margin-top: 8px;")
+        label.setObjectName("sectionLabel")
+        label.setStyleSheet("margin-top: 6px;")
         return label
 
     def _labeled(self, label_text: str, widget: QWidget) -> QWidget:
         wrap = QWidget()
+        wrap.setObjectName("fieldWrap")
         layout = QVBoxLayout(wrap)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(4)
         label = QLabel(label_text)
-        label.setStyleSheet(f"color: {TEXT_DIM};")
+        label.setObjectName("fieldLabel")
         layout.addWidget(label)
         layout.addWidget(widget)
         return wrap
