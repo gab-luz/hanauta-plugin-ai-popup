@@ -5,8 +5,9 @@ This file tracks the remaining work referenced in the last status update:
 - Item 2: further modularization / faster code lookup
 - Item 5: Whisper as an STT backend (faster-whisper + distill + ONNX + int4)
 - Item 6: timestamp-based word highlighting (“karaoke”) in the popup
+- Item 7: utility APIs (translation, search, weather)
 
-Date: 2026-04-21
+Date: 2026-04-23
 
 ## 2) Further Modularization (Beyond What’s Done)
 
@@ -145,3 +146,223 @@ Missing pieces
    - setting: highlight style (subtle vs strong)
    - fallback: if timestamps missing, fall back to last-word highlight (current behavior)
 
+## 7) Utility APIs (Translation / Search / Weather / Integrations)
+
+Goal
+
+- Add optional, privacy-conscious “tool” style APIs the popup can call for:
+  - translations
+  - web search
+  - weather
+- Keep these as independent modules with a shared, minimal result schema so they can be used by:
+  - chat actions (e.g. “Translate selection”, “Search”, “Weather”)
+  - voice mode “tool intent” (later)
+  - prompt augmentation (optional, user-controlled)
+
+Missing pieces
+
+1. Shared API client base
+   - Add a small HTTP helper with:
+     - timeouts (short, e.g. 5–10s)
+     - retries (limited)
+     - JSON decode errors surfaced cleanly to the UI
+     - optional disk/memory cache for “safe to cache” requests
+   - Add settings for:
+     - per-provider enable/disable
+     - base URLs and API keys (when required)
+     - “never send chat history” guardrails (only send user-selected text / short query strings)
+
+2. Translation: `translate.disroot.org` (LibreTranslate-compatible)
+   - Implement a `TranslationClient`:
+     - detect language (optional)
+     - translate text (`source`, `target`)
+     - list languages (cache)
+   - Also support user-configured self-hosted LibreTranslate base URLs (same client).
+   - UI wiring:
+     - quick action: translate selected text (paste result back into the chat input)
+     - quick action: translate last assistant/user message (opt-in)
+   - Settings:
+     - default source: `auto`
+     - default target language (e.g. `en`, `pt`, etc.)
+     - max text length (prevent accidental huge payloads)
+
+3. Search: Brave Search API OR SearXNG JSON API
+   - Define a shared result schema:
+     - `[{title, url, snippet, source, published_at?}]`
+   - Implement providers:
+     - `BraveSearchClient` (API key required)
+     - `SearxngClient` (self-host / public instance base URL)
+   - UI wiring:
+     - quick action: “Search the web” from a short query
+     - render results in the chat as a compact list (clickable links)
+     - optional “summarize results” prompt (explicit user action)
+   - Settings:
+     - default engine: `brave` | `searxng`
+     - safe search toggle (where supported)
+     - results limit
+
+4. Weather: Open-Meteo API
+   - Implement `OpenMeteoClient`:
+     - geocoding query -> lat/lon (Open-Meteo geocoding)
+     - forecast endpoint(s) for current + daily/hourly as needed
+     - timezone/unit selection (user-configurable)
+   - Meteostat (historical weather / climate stats):
+     - station search near a location (or by ID)
+     - daily/hourly history endpoints for charts and “what was it like last week?”
+   - UI wiring:
+     - quick action: “Weather” with location input (city string)
+     - paste a short human-readable forecast into chat (not raw JSON)
+   - Caching:
+     - cache geocoding results and short-term forecasts for a few minutes
+
+5. Knowledge lookups (encyclopedia + dictionary)
+   - Wikipedia / MediaWiki REST:
+     - page summary / extract
+     - “quick facts” (best-effort via pageprops / infobox parsing if needed later)
+   - Wiktionary / dictionary:
+     - definitions + examples
+     - pronunciation (IPA string; audio later if available)
+   - UI wiring:
+     - quick action: “Lookup” from a short query
+     - paste a compact “card” into chat (title + bullets + source link)
+
+6. Math / conversions / rates
+   - Currency exchange rates:
+     - provider: Frankfurter API (free) as the default
+     - conversions: `10 USD -> BRL` with cached daily rates
+   - Unit conversion:
+     - start as local-only conversion tables (preferred), with an optional API later
+   - WolframAlpha:
+     - optional advanced queries (API key)
+     - ensure “show source link” + “don’t send chat history” guardrails
+
+7. Dev + research search APIs
+   - GitHub API:
+     - repo search
+     - issues/PR search
+     - minimal auth token storage + scopes guidance
+   - arXiv:
+     - paper search + metadata (title/authors/abstract/pdf link)
+   - Semantic Scholar:
+     - paper search + citations (API key optional depending on limits)
+
+8. Places + network identity
+   - OpenStreetMap:
+     - Nominatim/Photon for places search / richer geocoding
+   - IP / ASN lookup:
+     - provider: ipinfo (API key)
+     - show: ISP/ASN/city/country (no background tracking; explicit user action only)
+
+9. Feeds + monitoring
+   - RSS/Atom fetch + parse:
+     - “headlines” cards (title/link/date/source)
+     - per-feed refresh interval + caching
+   - “Check page for changes”:
+     - store URL + selector/text-extract rule
+     - scheduled fetch + diff
+     - notify via the popup (and/or Hanauta notifications) when changed
+
+10. Local helpers (no network required)
+   - OCR (Tesseract):
+     - quick action: OCR clipboard image / screenshot -> paste text
+   - Language detection (fastText local model):
+     - detect language code for pasted/selected text (used by translation defaults)
+   - QR generate/decode:
+     - tools: `qrencode` + `zbarimg`
+     - quick actions: “Create QR from text” and “Decode QR from image”
+   - Clipboard manager integration:
+     - quick actions: “pin snippet”, “clear sensitive clipboard”
+
+11. Personal + home integrations (explicitly opt-in)
+   - Email send (SMTP):
+     - compose -> confirm -> send
+     - store creds securely (or use app password)
+   - CalDAV (Nextcloud):
+     - create TODO (VTODO) / list TODOs
+   - Nextcloud:
+     - Deck: list boards/cards, create card
+     - Files: upload/download/share links (explicit confirmation)
+   - Joplin Web Clipper API:
+     - save snippet/summary as a note (tags + notebook)
+   - Home Assistant:
+     - read sensors + run service (confirm before actuation)
+   - Grocy:
+     - server base URL + API key (user-provided)
+     - inventory overview (low stock / expiring soon)
+     - add to shopping list / consume product / adjust stock
+     - optional barcode lookup flow (pair with Open Food Facts)
+     - daily/weekly digest card in the popup (e.g. “expiring soon”)
+   - Jellyfin:
+     - server base URL + API key (user-provided)
+     - “Now playing”, recently added, and basic playback control (if enabled)
+   - Uptime Kuma:
+     - list monitors + show status + last incident
+
+12. Package search (Linux distros)
+   - Debian/Ubuntu:
+     - package search + version + homepage
+   - Arch:
+     - official repos + AUR search (split results clearly)
+
+13. Time utilities
+   - Timezone / world clock:
+     - “convert 3pm PST to my time”
+     - show local + target time with explicit date when ambiguous
+
+14. Price tracking (opt-in)
+   - Track a URL + parse rule (or site-specific adapters later)
+   - Scheduled checks + change notifications
+
+15. Product lookup (free)
+   - Open Food Facts:
+     - barcode lookup -> nutrition/ingredients/allergens
+     - text search -> top matches
+     - render a compact product card (name/brand + key fields + source link)
+
+16. More free/local integrations
+   - Transit (GTFS, free data):
+     - ingest a local/URL GTFS feed (static) and show next departures for a stop
+   - Music metadata:
+     - MusicBrainz lookup (artist/album/track)
+     - Cover Art Archive for album art URLs
+   - Podcasts:
+     - iTunes Search API (free) for show search + basic metadata
+     - (optional) PodcastIndex support later if you decide keys are acceptable
+   - Movie/TV metadata:
+     - TVmaze API (free) for show search, episode lists, schedules
+   - Recipes:
+     - TheMealDB (free tier) for recipe search + details
+   - Local speed test:
+     - wrap `speedtest-cli` (or equivalent) and render a “network snapshot” card
+   - Local system “health snapshot”:
+     - wrap `smartctl` / `lsblk` / `sensors` into a compact status card
+
+17. More free APIs (no keys)
+   - Wikidata:
+     - SPARQL query runner + a few curated query templates (facts, relationships, “top properties”)
+   - OpenAlex:
+     - research discovery (works/authors/institutions/topics) + short “paper card” rendering
+   - Crossref:
+     - DOI lookup + citation metadata cards
+   - Open Library:
+     - ISBN/author/title lookup + edition metadata
+   - Project Gutenberg:
+     - catalog search + download links (metadata-only in the UI; downloads optional)
+   - Stack Exchange:
+     - StackOverflow/SE search + “top answers” preview cards (respect rate limits)
+   - Hacker News search:
+     - Algolia HN API for stories/comments search + “trending” shortcuts
+   - REST Countries:
+     - country lookup cards (capital, currencies, languages, calling code)
+   - Public holidays:
+     - Nager.Date for holiday lists + “next holiday” helper
+   - Earthquake status:
+     - USGS earthquakes feed for “recent near X” + magnitude/time cards
+   - OSM Overpass API:
+     - POI/amenity lookup near a location (cafes, pharmacies, etc.), cached + rate-limited
+   - GDELT:
+     - global news/search snapshots (simple query -> headlines list)
+   - Jikan (MyAnimeList community API):
+     - anime/manga lookup + episode/season info cards
+   - CoinGecko:
+     - crypto price + simple watchlist cards (rate-limited, cached)

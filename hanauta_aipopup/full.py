@@ -153,12 +153,17 @@ from .runtime import (
 )
 from .style import *  # noqa: F403
 from .catalog import MODEL_CATALOG, _dir_size_bytes, _format_bytes
+from .user_profile import load_profile_state, preferred_user_name
 
 _WAVEFORM_CACHE: dict[str, list[int]] = {}
 _KOKORO_RUNTIME_READY = False
 
 
 LOGGER = logging.getLogger("hanauta.ai_popup")
+
+
+def current_user_display_name() -> str:
+    return preferred_user_name(load_profile_state())
 
 
 def _ansi(text: str, code: str) -> str:
@@ -5162,6 +5167,11 @@ class BackendSettingsDialog(QDialog):
         self._gguf_download_manager.download_failed.connect(self._on_gguf_download_failed)
         self.gguf_path_input.textChanged.connect(lambda _=None: (self._refresh_gguf_info(), self._refresh_kobold_gemma4_audio_toggle()))
         self.binary_path_input.textChanged.connect(lambda _=None: self._refresh_binary_info())
+        self._pending_kobold_ready_profile: str = ""
+        self._pending_kobold_ready_host: str = ""
+        self._kobold_ready_timer = QTimer(self)
+        self._kobold_ready_timer.setInterval(1500)
+        self._kobold_ready_timer.timeout.connect(self._poll_pending_kobold_ready)
         self._populate_gguf_gallery()
         self._load_selected_backend()
 
@@ -5747,6 +5757,33 @@ class BackendSettingsDialog(QDialog):
         profile = self._selected_profile()
         self.settings[profile.key] = payload
         save_backend_settings(self.settings)
+
+    def _schedule_kobold_ready_notification(self, profile: BackendProfile, payload: dict[str, object]) -> None:
+        host = str(payload.get("host", profile.host)).strip()
+        if not host:
+            return
+        self._pending_kobold_ready_profile = profile.label
+        self._pending_kobold_ready_host = host
+        if not self._kobold_ready_timer.isActive():
+            self._kobold_ready_timer.start()
+
+    def _poll_pending_kobold_ready(self) -> None:
+        host = self._pending_kobold_ready_host.strip()
+        if not host:
+            self._kobold_ready_timer.stop()
+            return
+        if not _openai_compat_alive(host):
+            return
+        label = self._pending_kobold_ready_profile or "KoboldCpp"
+        self._pending_kobold_ready_profile = ""
+        self._pending_kobold_ready_host = ""
+        self._kobold_ready_timer.stop()
+        payload = self._current_payload()
+        payload["last_status"] = f"{label} is ready."
+        self._persist_selected_backend_payload(payload)
+        self._refresh_kobold_status(payload)
+        self.status_label.setText(f"{label} is ready.")
+        self.status_label.setStyleSheet(f"color: {ACCENT};")
 
     def _start_kobold_clicked(self) -> None:
         profile = self._selected_profile()
