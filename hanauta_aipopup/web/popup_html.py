@@ -14,6 +14,7 @@ _TEMPLATE = r"""<!DOCTYPE html>
   <script src="qrc:///qtwebchannel/qwebchannel.js"></script>
   <style>
 __POPUP_CSS__
+__POPUP_THEME_CSS__
   </style>
 </head>
 <body>
@@ -169,4 +170,15 @@ __POPUP_JS__
 </html>
 """
 
-WEB_POPUP_HTML = _TEMPLATE.replace("__POPUP_CSS__", POPUP_CSS).replace("__POPUP_JS__", POPUP_JS)
+def render_popup_html(theme_css: str = "") -> str:
+    theme_block = (theme_css or "").strip()
+    if theme_block:
+        theme_block = "\n" + theme_block + "\n"
+    return (
+        _TEMPLATE.replace("__POPUP_CSS__", POPUP_CSS)
+        .replace("__POPUP_THEME_CSS__", theme_block)
+        .replace("__POPUP_JS__", POPUP_JS)
+    )
+
+
+WEB_POPUP_HTML = render_popup_html()

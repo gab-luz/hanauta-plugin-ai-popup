@@ -161,3 +161,231 @@ def apply_theme_globals() -> None:
 
 
 apply_theme_globals()
+
+
+def is_dark_theme() -> bool:
+    theme = THEME
+    try:
+        dark_surface = relative_luminance(theme.surface_container_high) < 0.42
+    except Exception:
+        dark_surface = True
+    return _is_global_dark_theme_enabled() or dark_surface
+
+
+def _rgba_css(color: str, alpha: float) -> str:
+    q = QColor(str(color or "#000000"))
+    clamped = max(0.0, min(1.0, float(alpha)))
+    return f"rgba({q.red()}, {q.green()}, {q.blue()}, {clamped:.2f})"
+
+
+def popup_web_theme_css() -> str:
+    theme = THEME
+    dark = is_dark_theme()
+
+    page_top = mix(theme.background, theme.primary, 0.10 if dark else 0.06)
+    page_bottom = mix(theme.background, theme.surface_container, 0.14 if dark else 0.10)
+    topbar_top = mix(theme.surface_container_high, theme.primary, 0.10 if dark else 0.06)
+    topbar_bottom = mix(theme.surface_container, theme.background, 0.12 if dark else 0.06)
+    hover_bg = _rgba_css(theme.primary, 0.10 if dark else 0.08)
+
+    border = _rgba_css(theme.outline, 0.18 if dark else 0.26)
+    border_soft = _rgba_css(theme.outline, 0.12 if dark else 0.18)
+    card_bg = _rgba_css(theme.surface_container_high, 0.64 if dark else 0.72)
+    chip_bg = _rgba_css(theme.surface_container, 0.72 if dark else 0.82)
+
+    shadow = "rgba(0,0,0,0.22)" if dark else "rgba(0,0,0,0.12)"
+    shadow_strong = "rgba(0,0,0,0.42)" if dark else "rgba(0,0,0,0.18)"
+
+    accent_soft = _rgba_css(theme.primary, 0.18 if dark else 0.16)
+    accent_soft_hover = _rgba_css(theme.primary, 0.24 if dark else 0.22)
+    you_bg = _rgba_css(theme.secondary, 0.14 if dark else 0.12)
+    you_border = _rgba_css(theme.secondary, 0.30 if dark else 0.28)
+
+    text = UI_TEXT_STRONG
+    text_mid = UI_TEXT_MUTED
+    text_dim = UI_ICON_DIM
+
+    return (
+        f"""
+/* Theme overrides (generated from Hanauta palette). */
+:root {{
+  color-scheme: {"dark" if dark else "light"};
+  --text: {text};
+  --text-mid: {text_mid};
+  --text-dim: {text_dim};
+  --accent: {theme.primary};
+  --accent-2: {theme.secondary};
+  --border: {border};
+  --border-2: {border_soft};
+  --shadow: {shadow};
+  --shadow-2: {shadow_strong};
+}}
+
+body {{
+  color: var(--text);
+  background:
+    radial-gradient(circle at 50% 8%, {_rgba_css(theme.primary, 0.10 if dark else 0.08)}, transparent 26%),
+    radial-gradient(circle at 18% 30%, {_rgba_css(theme.secondary, 0.08 if dark else 0.06)}, transparent 24%),
+    linear-gradient(180deg, {page_top}, {page_bottom});
+}}
+
+.topbar {{
+  border: 1px solid var(--border);
+  background:
+    radial-gradient(circle at 20% 20%, {_rgba_css(theme.secondary, 0.10 if dark else 0.08)}, transparent 28%),
+    radial-gradient(circle at 80% 10%, {_rgba_css(theme.primary, 0.10 if dark else 0.08)}, transparent 28%),
+    linear-gradient(180deg, {topbar_top} 0%, {topbar_bottom} 100%);
+  box-shadow: 0 16px 46px var(--shadow);
+}}
+
+.topbar::after {{
+  background:
+    radial-gradient(circle at 40% 20%, {_rgba_css(theme.on_surface, 0.08 if dark else 0.06)}, transparent 44%),
+    radial-gradient(circle at 70% 50%, {_rgba_css(theme.primary, 0.10 if dark else 0.08)}, transparent 52%);
+  opacity: {0.60 if dark else 0.42};
+}}
+
+.brand .logo {{
+  color: var(--accent);
+  background: {chip_bg};
+  border: 1px solid var(--border-2);
+  box-shadow: inset 0 1px 0 {_rgba_css(theme.on_surface, 0.10 if dark else 0.06)};
+}}
+
+.brand .status {{
+  color: var(--text-dim);
+}}
+
+.icon-btn {{
+  color: var(--text);
+}}
+
+.icon-btn:hover {{
+  background: {hover_bg};
+}}
+
+.info-dot {{
+  color: var(--text);
+  background: {chip_bg};
+  border: 1px solid var(--border);
+}}
+
+.info-tip {{
+  color: var(--text);
+  background: {_rgba_css(theme.surface_container, 0.94 if dark else 0.96)};
+  border: 1px solid var(--border);
+  box-shadow: 0 18px 40px var(--shadow-2);
+}}
+
+.tip-title {{
+  color: var(--text);
+}}
+
+.tip-line {{
+  color: var(--text-mid);
+}}
+
+.body {{
+  border: 1px solid var(--border);
+  background: {_rgba_css(theme.surface_container, 0.44 if dark else 0.62)};
+}}
+
+.backend-pill {{
+  background: {chip_bg};
+  border: 1px solid var(--border);
+  color: var(--text);
+}}
+
+.backend-pill.active {{
+  background: {accent_soft};
+  border-color: {_rgba_css(theme.primary, 0.42 if dark else 0.38)};
+  color: var(--text);
+}}
+
+.avatar {{
+  background: {chip_bg};
+  border: 1px solid var(--border);
+  color: var(--text);
+}}
+
+.bubble {{
+  border: 1px solid var(--border);
+  background: {card_bg};
+  box-shadow: 0 12px 26px var(--shadow);
+}}
+
+.bubble.you {{
+  background: {you_bg};
+  border-color: {you_border};
+}}
+
+.meta {{
+  color: var(--text-mid);
+}}
+
+.meta .name {{
+  color: var(--text);
+}}
+
+.meta .time {{
+  color: var(--text-dim);
+}}
+
+.body-text {{
+  color: var(--text);
+}}
+
+.composer {{
+  background: {chip_bg};
+}}
+
+.composer textarea {{
+  background: {card_bg};
+  color: var(--text);
+}}
+
+.send-btn {{
+  background: {accent_soft};
+  color: {theme.active_text};
+}}
+
+.send-btn:hover {{
+  background: {accent_soft_hover};
+}}
+
+.send-btn.secondary {{
+  background: transparent;
+  color: var(--text);
+}}
+
+.send-btn.secondary:hover {{
+  background: {hover_bg};
+}}
+
+.voice-shell {{
+  border: 1px solid var(--border);
+  background:
+    radial-gradient(circle at 50% 8%, {_rgba_css(theme.primary, 0.10 if dark else 0.08)}, transparent 22%),
+    linear-gradient(180deg, {topbar_top} 0%, {topbar_bottom} 100%);
+}}
+
+.voice-nav-btn {{
+  border: 1px solid var(--border);
+  background: linear-gradient(180deg, {_rgba_css(theme.on_surface, 0.08 if dark else 0.06)}, {_rgba_css(theme.on_surface, 0.04 if dark else 0.03)});
+}}
+
+.voice-card {{
+  border: 1px solid var(--border);
+  background: {chip_bg};
+}}
+
+.voice-card .label {{
+  color: var(--text-dim);
+}}
+
+.voice-card .value {{
+  color: var(--text);
+}}
+""".strip()
+        + "\n"
+    )

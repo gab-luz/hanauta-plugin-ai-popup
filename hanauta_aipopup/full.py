@@ -7533,7 +7533,7 @@ def render_voice_mode_html(
     """
 
 
-from .web.popup_html import WEB_POPUP_HTML  # noqa: E402
+from .web.popup_html import render_popup_html  # noqa: E402
 
 
 class PopupWebBridge(QObject):
@@ -7639,7 +7639,7 @@ class PopupWebView(QWidget):
         self.view.page().setWebChannel(self.channel)
         self.view.loadFinished.connect(self._on_loaded)
         base_url = QUrl.fromLocalFile(str(PLUGIN_ROOT) + os.sep)
-        self.view.setHtml(WEB_POPUP_HTML, base_url)
+        self.view.setHtml(render_popup_html(popup_web_theme_css()), base_url)
         layout.addWidget(self.view, 1)
 
     def _on_loaded(self, ok: bool) -> None:
