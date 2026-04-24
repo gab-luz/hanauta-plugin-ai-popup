@@ -9707,6 +9707,17 @@ class VoiceModeDialog(QDialog):
         self.ui_font = ui_font
         self.setWindowTitle("Voice Mode")
         self.resize(600, 680)
+        self.setAutoFillBackground(True)
+
+        def _qcolor(value: str, fallback: str) -> QColor:
+            raw = str(value or "").strip()
+            q = QColor(raw)
+            if (not q.isValid()) and raw.startswith("#") and len(raw) == 9:
+                q = QColor("#" + raw[-6:])
+            if not q.isValid():
+                q = QColor(str(fallback or "#121218"))
+            return q
+
         try:
             fusion = QStyleFactory.create("Fusion")
         except Exception:
@@ -9714,41 +9725,57 @@ class VoiceModeDialog(QDialog):
         if fusion is not None:
             self.setStyle(fusion)
         palette = self.palette()
-        palette.setColor(palette.ColorRole.Window, QColor(PANEL_BG_FLOAT))
-        palette.setColor(palette.ColorRole.Base, QColor(CARD_BG))
-        palette.setColor(palette.ColorRole.AlternateBase, QColor(CARD_BG_SOFT))
-        palette.setColor(palette.ColorRole.Text, QColor(TEXT))
-        palette.setColor(palette.ColorRole.WindowText, QColor(TEXT))
-        palette.setColor(palette.ColorRole.Button, QColor(CARD_BG_SOFT))
-        palette.setColor(palette.ColorRole.ButtonText, QColor(TEXT))
-        palette.setColor(palette.ColorRole.Highlight, QColor(ACCENT))
-        palette.setColor(palette.ColorRole.HighlightedText, QColor(THEME.on_primary))
+        palette.setColor(palette.ColorRole.Window, _qcolor(THEME.surface_container, "#121218"))
+        palette.setColor(palette.ColorRole.Base, _qcolor(THEME.surface_container_high, "#1b1b24"))
+        palette.setColor(palette.ColorRole.AlternateBase, _qcolor(THEME.surface_container, "#161620"))
+        palette.setColor(palette.ColorRole.Text, _qcolor(THEME.on_surface, "#ffffff"))
+        palette.setColor(palette.ColorRole.WindowText, _qcolor(THEME.on_surface, "#ffffff"))
+        palette.setColor(palette.ColorRole.Button, _qcolor(THEME.surface_container_high, "#1b1b24"))
+        palette.setColor(palette.ColorRole.ButtonText, _qcolor(THEME.on_surface, "#ffffff"))
+        palette.setColor(palette.ColorRole.Highlight, _qcolor(THEME.primary, "#7d5cff"))
+        palette.setColor(palette.ColorRole.HighlightedText, _qcolor(THEME.on_primary, "#101114"))
         self.setPalette(palette)
+
+        bg = THEME.surface_container
+        bg_raised = THEME.surface_container_high
+        border = THEME.outline
+        text = THEME.on_surface
+        text_dim = THEME.on_surface_variant
+        accent = THEME.primary
+        accent_soft = f"rgba({_qcolor(accent, '#7d5cff').red()}, {_qcolor(accent, '#7d5cff').green()}, {_qcolor(accent, '#7d5cff').blue()}, 0.18)"
         self.setStyleSheet(
             f"""
+            QDialog {{
+                background: {bg};
+                color: {text};
+            }}
+            QWidget {{
+                background: transparent;
+                color: {text};
+            }}
             QLabel, QCheckBox {{
-                color: {TEXT};
+                color: {text};
             }}
             QLineEdit, QComboBox {{
-                background: {INPUT_BG};
-                color: {TEXT};
-                border: 1px solid {BORDER_SOFT};
+                background: {bg_raised};
+                color: {text};
+                border: 1px solid {border};
                 border-radius: 12px;
                 padding: 8px 10px;
             }}
             QPlainTextEdit {{
-                background: {INPUT_BG};
-                color: {TEXT};
-                border: 1px solid {BORDER_SOFT};
+                background: {bg_raised};
+                color: {text};
+                border: 1px solid {border};
                 border-radius: 12px;
                 padding: 8px 10px;
             }}
             QComboBox QAbstractItemView {{
-                background: {PANEL_BG_FLOAT};
-                color: {TEXT};
-                border: 1px solid {BORDER_SOFT};
-                selection-background-color: {ACCENT_SOFT};
-                selection-color: {TEXT};
+                background: {bg};
+                color: {text};
+                border: 1px solid {border};
+                selection-background-color: {accent_soft};
+                selection-color: {text};
                 outline: none;
             }}
             QScrollArea {{
@@ -9759,17 +9786,17 @@ class VoiceModeDialog(QDialog):
                 background: transparent;
             }}
             QWidget#fieldWrap {{
-                background: {rgba(CARD_BG_SOFT, 0.62)};
-                border: 1px solid {rgba(BORDER_SOFT, 0.95)};
+                background: {bg_raised};
+                border: 1px solid {border};
                 border-radius: 16px;
                 padding: 10px 12px;
             }}
             QLabel#fieldLabel {{
-                color: {TEXT_DIM};
+                color: {text_dim};
                 font-weight: 750;
             }}
             QLabel#sectionLabel {{
-                color: {ACCENT};
+                color: {accent};
                 font-weight: 800;
                 margin-top: 12px;
             }}
@@ -9777,24 +9804,24 @@ class VoiceModeDialog(QDialog):
                 width: 18px;
                 height: 18px;
                 border-radius: 6px;
-                border: 1px solid {rgba(BORDER_SOFT, 0.95)};
-                background: {rgba(CARD_BG_SOFT, 0.72)};
+                border: 1px solid {border};
+                background: {bg_raised};
             }}
             QCheckBox::indicator:checked {{
-                background: {ACCENT};
-                border: 1px solid {rgba(BORDER_ACCENT, 0.95)};
+                background: {accent};
+                border: 1px solid {accent};
             }}
             QPushButton {{
-                background: {rgba(CARD_BG_SOFT, 0.90)};
-                color: {TEXT};
-                border: 1px solid {rgba(BORDER_SOFT, 0.98)};
+                background: {bg_raised};
+                color: {text};
+                border: 1px solid {border};
                 border-radius: 12px;
                 padding: 8px 12px;
                 font-weight: {_button_css_weight(ui_font)};
             }}
             QPushButton:hover {{
-                background: {HOVER_BG};
-                border: 1px solid {BORDER_ACCENT};
+                background: {accent_soft};
+                border: 1px solid {accent};
             }}
             """
         )
