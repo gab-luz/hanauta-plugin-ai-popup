@@ -7538,6 +7538,7 @@ from .web.popup_html import render_popup_html  # noqa: E402
 
 class PopupWebBridge(QObject):
     stateChanged = pyqtSignal(str)
+    attachmentsPicked = pyqtSignal(str)
 
     def __init__(self, owner: "SidebarPanel") -> None:
         super().__init__(owner)
@@ -7578,6 +7579,10 @@ class PopupWebBridge(QObject):
     @pyqtSlot()
     def transcribeOnce(self) -> None:
         self.owner._web_transcribe_once()
+
+    @pyqtSlot()
+    def pickAttachments(self) -> None:
+        self.owner._web_pick_attachments()
 
     @pyqtSlot(int)
     def ackDraft(self, draft_id: int) -> None:
@@ -7625,7 +7630,8 @@ class PopupWebView(QWidget):
             return
         self.view = QWebEngineView(self)
         self.view.setContextMenuPolicy(Qt.ContextMenuPolicy.NoContextMenu)
-        self.view.page().setBackgroundColor(QColor(0, 0, 0, 0))
+        self.view.setStyleSheet("background: transparent; border: none;")
+        self.view.page().setBackgroundColor(QColor(THEME.background))
         settings = self.view.settings()
         settings.setAttribute(QWebEngineSettings.WebAttribute.LocalContentCanAccessFileUrls, True)
         settings.setAttribute(QWebEngineSettings.WebAttribute.LocalContentCanAccessRemoteUrls, True)
@@ -10203,12 +10209,9 @@ class SidebarPanel(QFrame):
         self.setStyleSheet(
             f"""
             QFrame#sidebarPanel {{
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-                    stop:0 {rgba(PANEL_BG_FLOAT, 0.99)},
-                    stop:0.45 {rgba(HERO_BOTTOM, 0.975)},
-                    stop:1 {rgba(PANEL_BG_DEEP, 0.99)});
-                border: 1px solid {rgba(BORDER_HARD, 0.95)};
-                border-radius: 34px;
+                background: transparent;
+                border: none;
+                border-radius: 28px;
             }}
             QToolTip {{
                 background: {rgba(CARD_BG, 0.98)};
@@ -10220,16 +10223,9 @@ class SidebarPanel(QFrame):
             """
         )
 
-        shadow = QGraphicsDropShadowEffect(self)
-        shadow.setBlurRadius(54)
-        shadow.setOffset(0, 18)
-        glow = QColor(SHADOW)
-        shadow.setColor(glow)
-        self.setGraphicsEffect(shadow)
-
         root = QVBoxLayout(self)
-        root.setContentsMargins(16, 16, 16, 16)
-        root.setSpacing(13)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
 
         # Keep the legacy widget tree alive off-screen for state plumbing and audio playback,
         # but render the actual popup as a web app via QtWebEngine.
@@ -11163,6 +11159,72 @@ class SidebarPanel(QFrame):
             return
         self._web_draft_text = ""
         self._sync_web_ui()
+
+    def _web_pick_attachments(self) -> None:
+        dialog = QFileDialog(self, "Add attachments")
+        dialog.setFileMode(QFileDialog.FileMode.ExistingFiles)
+        dialog.setOption(QFileDialog.Option.DontUseNativeDialog, True)
+        dialog.setStyleSheet(
+            f"""
+            QFileDialog {{
+                background: {PANEL_BG_FLOAT};
+                color: {TEXT};
+            }}
+            QLabel, QTreeView, QListView, QComboBox, QLineEdit {{
+                background: {CARD_BG};
+                color: {TEXT};
+                selection-background-color: {ACCENT_SOFT};
+                selection-color: {TEXT};
+            }}
+            QPushButton {{
+                background: {CARD_BG_SOFT};
+                color: {TEXT};
+                border: 1px solid {BORDER_SOFT};
+                border-radius: 10px;
+                padding: 7px 12px;
+            }}
+            QPushButton:hover {{
+                background: {HOVER_BG};
+                border-color: {BORDER_ACCENT};
+            }}
+            """
+        )
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        attachments: list[dict[str, str]] = []
+        for path_text in dialog.selectedFiles()[:8]:
+            path = Path(path_text).expanduser()
+            item = {
+                "name": path.name or "attachment",
+                "kind": "file",
+                "note": "Selected file",
+            }
+            try:
+                size = path.stat().st_size
+                item["note"] = f"{size} bytes"
+                if size <= 256000 and path.suffix.lower() in {
+                    ".txt",
+                    ".md",
+                    ".json",
+                    ".csv",
+                    ".log",
+                    ".py",
+                    ".js",
+                    ".ts",
+                    ".css",
+                    ".html",
+                    ".xml",
+                    ".yaml",
+                    ".yml",
+                    ".toml",
+                }:
+                    item["kind"] = "text"
+                    item["text"] = path.read_text(encoding="utf-8", errors="replace")[:24000]
+            except Exception as exc:
+                item["note"] = f"Could not read file: {exc}"
+            attachments.append(item)
+        if attachments and hasattr(self, "web_view") and hasattr(self.web_view, "bridge"):
+            self.web_view.bridge.attachmentsPicked.emit(json.dumps(attachments, ensure_ascii=False))
 
     def _web_transcribe_once(self) -> None:
         if self._stt_once_worker is not None and self._stt_once_worker.isRunning():

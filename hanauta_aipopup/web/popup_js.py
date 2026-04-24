@@ -5,6 +5,7 @@ POPUP_JS = r"""
     let state = {};
     let lastDraftId = 0;
     let attachments = [];
+    let optimisticMessages = [];
 
     function esc(s) {
       const map = {"&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#39;"};
@@ -66,12 +67,16 @@ POPUP_JS = r"""
         name.textContent = isUser ? 'You' : (eligibleAssistant ? assistantName : (m.title || 'Hanauta AI'));
         const time = document.createElement('div');
         time.className = 'time';
-        time.textContent = m.time || '';
+        time.textContent = m.timestamp_label || m.time || '';
         meta.appendChild(name);
         meta.appendChild(time);
         const body = document.createElement('div');
         body.className = 'body-text';
-        body.textContent = m.text || '';
+        if (m.body_html) {
+          body.innerHTML = String(m.body_html);
+        } else {
+          body.textContent = m.text || '';
+        }
         bubble.appendChild(meta);
         bubble.appendChild(body);
         outer.appendChild(avatar);
@@ -285,7 +290,9 @@ POPUP_JS = r"""
       document.getElementById('headerStatus').textContent = state.header_status || '';
       document.getElementById('providerLabel').textContent = state.provider_label || '';
       renderBackends(state.backends || []);
-      renderMessages(state.messages || []);
+      const serverMessages = state.messages || [];
+      if (serverMessages.length) optimisticMessages = [];
+      renderMessages(serverMessages.concat(optimisticMessages));
       renderVoice(state.voice || {});
       renderInfoTip(state.info || {});
       renderModelLauncher(state.models || {}, state.voice || {});
@@ -316,7 +323,15 @@ POPUP_JS = r"""
       const text = (el.value || '').trim();
       const extra = attachmentPromptBlock();
       if ((!text && !extra) || !bridge || !bridge.sendPrompt) return;
-      bridge.sendPrompt((text || 'Please review the attached content.') + extra);
+      const outgoing = (text || 'Please review the attached content.') + extra;
+      optimisticMessages.push({
+        role: 'user',
+        title: 'You',
+        timestamp_label: 'now',
+        body_html: '<p>' + esc(outgoing).replace(/\n/g, '<br>') + '</p>',
+      });
+      renderMessages((state.messages || []).concat(optimisticMessages));
+      bridge.sendPrompt(outgoing);
       el.value = '';
       attachments = [];
       renderAttachments();
@@ -326,12 +341,7 @@ POPUP_JS = r"""
 
     document.getElementById('sendBtn').addEventListener('click', sendNow);
     document.getElementById('attachBtn').addEventListener('click', () => {
-      const input = document.getElementById('attachmentInput');
-      if (input) input.click();
-    });
-    document.getElementById('attachmentInput').addEventListener('change', (event) => {
-      addFiles(event.target && event.target.files ? event.target.files : []);
-      event.target.value = '';
+      if (bridge && bridge.pickAttachments) bridge.pickAttachments();
     });
     document.getElementById('sttBtn').addEventListener('click', () => bridge && bridge.transcribeOnce && bridge.transcribeOnce());
     document.getElementById('clearBtn').addEventListener('click', () => bridge && bridge.clearChat && bridge.clearChat());
@@ -375,6 +385,17 @@ POPUP_JS = r"""
       bridge.stateChanged.connect(function(raw) {
         try { render(JSON.parse(raw)); } catch (_err) {}
       });
+      if (bridge.attachmentsPicked) {
+        bridge.attachmentsPicked.connect(function(raw) {
+          try {
+            const items = JSON.parse(raw || '[]');
+            if (Array.isArray(items)) {
+              attachments = attachments.concat(items);
+              renderAttachments();
+            }
+          } catch (_err) {}
+        });
+      }
       if (bridge && bridge.jsReady) bridge.jsReady();
     });
 """

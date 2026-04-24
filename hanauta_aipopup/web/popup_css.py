@@ -128,8 +128,8 @@ POPUP_CSS = r"""
       box-shadow: inset 0 1px 0 rgba(255,255,255,.10);
     }
     .brand .title-wrap { min-width: 0; }
-    .brand .title { font-size: 13px; font-weight: 950; line-height: 1.05; letter-spacing: 0; }
-    .brand .status { font-size: 11px; font-weight: 800; color: var(--text-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 210px; }
+    .brand .title { font-size: 14px; font-weight: 950; line-height: 1.05; letter-spacing: 0; }
+    .brand .status { display: none; }
 
     .info-pop {
       position: relative;
@@ -139,13 +139,13 @@ POPUP_CSS = r"""
       margin-left: 8px;
     }
     .info-dot {
-      width: 18px;
-      height: 18px;
+      width: 28px;
+      height: 28px;
       border-radius: 999px;
       display: grid;
       place-items: center;
       font-weight: 900;
-      font-size: 12px;
+      font-size: 19px;
       color: rgba(255,255,255,0.82);
       background: rgba(255,255,255,0.06);
       border: 1px solid rgba(214,195,255,.14);
@@ -283,6 +283,7 @@ POPUP_CSS = r"""
       flex: 0 0 auto;
       overflow: hidden;
     }
+    .message.you .avatar { display: none; }
     .avatar.has-photo {
       color: transparent;
       border: 0;
@@ -326,6 +327,12 @@ POPUP_CSS = r"""
       color: rgba(255,255,255,0.90);
       white-space: pre-wrap;
       word-break: break-word;
+    }
+    .body-text p {
+      margin: 0;
+    }
+    .body-text p + p {
+      margin-top: 8px;
     }
 
     .composer {

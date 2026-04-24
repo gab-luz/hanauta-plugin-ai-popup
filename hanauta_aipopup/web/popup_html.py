@@ -22,12 +22,11 @@ __POPUP_THEME_CSS__
   <div class="window">
     <div class="topbar">
       <div class="brand">
-        <div class="logo">◉</div>
         <div class="title-wrap">
           <div style="display:flex; align-items:center; gap:8px;">
             <div class="title">Hanauta AI</div>
             <div class="info-pop" title="Info">
-              <div class="info-dot" aria-label="Information">i</div>
+              <div class="info-dot md3-icon" aria-label="Information">info</div>
               <div class="info-tip" id="infoTip"><div class="tip-title">Loaded Backends</div><div class="tip-line">Loading...</div></div>
             </div>
           </div>
@@ -51,7 +50,6 @@ __POPUP_THEME_CSS__
           <textarea id="composerInput" placeholder="Message the model... Enter to send"></textarea>
           <div class="composer-row">
             <div class="provider" id="providerLabel"></div>
-            <input type="file" id="attachmentInput" multiple hidden />
             <button class="send-btn secondary" id="attachBtn" title="Add attachments" aria-label="Add attachments"><span class="md3-icon btn-icon" aria-hidden="true">attach_file</span></button>
             <button class="send-btn secondary" id="sttBtn" title="Dictate (speech to text)" aria-label="Dictate"><span class="md3-icon btn-icon" aria-hidden="true">mic</span></button>
             <button class="send-btn secondary" id="archiveBtn" title="Archive chat" aria-label="Archive chat"><span class="md3-icon btn-icon" aria-hidden="true">archive</span></button>
