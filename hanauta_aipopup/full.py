@@ -50,7 +50,7 @@ os.environ["QTWEBENGINE_CHROMIUM_FLAGS"] = _chromium_flags
 
 from cryptography.fernet import Fernet, InvalidToken
 from PyQt6.QtCore import QEasingCurve, QObject, QPoint, QPropertyAnimation, QLocale, QThread, Qt, QTimer, QUrl, QSize, QRectF, pyqtProperty, pyqtSignal, pyqtSlot, qInstallMessageHandler
-from PyQt6.QtGui import QColor, QCursor, QFont, QFontDatabase, QGuiApplication, QIcon, QPainter, QPainterPath, QPen, QPixmap, QBrush, QLinearGradient, QRegion
+from PyQt6.QtGui import QColor, QCursor, QFont, QFontDatabase, QGuiApplication, QIcon, QPainter, QPen, QPixmap, QBrush, QLinearGradient
 from PyQt6.QtGui import QDesktopServices
 from PyQt6.QtNetwork import QHostAddress, QTcpServer, QTcpSocket
 from PyQt6.QtWidgets import (
@@ -79,6 +79,7 @@ from PyQt6.QtWidgets import (
     QStackedLayout,
     QSizePolicy,
     QStyle,
+    QStyleFactory,
     QTextBrowser,
     QToolButton,
     QMenu,
@@ -7631,7 +7632,7 @@ class PopupWebView(QWidget):
         self.view = QWebEngineView(self)
         self.view.setContextMenuPolicy(Qt.ContextMenuPolicy.NoContextMenu)
         self.view.setStyleSheet("background: transparent; border: none;")
-        self.view.page().setBackgroundColor(QColor(THEME.background))
+        self.view.page().setBackgroundColor(QColor(0, 0, 0, 0))
         settings = self.view.settings()
         settings.setAttribute(QWebEngineSettings.WebAttribute.LocalContentCanAccessFileUrls, True)
         settings.setAttribute(QWebEngineSettings.WebAttribute.LocalContentCanAccessRemoteUrls, True)
@@ -11164,17 +11165,42 @@ class SidebarPanel(QFrame):
         dialog = QFileDialog(self, "Add attachments")
         dialog.setFileMode(QFileDialog.FileMode.ExistingFiles)
         dialog.setOption(QFileDialog.Option.DontUseNativeDialog, True)
+        fusion = None
+        try:
+            fusion = QStyleFactory.create("Fusion")
+        except Exception:
+            fusion = None
+        if fusion is not None:
+            dialog.setStyle(fusion)
+        palette = dialog.palette()
+        palette.setColor(palette.ColorRole.Window, QColor(PANEL_BG_FLOAT))
+        palette.setColor(palette.ColorRole.Base, QColor(CARD_BG))
+        palette.setColor(palette.ColorRole.AlternateBase, QColor(CARD_BG_SOFT))
+        palette.setColor(palette.ColorRole.Text, QColor(TEXT))
+        palette.setColor(palette.ColorRole.WindowText, QColor(TEXT))
+        palette.setColor(palette.ColorRole.Button, QColor(CARD_BG_SOFT))
+        palette.setColor(palette.ColorRole.ButtonText, QColor(TEXT))
+        palette.setColor(palette.ColorRole.Highlight, QColor(ACCENT))
+        palette.setColor(palette.ColorRole.HighlightedText, QColor(THEME.on_primary))
+        dialog.setPalette(palette)
         dialog.setStyleSheet(
             f"""
             QFileDialog {{
                 background: {PANEL_BG_FLOAT};
                 color: {TEXT};
             }}
-            QLabel, QTreeView, QListView, QComboBox, QLineEdit {{
+            QLabel, QTreeView, QListView, QComboBox, QLineEdit, QAbstractItemView {{
                 background: {CARD_BG};
                 color: {TEXT};
                 selection-background-color: {ACCENT_SOFT};
                 selection-color: {TEXT};
+            }}
+            QTreeView::item, QListView::item {{
+                padding: 4px 6px;
+            }}
+            QTreeView::item:selected, QListView::item:selected {{
+                background: {ACCENT_SOFT};
+                color: {TEXT};
             }}
             QPushButton {{
                 background: {CARD_BG_SOFT};
@@ -12029,7 +12055,6 @@ class DemoWindow(QMainWindow):
         self._build_panel()
 
         self.resize(452, 930)
-        self._apply_window_mask()
         self._place_window()
         self.setWindowOpacity(1.0)
 
@@ -12058,16 +12083,16 @@ class DemoWindow(QMainWindow):
             rect = workspace.get("rect")
             if isinstance(rect, dict):
                 try:
-                    self.move(int(rect.get("x", 0)) + 16, int(rect.get("y", 0)) + 40)
+                    self.move(int(rect.get("x", 0)) + 16, int(rect.get("y", 0)) + 32)
                     return
                 except Exception:
                     pass
         screen = QApplication.primaryScreen()
         if screen is None:
-            self.move(16, 44)
+            self.move(16, 32)
             return
         geo = screen.availableGeometry()
-        self.move(geo.x() + 16, geo.y() + 40)
+        self.move(geo.x() + 16, geo.y() + 32)
 
     def showEvent(self, event) -> None:  # type: ignore[override]
         super().showEvent(event)
@@ -12095,16 +12120,6 @@ class DemoWindow(QMainWindow):
             if handle is not None:
                 handle.setScreen(screen)
         self._place_window()
-
-    def _apply_window_mask(self) -> None:
-        path = QPainterPath()
-        path.addRoundedRect(QRectF(self.rect()), 28, 28)
-        region = QRegion(path.toFillPolygon().toPolygon())
-        self.setMask(region)
-
-    def resizeEvent(self, event) -> None:  # type: ignore[override]
-        super().resizeEvent(event)
-        self._apply_window_mask()
 
     def _animate_in(self) -> None:
         self._slide_animation = None

@@ -48,6 +48,7 @@ __POPUP_THEME_CSS__
         <div class="composer">
           <div class="attachment-tray" id="attachmentTray" hidden></div>
           <textarea id="composerInput" placeholder="Message the model... Enter to send"></textarea>
+          <div class="slash-menu" id="slashMenu" hidden></div>
           <div class="composer-row">
             <div class="provider" id="providerLabel"></div>
             <button class="send-btn secondary" id="attachBtn" title="Add attachments" aria-label="Add attachments"><span class="md3-icon btn-icon" aria-hidden="true">attach_file</span></button>

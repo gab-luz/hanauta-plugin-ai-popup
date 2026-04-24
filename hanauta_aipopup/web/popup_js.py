@@ -6,6 +6,8 @@ POPUP_JS = r"""
     let lastDraftId = 0;
     let attachments = [];
     let optimisticMessages = [];
+    let slashMenuOpen = false;
+    let slashActiveIndex = 0;
 
     function esc(s) {
       const map = {"&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#39;"};
@@ -79,11 +81,110 @@ POPUP_JS = r"""
         }
         bubble.appendChild(meta);
         bubble.appendChild(body);
+
+        if (m.audio_path) {
+          const chip = document.createElement('button');
+          chip.className = 'audio-chip';
+          chip.type = 'button';
+          const icon = document.createElement('span');
+          icon.className = 'md3-icon';
+          icon.textContent = (m.is_active_audio && m.audio_playing) ? 'pause' : 'play_arrow';
+          const label = document.createElement('span');
+          label.className = 'audio-chip-label';
+          label.textContent = 'Voice message';
+          chip.appendChild(icon);
+          chip.appendChild(label);
+          chip.addEventListener('click', () => toggleAudio(String(m.audio_path)));
+          bubble.appendChild(chip);
+        }
         outer.appendChild(avatar);
         outer.appendChild(bubble);
         convo.appendChild(outer);
       });
       convo.scrollTop = convo.scrollHeight;
+    }
+
+    const SLASH_COMMANDS = [
+      { cmd: '/say', snippet: '/say ', desc: 'Say text out loud (TTS)' },
+      { cmd: '/speak', snippet: '/speak ', desc: 'Alias for /say' },
+      { cmd: '/voice', snippet: '/voice', desc: 'Toggle voice mode' },
+      { cmd: '/voice settings', snippet: '/voice settings', desc: 'Open voice settings' },
+      { cmd: '/tts', snippet: '/tts', desc: 'Open TTS settings' },
+      { cmd: '/image', snippet: '/image ', desc: 'Generate an image' },
+      { cmd: '/clear', snippet: '/clear', desc: 'Clear chat' },
+    ];
+
+    function slashMatches(query) {
+      const q = String(query || '').trim().toLowerCase();
+      if (!q) return SLASH_COMMANDS;
+      return SLASH_COMMANDS.filter((c) => c.cmd.toLowerCase().indexOf(q) !== -1);
+    }
+
+    function currentSlashQuery(value) {
+      const raw = String(value || '');
+      if (!raw.startsWith('/')) return '';
+      const end = raw.indexOf('\n');
+      const head = (end === -1 ? raw : raw.slice(0, end));
+      if (head.indexOf(' ') !== -1) return head;
+      return head;
+    }
+
+    function applySlashCommand(c) {
+      const el = document.getElementById('composerInput');
+      if (!el) return;
+      el.value = c.snippet;
+      el.focus();
+      el.setSelectionRange(el.value.length, el.value.length);
+      const menu = document.getElementById('slashMenu');
+      if (menu) menu.hidden = true;
+      slashMenuOpen = false;
+      slashActiveIndex = 0;
+    }
+
+    function renderSlashMenu(list) {
+      const menu = document.getElementById('slashMenu');
+      if (!menu) return;
+      if (!list || !list.length) {
+        menu.hidden = true;
+        slashMenuOpen = false;
+        return;
+      }
+      menu.innerHTML = '';
+      list.slice(0, 8).forEach((c, index) => {
+        const row = document.createElement('div');
+        row.className = 'slash-row' + (index === slashActiveIndex ? ' active' : '');
+        const left = document.createElement('div');
+        left.className = 'slash-left';
+        const cmd = document.createElement('div');
+        cmd.className = 'slash-cmd';
+        cmd.textContent = c.cmd;
+        const desc = document.createElement('div');
+        desc.className = 'slash-desc';
+        desc.textContent = c.desc || '';
+        left.appendChild(cmd);
+        left.appendChild(desc);
+        row.appendChild(left);
+        row.addEventListener('click', () => applySlashCommand(c));
+        menu.appendChild(row);
+      });
+      menu.hidden = false;
+      slashMenuOpen = true;
+    }
+
+    function updateSlashMenu() {
+      const el = document.getElementById('composerInput');
+      if (!el) return;
+      const q = currentSlashQuery(el.value);
+      if (!q.startsWith('/')) {
+        const menu = document.getElementById('slashMenu');
+        if (menu) menu.hidden = true;
+        slashMenuOpen = false;
+        slashActiveIndex = 0;
+        return;
+      }
+      const list = slashMatches(q);
+      if (slashActiveIndex >= list.length) slashActiveIndex = 0;
+      renderSlashMenu(list);
     }
 
     function renderAttachments() {
@@ -374,11 +475,43 @@ POPUP_JS = r"""
     document.getElementById('voiceBackBtn').addEventListener('click', () => bridge && bridge.toggleVoiceMode && bridge.toggleVoiceMode());
     document.getElementById('closeBtn').addEventListener('click', () => bridge && bridge.closeWindow && bridge.closeWindow());
     document.getElementById('composerInput').addEventListener('keydown', (event) => {
+      if (slashMenuOpen) {
+        if (event.key === 'ArrowDown') {
+          event.preventDefault();
+          slashActiveIndex = Math.min(slashActiveIndex + 1, 7);
+          updateSlashMenu();
+          return;
+        }
+        if (event.key === 'ArrowUp') {
+          event.preventDefault();
+          slashActiveIndex = Math.max(0, slashActiveIndex - 1);
+          updateSlashMenu();
+          return;
+        }
+        if (event.key === 'Enter' || event.key === 'Tab') {
+          const el = document.getElementById('composerInput');
+          const q = currentSlashQuery(el ? el.value : '');
+          const list = slashMatches(q);
+          if (list && list.length) {
+            event.preventDefault();
+            applySlashCommand(list[Math.max(0, Math.min(slashActiveIndex, list.length - 1))]);
+            return;
+          }
+        }
+        if (event.key === 'Escape') {
+          const menu = document.getElementById('slashMenu');
+          if (menu) menu.hidden = true;
+          slashMenuOpen = false;
+          slashActiveIndex = 0;
+          return;
+        }
+      }
       if (event.key === 'Enter' && !event.shiftKey) {
         event.preventDefault();
         sendNow();
       }
     });
+    document.getElementById('composerInput').addEventListener('input', updateSlashMenu);
 
     new QWebChannel(qt.webChannelTransport, function(channel) {
       bridge = channel.objects.bridge;

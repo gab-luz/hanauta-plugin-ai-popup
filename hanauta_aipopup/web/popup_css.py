@@ -334,6 +334,34 @@ POPUP_CSS = r"""
     .body-text p + p {
       margin-top: 8px;
     }
+    .audio-chip {
+      margin-top: 10px;
+      width: 100%;
+      border: 1px solid rgba(214,195,255,.14);
+      background: rgba(255,255,255,0.05);
+      color: var(--text);
+      border-radius: 999px;
+      padding: 10px 12px;
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      cursor: pointer;
+      user-select: none;
+    }
+    .audio-chip:hover {
+      background: rgba(255,255,255,0.07);
+    }
+    .audio-chip .md3-icon {
+      font-size: 20px;
+    }
+    .audio-chip-label {
+      font-weight: 850;
+      font-size: 12px;
+      color: var(--text);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
 
     .composer {
       border-radius: 0;
@@ -341,6 +369,7 @@ POPUP_CSS = r"""
       background: rgba(255,255,255,.04);
       padding: 10px 12px 12px 12px;
       border-top: 1px solid rgba(214,195,255,.08);
+      position: relative;
     }
     .attachment-tray {
       display: flex;
@@ -427,6 +456,34 @@ POPUP_CSS = r"""
       outline: 1px solid rgba(196,181,253,.45);
       outline-offset: 2px;
     }
+
+    .slash-menu {
+      position: absolute;
+      left: 12px;
+      right: 12px;
+      bottom: 74px;
+      border-radius: 16px;
+      border: 1px solid rgba(214,195,255,.14);
+      background: rgba(10, 8, 18, 0.96);
+      box-shadow: 0 18px 50px rgba(0,0,0,0.45);
+      overflow: hidden;
+      max-height: 240px;
+    }
+    .slash-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 10px 12px;
+      cursor: pointer;
+      user-select: none;
+    }
+    .slash-row:hover,
+    .slash-row.active {
+      background: rgba(255,255,255,0.06);
+    }
+    .slash-left { min-width: 0; flex: 1; }
+    .slash-cmd { font-weight: 950; font-size: 12px; color: rgba(255,255,255,0.92); }
+    .slash-desc { font-weight: 700; font-size: 12px; color: rgba(255,255,255,0.60); margin-top: 2px; }
 
     .voice-page {
       flex: 1;
