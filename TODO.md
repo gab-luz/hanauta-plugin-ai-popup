@@ -45,7 +45,7 @@ Still to do
 
 3. Reduce agent “search cost”:
    - update `AGENTS.md` with the new module map and “search keys”
-   - keep public entry points stable (`ai_popup.py` -> `hanauta_aipopup.full:main`)
+   - keep public entry points stable (`ai_popup.py` -> `hanauta_aipopup.app:main`)
 
 ## 5) Whisper as a Backend in Backend Settings (STT)
 

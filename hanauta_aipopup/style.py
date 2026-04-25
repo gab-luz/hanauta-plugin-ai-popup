@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 from typing import Any
 
@@ -16,15 +17,51 @@ from .runtime import (
 THEME = load_theme_palette()
 
 
+def _parse_qcolor(color: str) -> QColor:
+    value = str(color or "").strip()
+    if not value:
+        return QColor("#000000")
+
+    # Support CSS-like rgb()/rgba() strings (ThemePalette uses these).
+    match = re.fullmatch(
+        r"rgba?\(\s*([0-9.]+)\s*,\s*([0-9.]+)\s*,\s*([0-9.]+)\s*(?:,\s*([0-9.]+)\s*)?\)",
+        value,
+        flags=re.IGNORECASE,
+    )
+    if match:
+        red = float(match.group(1))
+        green = float(match.group(2))
+        blue = float(match.group(3))
+        alpha_raw = match.group(4)
+
+        def _clamp_byte(channel: float) -> int:
+            return int(max(0.0, min(255.0, channel)))
+
+        qcolor = QColor(_clamp_byte(red), _clamp_byte(green), _clamp_byte(blue))
+        if alpha_raw is not None:
+            alpha = float(alpha_raw)
+            if alpha > 1.0:
+                alpha = alpha / 255.0
+            qcolor.setAlphaF(max(0.0, min(1.0, alpha)))
+        return qcolor
+
+    qcolor = QColor(value)
+    if not qcolor.isValid() and not value.startswith("#") and len(value) == 6:
+        qcolor = QColor(f"#{value}")
+    if not qcolor.isValid():
+        qcolor = QColor("#000000")
+    return qcolor
+
+
 def rgba(color: str, alpha: float) -> str:
-    q = QColor(str(color or "#000000"))
+    q = _parse_qcolor(color or "#000000")
     q.setAlphaF(max(0.0, min(1.0, float(alpha))))
     return q.name(QColor.NameFormat.HexArgb)
 
 
 def mix(color_a: str, color_b: str, amount: float) -> str:
-    a = QColor(str(color_a or "#000000"))
-    b = QColor(str(color_b or "#000000"))
+    a = _parse_qcolor(color_a or "#000000")
+    b = _parse_qcolor(color_b or "#000000")
     t = max(0.0, min(1.0, float(amount)))
     r = round(a.red() + (b.red() - a.red()) * t)
     g = round(a.green() + (b.green() - a.green()) * t)
@@ -144,6 +181,11 @@ def apply_theme_globals() -> None:
     HERO_BOTTOM = mix(THEME.app_running_bg, THEME.panel_bg, 0.24)
 
     dark_surface = relative_luminance(THEME.surface_container_high) < 0.42
+    if not (_is_global_dark_theme_enabled() or dark_surface):
+        # Light mode: keep floated panels and inputs closer to the palette background so dialogs
+        # don't look "dimmed" compared to the web popup UI.
+        PANEL_BG_FLOAT = rgba(THEME.background, 0.995)
+        INPUT_BG = rgba(mix(THEME.background, "#ffffff", 0.55), 0.995)
     if _is_global_dark_theme_enabled() or dark_surface:
         UI_TEXT_STRONG = "#F6F8FF"
         UI_TEXT_MUTED = rgba(UI_TEXT_STRONG, 0.84)
@@ -173,7 +215,7 @@ def is_dark_theme() -> bool:
 
 
 def _rgba_css(color: str, alpha: float) -> str:
-    q = QColor(str(color or "#000000"))
+    q = _parse_qcolor(color or "#000000")
     clamped = max(0.0, min(1.0, float(alpha)))
     return f"rgba({q.red()}, {q.green()}, {q.blue()}, {clamped:.2f})"
 

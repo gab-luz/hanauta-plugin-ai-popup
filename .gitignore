@@ -1,5 +1,114 @@
-__pycache__
+# ── Python ────────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.tox/
+.venv/
+venv/
+env/
+
+# ── Nuitka compiled output ────────────────────────────────────────────────────
+*.dist/
+*.build/
+hanauta-*.bin
+hanauta-*.exe
+
+# ── Sensitive / secrets ───────────────────────────────────────────────────────
+# Encryption keys and secure stores
+*.key
+secure_store.key
+secure_store.sqlite3
+secure_store.sqlite3-*
+secure_store.sqlite3-journal
+
+# Privacy codebook (contains real names / sensitive words)
 voice-privacy-codebook.txt
-ai_popup.py.bak
-ai_popup.*.bak
+
+# Skills settings (may contain Apprise URLs with tokens, API keys, webhook URLs)
+skills_settings.json
+
+# Any .env files
+.env
+.env.*
+!.env.example
+
+# API keys, tokens, credentials anywhere
+*api_key*
+*api_token*
+*secret_key*
+*credentials*
+*.pem
+*.p12
+*.pfx
+
+# ── State / runtime files (user-specific, not for repo) ──────────────────────
+# Hanauta AI state directory is outside the repo (~/.local/state/hanauta/)
+# but guard against accidental copies landing here
+emotion_state.json
+backend_settings.json
+characters.json
+character_library.json
+voice-memory.sqlite3
+voice-memory.sqlite3-*
+voice-memory.sqlite3-journal
+ai_popup-errors.log
+ai_popup.crash.log
+kokoro_synth_worker.log
+
+# Token compressor (generated from user's conversation patterns)
 voice-token-compressor.json
+
+# Generated audio / images
+tts-audio/
+generated-images/
+voice-recordings/
+chat-archives/
+tts-models/
+gguf-gallery/
+
+# ── KoboldCpp / model binaries ────────────────────────────────────────────────
+koboldcpp-kcpp/
+*.gguf
+*.ggml
+*.bin
+# Exception: keep small voice/style .bin files that are part of the repo
+!voices/*.bin
+!onnx/**/*.bin
+
+# ── ONNX model files (large, downloaded at runtime) ──────────────────────────
+*.onnx
+!onnx/cpp/**
+
+# ── Backup / scratch files ────────────────────────────────────────────────────
+*.bak
+*.orig
+*.swp
+*.swo
+*~
+ai_popup copy.py
+floating_ai_window.py
+
+# ── IDE / editor ──────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.iml
+.DS_Store
+Thumbs.db
+
+# ── Codex / agent scratch ─────────────────────────────────────────────────────
+.codex
+
+# ── HTML scratch / prototypes (not shipped) ───────────────────────────────────
+code.html
+ideia.html
+orb.html

@@ -63,6 +63,7 @@ BACKEND_ICONS_DIR = AI_ASSETS_DIR / "backend-icons"
 
 AI_STATE_DIR = Path.home() / ".local" / "state" / "hanauta" / "ai-popup"
 BACKEND_SETTINGS_FILE = AI_STATE_DIR / "backend_settings.json"
+SKILLS_SETTINGS_FILE = AI_STATE_DIR / "skills_settings.json"
 SECURE_DB_FILE = AI_STATE_DIR / "secure_store.sqlite3"
 SECURE_KEY_FILE = AI_STATE_DIR / "secure_store.key"
 IMAGE_OUTPUT_DIR = AI_STATE_DIR / "generated-images"

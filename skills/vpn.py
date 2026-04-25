@@ -1,0 +1,1 @@
+# Toggle WireGuard VPN tunnels via wg-quick and toggle tunnels using tailscale

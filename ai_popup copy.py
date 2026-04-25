@@ -4881,16 +4881,16 @@ class DemoWindow(QMainWindow):
             rect = workspace.get("rect")
             if isinstance(rect, dict):
                 try:
-                    self.move(int(rect.get("x", 0)) + 16, int(rect.get("y", 0)) + 40)
+                    self.move(int(rect.get("x", 0)) + 16, int(rect.get("y", 0)) + 32)
                     return
                 except Exception:
                     pass
         screen = QApplication.primaryScreen()
         if screen is None:
-            self.move(16, 44)
+            self.move(16, 32)
             return
         geo = screen.availableGeometry()
-        self.move(geo.x() + 16, geo.y() + 40)
+        self.move(geo.x() + 16, geo.y() + 32)
 
     def showEvent(self, event) -> None:  # type: ignore[override]
         super().showEvent(event)

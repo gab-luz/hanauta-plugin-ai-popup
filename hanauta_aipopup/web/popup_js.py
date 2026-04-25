@@ -8,6 +8,8 @@ POPUP_JS = r"""
     let optimisticMessages = [];
     let slashMenuOpen = false;
     let slashActiveIndex = 0;
+    let pendingVoiceOpen = false;
+    const MODEL_MODAL_SUB_DEFAULT = 'Preload models for hands-free voice mode.';
 
     function esc(s) {
       const map = {"&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#39;"};
@@ -339,6 +341,22 @@ POPUP_JS = r"""
       const modal = document.getElementById('modelModal');
       if (!modal) return;
       modal.hidden = !open;
+      if (!open) {
+        const sub = document.getElementById('modelModalSub');
+        if (sub) sub.textContent = MODEL_MODAL_SUB_DEFAULT;
+        pendingVoiceOpen = false;
+      } else {
+        // If no selection is known yet, default to "all" so Voice Mode works out of the box.
+        const cStt = document.getElementById('modelCheckStt');
+        const cLlm = document.getElementById('modelCheckLlm');
+        const cTts = document.getElementById('modelCheckTts');
+        const anyChecked = !!(cStt?.checked || cLlm?.checked || cTts?.checked);
+        if (!anyChecked) {
+          if (cStt) cStt.checked = true;
+          if (cLlm) cLlm.checked = true;
+          if (cTts) cTts.checked = true;
+        }
+      }
     }
 
     function renderModelLauncher(models, voice) {
@@ -383,6 +401,24 @@ POPUP_JS = r"""
       }
     }
 
+    function handleVoiceClick() {
+      const inVoice = state && state.mode === 'voice';
+      if (inVoice) {
+        if (bridge && bridge.toggleVoiceMode) bridge.toggleVoiceMode();
+        return;
+      }
+      const models = state && state.models ? state.models : {};
+      const active = !!(models && models.active);
+      if (!active) {
+        pendingVoiceOpen = true;
+        const sub = document.getElementById('modelModalSub');
+        if (sub) sub.textContent = 'Select which backends to warm up. Voice mode opens automatically when ready.';
+        openModelModal(true);
+        return;
+      }
+      if (bridge && bridge.toggleVoiceMode) bridge.toggleVoiceMode();
+    }
+
     function render(payload) {
       state = payload || {};
       const inVoice = state.mode === 'voice';
@@ -402,6 +438,18 @@ POPUP_JS = r"""
       const voiceIcon = document.getElementById('voiceIcon');
       if (voiceIcon) voiceIcon.textContent = inVoice ? 'stop' : 'mic';
       document.getElementById('voiceBtn').classList.toggle('magic-ready', !!(state.voice && state.voice.stack_ready));
+
+      // Auto-enter Voice Mode once models have finished warming up.
+      try {
+        const models = state && state.models ? state.models : {};
+        const active = !!(models && models.active);
+        const busy = !!(models && models.busy);
+        if (pendingVoiceOpen && !inVoice && active && !busy) {
+          pendingVoiceOpen = false;
+          openModelModal(false);
+          if (bridge && bridge.toggleVoiceMode) bridge.toggleVoiceMode();
+        }
+      } catch (_err) {}
 
       try {
         const draft = state.draft || {};
@@ -450,7 +498,7 @@ POPUP_JS = r"""
     document.getElementById('exportBtn').addEventListener('click', () => bridge && bridge.exportChat && bridge.exportChat());
     document.getElementById('settingsBtn').addEventListener('click', () => bridge && bridge.openSettings && bridge.openSettings());
     document.getElementById('charactersBtn').addEventListener('click', () => bridge && bridge.openCharacters && bridge.openCharacters());
-    document.getElementById('voiceBtn').addEventListener('click', () => bridge && bridge.toggleVoiceMode && bridge.toggleVoiceMode());
+    document.getElementById('voiceBtn').addEventListener('click', handleVoiceClick);
     document.getElementById('modelsBtn').addEventListener('click', () => {
       const active = !!(state && state.models && state.models.active);
       if (active) {
