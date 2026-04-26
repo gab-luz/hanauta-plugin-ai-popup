@@ -89,6 +89,18 @@ POPUP_JS = r"""
         body.className = 'body-text';
         if (m.body_html) {
           body.innerHTML = String(m.body_html);
+          body.querySelectorAll('button[data-cmd]').forEach((btn) => {
+            btn.addEventListener('click', (e) => {
+              e.preventDefault();
+              const cmd = btn.getAttribute('data-cmd');
+              if (cmd === 'launchKobold' && bridge && bridge.launchKobold) {
+                bridge.launchKobold();
+              } else if (cmd === 'dismiss' && bridge && bridge.dismissCard) {
+                const cardId = m.id || '';
+                if (cardId) bridge.dismissCard(cardId);
+              }
+            });
+          });
         } else {
           body.textContent = m.text || '';
         }

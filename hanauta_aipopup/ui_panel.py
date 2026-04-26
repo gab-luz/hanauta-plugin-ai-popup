@@ -1934,20 +1934,21 @@ class SidebarPanel(QFrame):
             return False
         card_id = f"kobold-launch-{int(time.time()*1000)}"
         btn_style = (
-            "display:inline-block;margin:4px 6px 4px 0;"
-            "padding:8px 18px;border-radius:20px;border:none;cursor:pointer;"
-            "font-size:12px;font-weight:700;"
+            "display:inline-flex;align-items:center;justify-content:center;"
+            "margin:4px 6px 4px 0;padding:8px 20px;"
+            "border-radius:20px;border:none;cursor:pointer;"
+            "font-size:12px;font-weight:700;font-family:inherit;"
+            "transition:transform 0.1s,box-shadow 0.2s;"
         )
-        dark = is_dark_theme()
         body = (
             f"<p>KoboldCpp is not running.</p>"
             f"<p>Start it now with {html.escape(gguf_path.name)}?</p>"
-            f'<p>'
-            f'<button style="{btn_style}background:var(--accent,#9b8fff);color:#fff" '
-            f'onclick="bridge&&bridge.launchKobold&&bridge.launchKobold();">Start</button>'
-            f'<button style="{btn_style}background:{"rgba(255,255,255,0.08)" if dark else "rgba(0,0,0,0.06)"};color:{"rgba(255,255,255,0.6)" if dark else "rgba(0,0,0,0.6)"}" '
-            f'onclick="bridge&&bridge.dismissCard&&bridge.dismissCard(\\"{card_id}\\"):">Cancel</button>'
-            f'</p>'
+            f'<div style="display:flex;gap:8px;margin-top:8px;">'
+            f'<button data-cmd="launchKobold" style="{btn_style}background:var(--accent,#9b8fff);color:#fff;">'
+            f'Start</button>'
+            f'<button data-cmd="dismiss" style="{btn_style}background:rgba(255,255,255,0.08);color:rgba(255,255,255,0.72);">'
+            f'Cancel</button>'
+            f'</div>'
         )
         self.add_card(ChatItemData(
             role="assistant",

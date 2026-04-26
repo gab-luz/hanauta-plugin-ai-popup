@@ -414,6 +414,26 @@ POPUP_CSS = r"""
       color: rgba(255,255,255,0.90);
       word-break: break-word;
     }
+    .body-text button {
+      cursor: pointer;
+      border: none;
+      border-radius: 20px;
+      font-weight: 600;
+      font-size: 13px;
+      font-family: inherit;
+      transition: transform 0.1s ease, box-shadow 0.2s ease;
+    }
+    .body-text button[data-cmd] {
+      background: var(--accent);
+      color: var(--text);
+    }
+    .body-text button:hover {
+      transform: translateY(-1px);
+      box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+    }
+    .body-text button:active {
+      transform: translateY(0);
+    }
     .body-text p {
       margin: 0;
     }
