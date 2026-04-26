@@ -1166,7 +1166,9 @@ class VoiceModelsWarmupWorker(QThread):
             wav.setsampwidth(2)
             wav.setframerate(sample_rate)
             wav.writeframes(struct.pack("<" + "h" * frames, *([0] * frames)))
+        logging.info("[VoiceModels] _warm_stt: running whisper transcribe on warmup wav")
         _transcribe_with_whisper(warmup_wav, self.config)
+        logging.info("[VoiceModels] _warm_stt: whisper transcribe done")
         return updates
 
     def _warm_llm(self) -> dict[str, dict[str, object]]:
@@ -1220,7 +1222,9 @@ class VoiceModelsWarmupWorker(QThread):
                 raise RuntimeError(f"Unable to reach TTS host: {_normalize_host_url(host)}")
             return
         # Local ONNX warmup: run a tiny synth and delete the output file.
+        logging.info("[VoiceModels] _warm_tts: calling synthesize_tts")
         audio, _src = synthesize_tts(profile, payload, "Warmup.")
+        logging.info("[VoiceModels] _warm_tts: synthesize_tts done, audio=%s", audio)
         try:
             audio.unlink(missing_ok=True)
         except Exception:

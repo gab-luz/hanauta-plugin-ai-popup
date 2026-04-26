@@ -1162,6 +1162,8 @@ class SidebarPanel(QFrame):
         return " ".join(warnings).strip()
 
     def _web_request_start_voice_models(self, selection_json: str) -> None:
+        import logging
+
         try:
             raw = json.loads(selection_json or "{}")
         except Exception:
@@ -1192,6 +1194,8 @@ class SidebarPanel(QFrame):
 
         self._maybe_probe_kobold_gemma4_audio_support()
         config = _voice_mode_settings(self.backend_settings)
+        logging.info("[VoiceModels] _web_start_voice_models called, selection=%s", selection)
+
         self._voice_models_busy = True
         self._sync_web_ui()
 
@@ -1201,12 +1205,15 @@ class SidebarPanel(QFrame):
             chips=["voice", "models"],
         )
         worker = VoiceModelsWarmupWorker(config, self.profile_by_key, self.backend_settings, selection)
+        logging.info("[VoiceModels] Worker created, selection=%s", selection)
         self._voice_models_worker = worker
 
         def _on_progress(title: str, detail: str) -> None:
+            logging.info("[VoiceModels] progress: %s - %s", title, detail)
             self._add_runtime_status_card(str(title), str(detail), chips=["voice", "models"])
 
         def _on_ok(raw_payload: str) -> None:
+            logging.info("[VoiceModels] finished_ok: %s", raw_payload[:200] if raw_payload else "empty")
             self._voice_models_busy = False
             self._voice_models_worker = None
             try:
@@ -1259,6 +1266,7 @@ class SidebarPanel(QFrame):
             )
 
         def _on_fail(message: str) -> None:
+            logging.exception("[VoiceModels] failed: %s", message)
             self._voice_models_busy = False
             self._voice_models_worker = None
             clean = str(message).strip() or "Model warmup failed."
