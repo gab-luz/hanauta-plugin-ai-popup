@@ -1,3 +1,7 @@
+# TODO:
+# add actions support for allowing the AI to: enable/disable caffeine mode, reconnect wifi,
+# change volume, take screenshot, enable/disable night light, open urls in browser (using webbrowser.py skill),
+# enable do not disturb mode
 """Hanauta Desktop skill — control the i3 desktop via i3-msg and hanauta helpers."""
 from __future__ import annotations
 
