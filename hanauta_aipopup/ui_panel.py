@@ -85,6 +85,7 @@ from .backends import (
     start_koboldcpp as _start_koboldcpp,
     stop_koboldcpp as _stop_koboldcpp,
 )
+from .user_profile import load_ai_popup_user_profile, save_ai_popup_user_profile
 from .tts import (
     synthesize_tts, _waveform_from_hanauta_service,
     _start_kokoro_server, _stop_kokoro_server,
@@ -173,6 +174,7 @@ class SidebarPanel(QFrame):
         self._voice_models_last_selection: dict[str, bool] = {"stt": True, "llm": True, "tts": True}
         self._voice_models_worker: VoiceModelsWarmupWorker | None = None
         self._stt_once_worker: OneShotSttWorker | None = None
+        self._user_profile = load_ai_popup_user_profile()
         self._web_draft_text: str = ""
         self._web_draft_id: int = 0
         self._pending_kobold_ready_profile: str = ""
@@ -446,6 +448,11 @@ class SidebarPanel(QFrame):
         return
 
     def _open_character_library(self) -> None:
+        user_profile = load_ai_popup_user_profile()
+        if not user_profile.get("setup_shown", False):
+            self._prompt_user_profile_setup()
+            user_profile["setup_shown"] = True
+            save_ai_popup_user_profile(user_profile)
         dialog = CharacterLibraryDialog(self.character_cards, self.active_character_id, self.ui_font, self)
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
@@ -458,6 +465,107 @@ class SidebarPanel(QFrame):
         else:
             send_desktop_notification("Character selected", active.name)
         self._sync_web_ui()
+
+    def _prompt_user_profile_setup(self) -> None:
+        user_profile = load_ai_popup_user_profile()
+        existing_name = user_profile.get("first_name") or user_profile.get("nickname") or ""
+        if not existing_name:
+            try:
+                from pyqt.shared.profile import load_profile_state as _nc_load_profile
+                nc_profile = _nc_load_profile()
+                existing_name = nc_profile.get("first_name") or nc_profile.get("nickname") or ""
+            except Exception:
+                pass
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Your Profile")
+        dialog.setMinimumWidth(420)
+        bg = PANEL_BG_FLOAT
+        txt = TEXT
+        txt_dim = TEXT_DIM
+        border = BORDER_SOFT
+        dialog.setStyleSheet(
+            f"""
+            QDialog {{
+                background: {bg};
+                color: {txt};
+            }}
+            QLabel {{
+                color: {txt_dim};
+            }}
+            QLineEdit, QPlainTextEdit {{
+                background: {CARD_BG};
+                color: {txt};
+                border: 1px solid {border};
+                border-radius: 12px;
+                padding: 8px 10px;
+            }}
+            QPushButton {{
+                background: {ACCENT};
+                color: #fff;
+                border: none;
+                border-radius: 12px;
+                padding: 8px 16px;
+                font-weight: 600;
+            }}
+            QPushButton:hover {{
+                background: {ACCENT_SOFT};
+            }}
+            """
+        )
+        layout = QVBoxLayout(dialog)
+        layout.setSpacing(12)
+
+        title = QLabel("Set up your profile for the AI to know you")
+        title.setFont(QFont(self.ui_font, 12, QFont.Weight.Bold))
+        layout.addWidget(title)
+
+        name_label = QLabel("What should the AI call you?")
+        name_input = QLineEdit(existing_name)
+        name_input.setPlaceholderText("Your name")
+        layout.addWidget(name_label)
+        layout.addWidget(name_input)
+
+        info_label = QLabel("Tell the AI about yourself (optional):")
+        info_input = QPlainTextEdit(user_profile.get("about", ""))
+        info_input.setFixedHeight(80)
+        info_input.setPlaceholderText("Your interests, background, preferences...")
+        layout.addWidget(info_label)
+        layout.addWidget(info_input)
+
+        enable_label = QLabel("Make this info available to the AI?")
+        enable_check = QCheckBox("Yes, use my profile in system prompts")
+        enable_check.setChecked(bool(user_profile.get("enabled", False)))
+        layout.addWidget(enable_label)
+        layout.addWidget(enable_check)
+
+        note = QLabel("You can change this anytime from the character library.")
+        note.setStyleSheet(f"color: {txt_dim}; font-size: 11px;")
+        layout.addWidget(note)
+
+        buttons = QHBoxLayout()
+        buttons.setSpacing(8)
+        save_btn = QPushButton("Save")
+        save_btn.setDefault(True)
+        save_btn.clicked.connect(dialog.accept)
+        buttons.addWidget(save_btn)
+
+        skip_btn = QPushButton("Skip for now")
+        skip_btn.clicked.connect(dialog.reject)
+        buttons.addWidget(skip_btn)
+        layout.addLayout(buttons)
+
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        updated = {
+            "first_name": name_input.text().strip(),
+            "about": info_input.toPlainText().strip(),
+            "enabled": enable_check.isChecked(),
+            "setup_shown": True,
+        }
+        user_profile.update(updated)
+        save_ai_popup_user_profile(user_profile)
+        self._user_profile = user_profile
 
     def _select_backend(self, profile: BackendProfile, active_button: BackendPill) -> None:
         settings = self.backend_settings.get(profile.key, {})

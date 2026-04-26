@@ -171,6 +171,11 @@ class CharacterLibraryDialog(QDialog):
         voice_sample_button.clicked.connect(self._set_voice_sample)
         row.addWidget(voice_sample_button)
 
+        edit_button = QPushButton("\u270f\ufe0f Edit prompt")
+        edit_button.setToolTip("Edit character name, prompt, and description")
+        edit_button.clicked.connect(self._edit_character)
+        row.addWidget(edit_button)
+
         row.addStretch(1)
         layout.addLayout(row)
 
@@ -391,6 +396,99 @@ class CharacterLibraryDialog(QDialog):
             "Voice sample set",
             f"{card.name}: {Path(path).name}",
         )
+
+    def _edit_character(self) -> None:
+        card = self._current_card()
+        if card is None:
+            return
+        dialog = QDialog(self)
+        dialog.setWindowTitle(f"Edit: {card.name}")
+        dialog.setMinimumWidth(500)
+        dialog.setStyleSheet(
+            f"""
+            QDialog {{
+                background: {PANEL_BG_FLOAT};
+                color: {TEXT};
+            }}
+            QLineEdit, QPlainTextEdit {{
+                background: {INPUT_BG};
+                color: {TEXT};
+                border: 1px solid {BORDER_SOFT};
+                border-radius: 12px;
+                padding: 8px 10px;
+            }}
+            QLabel {{
+                color: {TEXT_MID};
+            }}
+            QPushButton {{
+                background: {CARD_BG_SOFT};
+                color: {TEXT};
+                border: 1px solid {BORDER_SOFT};
+                border-radius: 12px;
+                padding: 8px 12px;
+                font-weight: 600;
+            }}
+            QPushButton:hover {{
+                background: {HOVER_BG};
+                border: 1px solid {BORDER_ACCENT};
+            }}
+            """
+        )
+        layout = QVBoxLayout(dialog)
+        layout.setSpacing(12)
+
+        name_label = QLabel("Name:")
+        name_input = QLineEdit(card.name)
+        layout.addWidget(name_label)
+        layout.addWidget(name_input)
+
+        desc_label = QLabel("Description:")
+        desc_input = QPlainTextEdit(card.description)
+        desc_input.setFixedHeight(80)
+        layout.addWidget(desc_label)
+        layout.addWidget(desc_input)
+
+        pers_label = QLabel("Personality:")
+        pers_input = QPlainTextEdit(card.personality)
+        pers_input.setFixedHeight(80)
+        layout.addWidget(pers_label)
+        layout.addWidget(pers_input)
+
+        scenario_label = QLabel("Scenario:")
+        scenario_input = QPlainTextEdit(card.scenario)
+        scenario_input.setFixedHeight(60)
+        layout.addWidget(scenario_label)
+        layout.addWidget(scenario_input)
+
+        sys_label = QLabel("System prompt:")
+        sys_input = QPlainTextEdit(card.system_prompt)
+        sys_input.setFixedHeight(100)
+        layout.addWidget(sys_label)
+        layout.addWidget(sys_input)
+
+        buttons = QHBoxLayout()
+        buttons.setSpacing(8)
+        save_btn = QPushButton("Save")
+        save_btn.setDefault(True)
+        save_btn.clicked.connect(dialog.accept)
+        buttons.addWidget(save_btn)
+
+        cancel_btn = QPushButton("Cancel")
+        cancel_btn.clicked.connect(dialog.reject)
+        buttons.addWidget(cancel_btn)
+        layout.addLayout(buttons)
+
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        card.name = name_input.text().strip()
+        card.description = desc_input.toPlainText().strip()
+        card.personality = pers_input.toPlainText().strip()
+        card.scenario = scenario_input.toPlainText().strip()
+        card.system_prompt = sys_input.toPlainText().strip()
+
+        from .characters import save_character_library
+        save_character_library(self.cards, self.selected_id)
+        self._refresh_preview()
 
     def _disable_character(self) -> None:
         self.selected_id = ""

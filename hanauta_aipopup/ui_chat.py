@@ -778,7 +778,7 @@ class TextReplyWorker(QThread):
             )
             from .http import _http_post_json
             from .storage import secure_load_secret
-            from .user_profile import load_profile_state, preferred_user_name
+            from .user_profile import load_profile_state, preferred_user_name, load_ai_popup_user_profile
 
             profile = self.profile
             payload = self.payload
@@ -787,12 +787,15 @@ class TextReplyWorker(QThread):
             api_key = secure_load_secret(f"{profile.key}:api_key").strip()
             user_name = preferred_user_name(load_profile_state())
             tools = _load_skills()
+            user_profile = load_ai_popup_user_profile()
+            user_info = user_profile.get("about", "") if user_profile.get("enabled", False) else ""
 
             messages = _chat_messages_with_memory(
                 self.text,
                 self.character,
                 tools=tools or None,
                 user_name=user_name,
+                user_info=user_info,
             )
 
             if profile.key == "ollama":
@@ -1600,11 +1603,15 @@ class VoiceConversationWorker(QThread):
                             prompt_for_llm = _compress_voice_prompt(masked_prompt, self.config)
                     except Exception:
                         prompt_for_llm = masked_prompt
+                    from .user_profile import load_ai_popup_user_profile
+                    user_profile = load_ai_popup_user_profile()
+                    user_info = user_profile.get("about", "") if user_profile.get("enabled", False) else ""
                     messages = _chat_messages_with_memory(
                         prompt_for_llm,
                         self.character if bool(self.config.get("enable_character", True)) else None,
                         emotion_tags=bool(self.config.get("emotion_tags_enabled", False)),
                         memory=memo,
+                        user_info=user_info,
                     )
                     host = ""
                     model = ""

@@ -1095,8 +1095,13 @@ def _chat_messages_for_prompt(
     emotion_tags: bool = False,
     tools: list[dict] | None = None,
     user_name: str = "",
+    user_info: str = "",
 ) -> list[dict[str, str]]:
     system = "You are Hanauta AI. Keep spoken replies concise, natural, and easy to listen to."
+    # Inject user info if provided
+    user_context = str(user_info or "").strip()
+    if user_context:
+        system = f"{system}\n\nUser info:\n{user_context}"
     if character is not None:
         char_name = character.name or "Assistant"
         resolved_user = user_name.strip() or "User"
@@ -1143,10 +1148,12 @@ def _chat_messages_with_memory(
     memory: str = "",
     tools: list[dict] | None = None,
     user_name: str = "",
+    user_info: str = "",
 ) -> list[dict[str, str]]:
     messages = _chat_messages_for_prompt(
         prompt, character,
         emotion_tags=emotion_tags, tools=tools, user_name=user_name,
+        user_info=user_info,
     )
     memo = str(memory or "").strip()
     if not memo:
@@ -1539,8 +1546,10 @@ def generate_voice_chat_reply(
     except Exception:
         prompt_for_llm = masked_prompt
     tools = _load_skills() if bool(config.get("skills_enabled", True)) else []
-    from .user_profile import load_profile_state, preferred_user_name
+    from .user_profile import load_profile_state, preferred_user_name, load_ai_popup_user_profile
     _user_name = preferred_user_name(load_profile_state())
+    _user_profile = load_ai_popup_user_profile()
+    _user_info = _user_profile.get("about", "") if _user_profile.get("enabled", False) else ""
     messages = _chat_messages_with_memory(
         prompt_for_llm,
         character,
@@ -1548,6 +1557,7 @@ def generate_voice_chat_reply(
         memory=memo,
         tools=tools or None,
         user_name=_user_name,
+        user_info=_user_info,
     )
     if bool(config.get("llm_external_api", False)):
         host = str(config.get("llm_host", "")).strip()

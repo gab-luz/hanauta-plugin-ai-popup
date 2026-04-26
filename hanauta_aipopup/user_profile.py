@@ -3,23 +3,30 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-
-_SETTINGS_FILE = (
-    Path.home()
-    / ".local"
-    / "state"
-    / "hanauta"
-    / "notification-center"
-    / "settings.json"
-)
+from .runtime import USER_PROFILE_FILE, NOTIFICATION_CENTER_SETTINGS_FILE
 
 
-def _safe_read_settings() -> dict:
+def _safe_read_settings(path: Path) -> dict:
     try:
-        payload = json.loads(_SETTINGS_FILE.read_text(encoding="utf-8"))
+        payload = json.loads(path.read_text(encoding="utf-8"))
     except Exception:
         return {}
     return payload if isinstance(payload, dict) else {}
+
+
+AIPOPUP_USER_PROFILE_FILE = USER_PROFILE_FILE
+
+
+def load_ai_popup_user_profile() -> dict:
+    return _safe_read_settings(AIPOPUP_USER_PROFILE_FILE)
+
+
+def save_ai_popup_user_profile(profile: dict) -> None:
+    try:
+        AIPOPUP_USER_PROFILE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        AIPOPUP_USER_PROFILE_FILE.write_text(json.dumps(profile, indent=2, ensure_ascii=False), encoding="utf-8")
+    except Exception:
+        pass
 
 
 try:
@@ -32,7 +39,7 @@ try:
 except Exception:  # pragma: no cover
 
     def load_profile_state(settings: dict | None = None) -> dict:
-        payload = settings if isinstance(settings, dict) else _safe_read_settings()
+        payload = settings if isinstance(settings, dict) else _safe_read_settings(NOTIFICATION_CENTER_SETTINGS_FILE)
         raw = payload.get("profile", {}) if isinstance(payload, dict) else {}
         profile = dict(raw) if isinstance(raw, dict) else {}
         profile["first_name"] = str(profile.get("first_name", "")).strip()
