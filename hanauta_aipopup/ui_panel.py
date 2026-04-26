@@ -1628,10 +1628,13 @@ class SidebarPanel(QFrame):
             "error": ("#ffb9c7", "rgba(255,107,139,0.18)"),
         }
         fg, bg = palette.get(tone, palette["info"])
+        # If detail already contains HTML tags, use it as-is; otherwise escape it
+        import re as _re
+        detail_html = detail if _re.search(r'<[a-zA-Z]', detail) else html.escape(detail)
         body = (
             f'<p><span style="display:inline-flex;padding:4px 10px;border-radius:999px;'
             f'background:{bg};color:{fg};font-weight:700;">{html.escape(title)}</span></p>'
-            f"<p>{html.escape(detail)}</p>"
+            f"<p>{detail_html}</p>"
         )
         self.add_card(
             ChatItemData(
