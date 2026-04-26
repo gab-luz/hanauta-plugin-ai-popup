@@ -2040,13 +2040,20 @@ class SidebarPanel(QFrame):
 
     def _set_pending_state(self, profile_label: str, message: str, meta: str) -> None:
         LOGGER.debug("set_pending_state: profile=%r meta=%r message=%r", profile_label, meta, message)
+        character = self._active_character()
+        # Use character name as title when active so the chat shows the char, not the backend
+        display_title = character.name if character is not None else profile_label
+        has_char = character is not None
         self._pending_item = ChatItemData(
             role="assistant",
-            title=profile_label,
+            title=display_title,
             meta=meta,
             body=(
-                f'<div class="loading-row"><span class="loading-ring"></span>'
-                f"<span>{html.escape(message)}</span></div>"
+                '<div class="loading-typing">'
+                '<span></span><span></span><span></span>'
+                '</div>'
+                if has_char else
+                '<div class="loading-spinner"></div>'
             ),
             pending=True,
         )
@@ -2293,9 +2300,11 @@ class SidebarPanel(QFrame):
     def _handle_text_reply(self, reply: str, profile_label: str, model: str) -> None:
         self._clear_pending_state()
         from .tts import _render_llm_text_html
+        character = self._active_character()
+        display_title = character.name if character is not None else profile_label
         self.add_card(ChatItemData(
             role="assistant",
-            title=profile_label,
+            title=display_title,
             meta=model,
             body=_render_llm_text_html(reply),
             chips=[SourceChipData(profile_label)],

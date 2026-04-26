@@ -592,23 +592,44 @@ POPUP_CSS = r"""
       color: var(--text-dim);
     }
 
-    .message.pending .bubble { opacity: 0.6; }
-    .message.pending .bubble::after {
-      content: "";
+    .message.pending .bubble { opacity: 0.85; }
+
+    /* Typing animation — 3 bouncing dots (character mode) */
+    .loading-typing {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      padding: 6px 2px;
+      height: 28px;
+    }
+    .loading-typing span {
       display: inline-block;
-      width: 8px;
-      height: 8px;
-      margin-left: 8px;
+      width: 7px;
+      height: 7px;
       border-radius: 50%;
       background: var(--accent);
-      animation: pendingDot 1.0s ease-in-out infinite;
+      animation: typingBounce 1.2s ease-in-out infinite;
     }
-    .message.pending .bubble::before {
-      content: "Thinking...";
-      font-size: 11px;
-      color: var(--text-dim);
-      font-weight: 700;
+    .loading-typing span:nth-child(1) { animation-delay: 0s; }
+    .loading-typing span:nth-child(2) { animation-delay: 0.2s; }
+    .loading-typing span:nth-child(3) { animation-delay: 0.4s; }
+    @keyframes typingBounce {
+      0%, 60%, 100% { transform: translateY(0); opacity: 0.4; }
+      30% { transform: translateY(-6px); opacity: 1.0; }
     }
+
+    /* Spinner animation — no character mode */
+    .loading-spinner {
+      width: 20px;
+      height: 20px;
+      border: 2.5px solid rgba(196,181,253,0.20);
+      border-top-color: var(--accent);
+      border-radius: 50%;
+      animation: spinnerRotate 0.75s linear infinite;
+      margin: 4px 0;
+    }
+    @keyframes spinnerRotate { to { transform: rotate(360deg); } }
+
     @keyframes pendingDot { 0%,100% { opacity: 0.3; } 50% { opacity: 1.0; } }
 
     .composer {

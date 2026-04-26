@@ -59,7 +59,7 @@ POPUP_JS = r"""
       list.forEach((m) => {
         const outer = document.createElement('div');
         const isUser = (m.role === 'user');
-        const eligibleAssistant = (!isUser) && (!m.title || String(m.title) === 'Hanauta AI');
+        const eligibleAssistant = (!isUser);
         outer.className = 'message ' + (isUser ? 'you' : 'ai') + (m.pending ? ' pending' : '');
         const avatar = document.createElement('div');
         avatar.className = 'avatar';
