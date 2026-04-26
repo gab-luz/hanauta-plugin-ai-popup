@@ -34,7 +34,7 @@ Use this file as the map before touching anything. Every section answers "where 
 | `style.py` | Theme colors, `rgba()`, `mix()`, `focused_workspace()`, `apply_theme_globals()` |
 | `prompt_smartness.py` | `PromptSmartness` — token compression, memory recall, markdown cleanup |
 | `catalog.py` | `MODEL_CATALOG`, `_format_bytes`, `_dir_size_bytes` |
-| `user_profile.py` | `load_profile_state`, `preferred_user_name` |
+| `user_profile.py` | `load_profile_state`, `preferred_user_name`, `load_ai_popup_user_profile`, `save_ai_popup_user_profile` |
 | `fonts.py` | `load_ui_font`, `load_material_icon_font`, `button_css_weight` |
 
 ### `skills/`
@@ -78,6 +78,15 @@ _resolve_character_template    # replaces {{char}} and {{user}} tokens (tts.py)
 _tool_delivery_hint            # injects "offer log or send" hint when character active
 _character_compose_prompt      # builds system prompt from CharacterCard fields
 CharacterCard                  # dataclass in models.py
+_import_character_from_file    # imports from JSON/PNG (characters.py)
+_character_library.json       # stored in AI_STATE_DIR
+```
+
+### Character Editor
+```
+CharacterLibraryDialog        # character library dialog (ui_dialogs.py)
+_edit_character             # editing method in dialog
+save_character_library     # saves to characters.json
 ```
 
 ### Voice mode
@@ -91,6 +100,14 @@ generate_voice_chat_reply      # full voice reply pipeline (tts.py)
 transcribe_voice_audio         # STT dispatch (tts.py)
 _select_tts_for_voice          # selects TTS backend for voice mode (ui_panel.py)
 selectTtsForVoice             # JS bridge slot (ui_chat.py)
+```
+
+### User Profile (AI context)
+```
+load_ai_popup_user_profile    # reads user_profile.json (user_profile.py)
+save_ai_popup_user_profile    # writes user_profile.json (user_profile.py)
+user_info parameter          # injected into chat messages (tts.py)
+setup shown flag           # one-time prompt on character library open
 ```
 
 ### Web bridge slots (PopupWebBridge)
