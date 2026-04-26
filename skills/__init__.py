@@ -105,16 +105,19 @@ def call(name: str, arguments: dict) -> str:
     _defn, mod = entry
     # NSFL safety guard — runs before every tool call
     try:
-        from pathlib import Path as _Path
-        import importlib.util as _ilu
-        _safety_path = _Path(__file__).parent / "safety.py"
-        _spec = _ilu.spec_from_file_location("skills.safety", _safety_path)
-        _sm = _ilu.module_from_spec(_spec)  # type: ignore[arg-type]
-        _spec.loader.exec_module(_sm)  # type: ignore[union-attr]
-        _sm.safety_check(name, arguments)
+        import sys as _sys
+        _safety_mod = _sys.modules.get("skills.safety")
+        if _safety_mod is None:
+            from pathlib import Path as _Path
+            import importlib.util as _ilu
+            _safety_path = _Path(__file__).parent / "safety.py"
+            _spec = _ilu.spec_from_file_location("skills.safety", _safety_path)
+            _safety_mod = _ilu.module_from_spec(_spec)  # type: ignore[arg-type]
+            _spec.loader.exec_module(_safety_mod)  # type: ignore[union-attr]
+            _sys.modules["skills.safety"] = _safety_mod
+        _safety_mod.safety_check(name, arguments)
     except Exception as _se:
-        _se_type = type(_se).__name__
-        if _se_type == "SafetyBlocked":
+        if type(_se).__name__ == "SafetyBlocked":
             return f"[safety] {_se}"
         # safety module itself failed — log and continue
         LOGGER.debug("Safety module error (non-blocking): %s", _se)
