@@ -409,20 +409,41 @@ POPUP_CSS = r"""
     .meta .time { color: rgba(255,255,255,0.48); font-weight: 750; }
     .body-text {
       font-size: 13px;
-      line-height: 1.50;
-      font-weight: 560;
+      line-height: 1.55;
+      font-weight: 400;
       color: rgba(255,255,255,0.90);
       word-break: break-word;
     }
     .body-text p {
       margin: 0;
     }
-    .body-text p + p {
+    .body-text p + p, .body-text p + ul, .body-text p + ol,
+    .body-text ul + p, .body-text ol + p, .body-text h1 + p,
+    .body-text h2 + p, .body-text h3 + p {
       margin-top: 8px;
     }
+    .body-text strong, .body-text b {
+      font-weight: 700;
+      color: rgba(255,255,255,1.0);
+    }
+    .body-text em, .body-text i {
+      font-style: italic;
+      color: rgba(255,255,255,0.85);
+    }
+    .body-text h1, .body-text h2, .body-text h3 {
+      font-weight: 700;
+      color: rgba(255,255,255,1.0);
+      margin: 10px 0 4px 0;
+      line-height: 1.3;
+    }
+    .body-text h1 { font-size: 16px; }
+    .body-text h2 { font-size: 14px; }
+    .body-text h3 { font-size: 13px; }
     .body-text a { color: var(--accent); text-decoration: none; }
+    .body-text a:hover { text-decoration: underline; }
     .body-text code {
       font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+      font-size: 12px;
       padding: 2px 6px;
       border-radius: 10px;
       background: rgba(255,255,255,0.06);
@@ -437,8 +458,8 @@ POPUP_CSS = r"""
       overflow-x: auto;
     }
     .body-text pre code { border: 0; background: transparent; padding: 0; }
-    .body-text ul, .body-text ol { margin: 8px 0 0 18px; padding: 0; }
-    .body-text li { margin: 4px 0; }
+    .body-text ul, .body-text ol { margin: 6px 0 0 20px; padding: 0; }
+    .body-text li { margin: 3px 0; }
     .body-text img {
       display: block;
       max-width: 100%;

@@ -15,6 +15,23 @@ from typing import Callable
 JsonDict = dict[str, object]
 
 
+def _apply_inline(escaped_text: str) -> str:
+    """Apply inline markdown to already-HTML-escaped text: bold, italic, inline code."""
+    import re as _re
+    t = escaped_text
+    # Inline code: `code` (must come before bold/italic to avoid double-processing)
+    t = _re.sub(r'`([^`]+)`', r'<code>\1</code>', t)
+    # Bold: **text** or __text__ (handle malformed ***text*** too)
+    t = _re.sub(r'\*\*\*?([^*<\n]+?)\*\*\*?', r'<strong>\1</strong>', t)
+    t = _re.sub(r'__([^_<\n]+?)__', r'<strong>\1</strong>', t)
+    # Italic: *text* or _text_ (only single markers remaining)
+    t = _re.sub(r'(?<!\*)\*([^*<\n]+?)\*(?!\*)', r'<em>\1</em>', t)
+    t = _re.sub(r'(?<!_)_([^_<\n]+?)_(?!_)', r'<em>\1</em>', t)
+    # Clean up any leftover bare markers
+    t = t.replace('**', '').replace('__', '')
+    return t
+
+
 @dataclass(frozen=True)
 class PromptSmartness:
     state_dir: Path
@@ -44,18 +61,60 @@ class PromptSmartness:
 
     def render_llm_text_html(self, text: str) -> str:
         """
-        Render assistant text as safe HTML, with a tiny subset of markdown (bold only) and
-        best-effort cleanup of common malformed Gemma/GGUF outputs like '**text***'.
+        Render assistant text as safe HTML.
+        Supports: **bold**, *italic*, # headings, - / * bullet lists,
+        double-newline paragraph breaks, inline code `x`, and \n line breaks.
         """
-        raw = str(text or "")
-        escaped = html.escape(raw)
-        try:
-            cooked = re.sub(r"\*\*([^*\n][^\n]*?)\*\*\*?", r"<strong>\1</strong>", escaped)
-        except Exception:
-            cooked = escaped
-        cooked = cooked.replace("**", "").replace("__", "")
-        cooked = cooked.replace("\n", "<br>")
-        return f"<p>{cooked}</p>"
+        import re as _re
+        raw = str(text or "").strip()
+        if not raw:
+            return ""
+
+        # Split on double newlines to get paragraphs / blocks
+        blocks = _re.split(r"\n{2,}", raw)
+        parts: list[str] = []
+
+        for block in blocks:
+            block = block.strip()
+            if not block:
+                continue
+
+            # Heading: # / ## / ###
+            heading_match = _re.match(r'^(#{1,3})\s+(.*)', block)
+            if heading_match:
+                level = min(3, len(heading_match.group(1)))
+                content = html.escape(heading_match.group(2).strip())
+                content = _apply_inline(content)
+                parts.append(f"<h{level}>{content}</h{level}>")
+                continue
+
+            # Bullet list: lines starting with - or *
+            lines = block.splitlines()
+            if all(_re.match(r'^[-*]\s+', l.strip()) for l in lines if l.strip()):
+                items = []
+                for l in lines:
+                    m = _re.match(r'^[-*]\s+(.*)', l.strip())
+                    if m:
+                        items.append(f"<li>{_apply_inline(html.escape(m.group(1)))}</li>")
+                parts.append("<ul>" + "".join(items) + "</ul>")
+                continue
+
+            # Numbered list: lines starting with 1. 2. etc.
+            if all(_re.match(r'^\d+\.\s+', l.strip()) for l in lines if l.strip()):
+                items = []
+                for l in lines:
+                    m = _re.match(r'^\d+\.\s+(.*)', l.strip())
+                    if m:
+                        items.append(f"<li>{_apply_inline(html.escape(m.group(1)))}</li>")
+                parts.append("<ol>" + "".join(items) + "</ol>")
+                continue
+
+            # Regular paragraph — join lines with <br>
+            escaped_lines = [html.escape(l) for l in lines]
+            joined = "<br>".join(escaped_lines)
+            parts.append(f"<p>{_apply_inline(joined)}</p>")
+
+        return "".join(parts)
 
     def ensure_token_compressor_file(self) -> Path:
         self.state_dir.mkdir(parents=True, exist_ok=True)
