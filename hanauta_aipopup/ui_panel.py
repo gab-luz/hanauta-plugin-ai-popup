@@ -830,6 +830,7 @@ class SidebarPanel(QFrame):
             "audio_path": item_audio,
             "audio_playing": audio_playing,
             "is_active_audio": bool(item_audio and current_audio == item_audio),
+            "pending": bool(item.pending),
         }
 
     def _build_web_payload(self) -> dict[str, object]:

@@ -49,7 +49,7 @@ POPUP_JS = r"""
         const outer = document.createElement('div');
         const isUser = (m.role === 'user');
         const eligibleAssistant = (!isUser) && (!m.title || String(m.title) === 'Hanauta AI');
-        outer.className = 'message ' + (isUser ? 'you' : 'ai');
+        outer.className = 'message ' + (isUser ? 'you' : 'ai') + (m.pending ? ' pending' : '');
         const avatar = document.createElement('div');
         avatar.className = 'avatar';
         if (isUser) {
@@ -84,6 +84,18 @@ POPUP_JS = r"""
         bubble.appendChild(meta);
         bubble.appendChild(body);
 
+        if (m.chips && m.chips.length > 0) {
+          const chipsWrap = document.createElement('div');
+          chipsWrap.className = 'chips-wrap';
+          m.chips.forEach((chip) => {
+            const chipSpan = document.createElement('span');
+            chipSpan.className = 'chip-pill';
+            chipSpan.textContent = chip;
+            chipsWrap.appendChild(chipSpan);
+          });
+          bubble.appendChild(chipsWrap);
+        }
+
         if (m.audio_path) {
           const chip = document.createElement('button');
           chip.className = 'audio-chip';
@@ -91,10 +103,22 @@ POPUP_JS = r"""
           const icon = document.createElement('span');
           icon.className = 'md3-icon';
           icon.textContent = (m.is_active_audio && m.audio_playing) ? 'pause' : 'play_arrow';
+          const wave = document.createElement('div');
+          wave.className = 'audio-wave';
+          for (let i = 0; i < 12; i++) {
+            const bar = document.createElement('span');
+            const h = 6 + Math.random() * 14;
+            bar.style.height = h + 'px';
+            if (m.is_active_audio && m.audio_playing) {
+              bar.classList.add('active');
+            }
+            wave.appendChild(bar);
+          }
           const label = document.createElement('span');
           label.className = 'audio-chip-label';
           label.textContent = 'Voice message';
           chip.appendChild(icon);
+          chip.appendChild(wave);
           chip.appendChild(label);
           chip.addEventListener('click', () => toggleAudio(String(m.audio_path)));
           bubble.appendChild(chip);

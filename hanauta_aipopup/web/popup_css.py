@@ -258,6 +258,17 @@ POPUP_CSS = r"""
       padding: 14px 12px 12px 12px;
     }
 
+    .conversation:empty::before,
+    .conversation.empty::before {
+      content: "Start a conversation";
+      display: block;
+      text-align: center;
+      padding: 40px 20px;
+      font-size: 14px;
+      font-weight: 600;
+      color: rgba(255,255,255,0.36);
+    }
+
     .message {
       display: flex;
       gap: 10px;
@@ -307,6 +318,18 @@ POPUP_CSS = r"""
       background: rgba(125,211,252,0.10);
       border-color: rgba(125,211,252,0.20);
       border-bottom-right-radius: 6px;
+    }
+    .chips-wrap { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+    .chip-pill {
+      display: inline-flex;
+      align-items: center;
+      padding: 3px 8px;
+      border-radius: 999px;
+      border: 1px solid rgba(214,195,255,.16);
+      background: rgba(255,255,255,0.04);
+      font-size: 10px;
+      font-weight: 800;
+      color: rgba(255,255,255,0.64);
     }
     .meta {
       display: flex;
@@ -362,6 +385,54 @@ POPUP_CSS = r"""
       overflow: hidden;
       text-overflow: ellipsis;
     }
+    .audio-wave {
+      display: flex;
+      align-items: center;
+      gap: 2px;
+      height: 24px;
+    }
+    .audio-wave span {
+      width: 2px;
+      background: rgba(214,195,255,0.32);
+      border-radius: 1px;
+      transition: height 0.1s ease;
+    }
+    .audio-wave span.active {
+      background: rgba(196,181,253,0.92);
+      animation: waveAnim 0.5s ease-in-out infinite alternate;
+    }
+    .audio-wave span:nth-child(1) { animation-delay: 0.0s; }
+    .audio-wave span:nth-child(2) { animation-delay: 0.05s; }
+    .audio-wave span:nth-child(3) { animation-delay: 0.1s; }
+    .audio-wave span:nth-child(4) { animation-delay: 0.15s; }
+    .audio-wave span:nth-child(5) { animation-delay: 0.2s; }
+    .audio-wave span:nth-child(6) { animation-delay: 0.25s; }
+    .audio-wave span:nth-child(7) { animation-delay: 0.3s; }
+    .audio-wave span:nth-child(8) { animation-delay: 0.35s; }
+    .audio-wave span:nth-child(9) { animation-delay: 0.4s; }
+    .audio-wave span:nth-child(10) { animation-delay: 0.45s; }
+    .audio-wave span:nth-child(11) { animation-delay: 0.5s; }
+    .audio-wave span:nth-child(12) { animation-delay: 0.55s; }
+    @keyframes waveAnim { 0% { transform: scaleY(0.5); } 100% { transform: scaleY(1.2); } }
+
+    .message.pending .bubble { opacity: 0.6; }
+    .message.pending .bubble::after {
+      content: "";
+      display: inline-block;
+      width: 8px;
+      height: 8px;
+      margin-left: 8px;
+      border-radius: 50%;
+      background: var(--accent);
+      animation: pendingDot 1.0s ease-in-out infinite;
+    }
+    .message.pending .bubble::before {
+      content: "Thinking...";
+      font-size: 11px;
+      color: var(--text-dim);
+      font-weight: 700;
+    }
+    @keyframes pendingDot { 0%,100% { opacity: 0.3; } 50% { opacity: 1.0; } }
 
     .composer {
       border-radius: 0;
