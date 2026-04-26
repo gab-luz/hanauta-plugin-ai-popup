@@ -89,6 +89,15 @@ barge_in_enabled               # interrupt TTS on speech
 stt_streaming_enabled          # live transcript loop
 generate_voice_chat_reply      # full voice reply pipeline (tts.py)
 transcribe_voice_audio         # STT dispatch (tts.py)
+_select_tts_for_voice          # selects TTS backend for voice mode (ui_panel.py)
+selectTtsForVoice             # JS bridge slot (ui_chat.py)
+```
+
+### Web bridge slots (PopupWebBridge)
+```
+bridge.selectBackendAndSay      # /say command TTS picker (ui_chat.py)
+bridge.selectTtsForVoice       # voice mode TTS picker (ui_chat.py)
+bridge.dismissCard            # remove a card by id (ui_chat.py)
 ```
 
 ### TTS servers
@@ -123,6 +132,8 @@ apply_theme_globals()          # re-applies Matugen palette to all color constan
 palette_mtime()                # mtime of pyqt_palette.json (for live reload)
 focused_workspace()            # i3 focused workspace rect (style.py)
 render_chat_html()             # builds full chat HTML from history (ui_widgets.py)
+--text, --text-mid, --text-dim   # CSS theme color variables (popup_css.py)
+--accent                       # CSS accent color variable
 ```
 
 ### Web UI (embedded HTML/CSS/JS)
@@ -188,3 +199,15 @@ print('skills:', len(m.available_names()), 'tools')
 ├── tts-audio/                 # generated speech
 └── voice-recordings/          # mic recordings (ephemeral)
 ```
+
+---
+
+## CSS Naming Conventions
+
+Use CSS variables (`var(--text)`, `var(--text-dim)`, `var(--text-mid)`) instead of hardcoded `rgba(255,255,255,...)` for theme-adaptable colors:
+- `.body-text strong`, `.body-text b` → `color: var(--text)`
+- `.body-text em`, `.body-text i` → `color: var(--text-dim)`
+- `.body-text h1-h3` → `color: var(--text)`
+- `.chip-pill` → `color: var(--text-dim)`
+
+Avoid hardcoded white/light colors in CSS - always use theme variables.
