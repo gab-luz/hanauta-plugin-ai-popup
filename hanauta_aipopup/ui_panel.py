@@ -1933,18 +1933,12 @@ class SidebarPanel(QFrame):
         if binary_path is None or gguf_path is None:
             return False
         card_id = f"kobold-launch-{int(time.time()*1000)}"
-        btn_style = (
-            "display:inline-flex;align-items:center;justify-content:center;"
-            "margin:4px 6px 4px 0;padding:8px 20px;"
-            "border-radius:20px;border:none;cursor:pointer;"
-            "font-size:13px;font-weight:600;font-family:inherit;"
-        )
         body = (
             f"<p>KoboldCpp is not running.</p>"
             f"<p>Start it now with {html.escape(gguf_path.name)}?</p>"
-            f'<div style="margin-top:12px;">'
-            f'<button data-cmd="launchKobold" class="md3-button" style="{btn_style}background:var(--accent);color:#fff;">Start</button>'
-            f'<button data-cmd="dismiss" class="md3-button" style="{btn_style}background:rgba(255,255,255,0.1);color:var(--text);">Cancel</button>'
+            f'<div class="card-buttons" style="margin-top:12px;">'
+            f'<button data-cmd="launchKobold" data-card-id="{card_id}" class="filled-button">Start</button>'
+            f'<button data-cmd="dismiss" data-card-id="{card_id}" class="tonal-button">Cancel</button>'
             f'</div>'
         )
         self.add_card(ChatItemData(

@@ -93,11 +93,11 @@ POPUP_JS = r"""
             btn.addEventListener('click', (e) => {
               e.preventDefault();
               const cmd = btn.getAttribute('data-cmd');
+              const cardId = btn.getAttribute('data-card-id') || m.id || '';
               if (cmd === 'launchKobold' && bridge && bridge.launchKobold) {
                 bridge.launchKobold();
-              } else if (cmd === 'dismiss' && bridge && bridge.dismissCard) {
-                const cardId = m.id || '';
-                if (cardId) bridge.dismissCard(cardId);
+              } else if (cmd === 'dismiss' && bridge && bridge.dismissCard && cardId) {
+                bridge.dismissCard(cardId);
               }
             });
           });

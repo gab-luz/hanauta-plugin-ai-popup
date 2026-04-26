@@ -440,6 +440,20 @@ POPUP_CSS = r"""
     .body-text button:active {
       transform: translateY(0);
     }
+    .body-text button.filled-button {
+      background: var(--accent);
+      color: var(--text);
+      padding: 10px 20px;
+      min-width: 72px;
+      border: none;
+    }
+    .body-text button.tonal-button {
+      background: var(--surface-container-high);
+      color: var(--text);
+      padding: 10px 20px;
+      min-width: 72px;
+      border: none;
+    }
     .body-text p {
       margin: 0;
     }
