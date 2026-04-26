@@ -1139,8 +1139,18 @@ class VoiceModelsWarmupWorker(QThread):
             logging.info(f"[VoiceModels] _warm_stt: whisperlive host={host}")
             if not host:
                 raise RuntimeError("WhisperLive host is not configured.")
-            if not _host_reachable(host):
-                raise RuntimeError(f"Unable to reach WhisperLive: {_normalize_host_url(host)}")
+            api_url = _api_url_from_host(host)
+            logging.info(f"[VoiceModels] _warm_stt: checking WhisperLive at {api_url}")
+            if not _host_reachable(api_url, timeout=3.0):
+                raise RuntimeError(f"WhisperLive is not reachable at {api_url}")
+            try:
+                import urllib.request
+                with urllib.request.urlopen(f"{api_url}/v1/models", timeout=5.0) as resp:
+                    status = resp.status
+                    logging.info(f"[VoiceModels] _warm_stt: WhisperLive /v1/models returned {status}")
+            except Exception as exc:
+                logging.warning(f"[VoiceModels] _warm_stt: WhisperLive health check failed: {exc}")
+            logging.info(f"[VoiceModels] _warm_stt: WhisperLive ready at {host}")
             return updates
 
         # Whisper (faster-whisper): ensure venv and do one short transcribe to warm model cache.
@@ -1561,7 +1571,9 @@ class VoiceConversationWorker(QThread):
                             if stt_backend == "whisper":
                                 piece = self._whisper_stream_transcribe(part, partial[-240:])
                             else:
+                                logging.info("[Voice] WhisperLive transcribing audio file: %s", part)
                                 piece = _transcribe_with_whisperlive(part, self.config, prompt=partial[-240:])
+                                logging.info("[Voice] WhisperLive transcript: %s", piece[:50] if piece else "(empty)")
                             if piece:
                                 if partial and not partial.endswith((" ", "\n")):
                                     partial += " "

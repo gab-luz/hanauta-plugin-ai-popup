@@ -485,22 +485,26 @@ def _transcribe_with_whisperlive(audio_path: Path, config: dict[str, object], *,
     WhisperLive (collabora/WhisperLive) can expose an OpenAI-compatible REST endpoint when launched
     with --enable_rest. We talk to it as a local STT provider.
     """
+    logging.info("[WhisperLive] transcribe: audio=%s prompt=%s", audio_path.name, prompt[:30] if prompt else "")
     host = str(config.get("stt_whisperlive_host", "")).strip()
     if not host:
         raise RuntimeError("WhisperLive STT requires a host.")
     api_url = _api_url_from_host(host)
+    logging.info("[WhisperLive] health check: %s", api_url)
     if not _host_reachable(api_url, timeout=3.0):
         raise RuntimeError(f"WhisperLive is not ready at {api_url}")
     try:
         with request.urlopen(f"{api_url}/v1/models", timeout=3.0) as resp:
             if resp.status >= 400:
                 raise RuntimeError(f"WhisperLive returned status {resp.status}")
+            logging.info("[WhisperLive] health: /v1/models status=%d", resp.status)
     except Exception as exc:
         raise RuntimeError(f"WhisperLive health check failed: {exc}")
     model = str(config.get("stt_whisperlive_model", "small")).strip() or "small"
     fields: dict[str, str] = {"model": model, "response_format": "json"}
     if prompt.strip():
         fields["prompt"] = prompt.strip()
+    logging.info("[WhisperLive] posting to %s/model=%s", host, model)
     payload = _http_post_multipart(
         f"{_api_url_from_host(host)}/v1/audio/transcriptions",
         fields=fields,
@@ -509,6 +513,7 @@ def _transcribe_with_whisperlive(audio_path: Path, config: dict[str, object], *,
         timeout=240.0,
     )
     text = str(payload.get("text", "")).strip()
+    logging.info("[WhisperLive] result: %s", text[:50] if text else "(empty)")
     if not text:
         raise RuntimeError("WhisperLive STT returned no text.")
     return text
