@@ -113,37 +113,91 @@ def _run(cmd: list[str], timeout: float = 8.0) -> str:
     return out or "(done)"
 
 
-def _resolve_device(hint: str) -> str:
-    """Return a device ID matching the hint, or the first reachable device."""
+def _list_all_devices() -> list[tuple[str, str]]:
+    """Return list of (device_id, device_name) for all paired devices."""
     raw = subprocess.run(
-        ["kdeconnect-cli", "--list-available", "--id-only"],
+        ["kdeconnect-cli", "--list-devices"],
         capture_output=True, text=True, timeout=5, check=False,
     ).stdout.strip()
-    ids = [line.strip() for line in raw.splitlines() if line.strip()]
-    if not ids:
-        # Fall back to all devices
-        raw = subprocess.run(
-            ["kdeconnect-cli", "--list-devices", "--id-only"],
-            capture_output=True, text=True, timeout=5, check=False,
-        ).stdout.strip()
-        ids = [line.strip() for line in raw.splitlines() if line.strip()]
-    if not ids:
+    devices = []
+    for line in raw.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        parts = line.split(None, 1)
+        dev_id = parts[0] if parts else ""
+        name = parts[1] if len(parts) > 1 else ""
+        devices.append((dev_id, name))
+    return devices
+
+
+def _resolve_device(hint: str) -> str:
+    """Return a device ID matching the hint, or the first reachable device."""
+    devices = _list_all_devices()
+    if not devices:
         raise RuntimeError("No KDE Connect devices found.")
-    if not hint:
-        return ids[0]
-    hint_lower = hint.strip().lower()
-    for dev_id in ids:
-        if hint_lower in dev_id.lower():
-            return dev_id
-    # Try matching by name
-    for dev_id in ids:
-        name_raw = subprocess.run(
-            ["kdeconnect-cli", "--device", dev_id, "--name"],
+
+    # Clean up hint
+    hint_clean = hint.strip().lower()
+    # Remove common prefixes like "my ", "the ", "phone", "手机"
+    for prefix in ("my ", "the ", "phone", "mobile", "android", "ios", "智能手机", "手机"):
+        if hint_clean.startswith(prefix):
+            hint_clean = hint_clean[len(prefix):].strip()
+
+    # Try to get first reachable device if no hint
+    if not hint_clean:
+        raw = subprocess.run(
+            ["kdeconnect-cli", "--list-available", "--id-only"],
             capture_output=True, text=True, timeout=5, check=False,
         ).stdout.strip()
-        if hint_lower in name_raw.lower():
-            return dev_id
-    return ids[0]
+        available = [line.strip() for line in raw.splitlines() if line.strip()]
+        if available:
+            return available[0]
+        return devices[0][0]
+
+    # Score-based matching: higher is better match
+    def _score(dev_name: str) -> int:
+        name_lower = dev_name.lower()
+        score = 0
+        # Exact substring match
+        if hint_clean in name_lower:
+            score += 100
+        # Word-by-word match
+        hint_words = hint_clean.split()
+        for word in hint_words:
+            if word in name_lower:
+                score += 50
+        # Partial match: "poco" in "poco m4 5g" or "m4" in "poco m4 5g"
+        for word in hint_words:
+            for part in name_lower.split():
+                if word.startswith(part) or part.startswith(word):
+                    score += 25
+        # Prefer phones (contain phone-related keywords)
+        phone_keywords = ("phone", "mobile", "android", "poco", "oneplus", "samsung", "xiaomi", "pixel", "iphone")
+        for kw in phone_keywords:
+            if kw in name_lower:
+                score += 10
+        return score
+
+    best_id = devices[0][0]
+    best_score = -1
+    for dev_id, dev_name in devices:
+        score = _score(dev_name)
+        if score > best_score:
+            best_score = score
+            best_id = dev_id
+
+    # If no good match, try first available
+    if best_score < 10:
+        raw = subprocess.run(
+            ["kdeconnect-cli", "--list-available", "--id-only"],
+            capture_output=True, text=True, timeout=5, check=False,
+        ).stdout.strip()
+        available = [line.strip() for line in raw.splitlines() if line.strip()]
+        if available:
+            best_id = available[0]
+
+    return best_id
 
 
 def dispatch(name: str, args: dict) -> str:
