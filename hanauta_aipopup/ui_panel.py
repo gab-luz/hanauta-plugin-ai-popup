@@ -1208,14 +1208,18 @@ class SidebarPanel(QFrame):
         )
         logging.info("[VoiceModels] BEFORE worker creation")
         worker = VoiceModelsWarmupWorker(config, self.profile_by_key, self.backend_settings, selection)
+        print(f"[VoiceModels] Worker created, id={id(worker)}, selection={selection}")
         logging.info("[VoiceModels] AFTER worker creation, worker id=%s", id(worker))
         self._voice_models_worker = worker
 
+        print("[VoiceModels] Connecting signals...")
         def _on_progress(title: str, detail: str) -> None:
+            print(f"[VoiceModels] progress: {title} - {detail}")
             logging.info("[VoiceModels] progress: %s - %s", title, detail)
             self._add_runtime_status_card(str(title), str(detail), chips=["voice", "models"])
 
         def _on_ok(raw_payload: str) -> None:
+            print(f"[VoiceModels] finished_ok: {raw_payload[:100] if raw_payload else 'empty'}")
             logging.info("[VoiceModels] finished_ok: %s", raw_payload[:200] if raw_payload else "empty")
             self._voice_models_busy = False
             self._voice_models_worker = None
@@ -1269,6 +1273,7 @@ class SidebarPanel(QFrame):
             )
 
         def _on_fail(message: str) -> None:
+            print(f"[VoiceModels] failed: {message}")
             logging.exception("[VoiceModels] failed: %s", message)
             self._voice_models_busy = False
             self._voice_models_worker = None
@@ -1285,7 +1290,9 @@ class SidebarPanel(QFrame):
         worker.progress.connect(_on_progress)
         worker.finished_ok.connect(_on_ok)
         worker.failed.connect(_on_fail)
+        print(f"[VoiceModels] Starting worker thread...")
         worker.start()
+        print(f"[VoiceModels] worker.start() called, isRunning={worker.isRunning()}")
 
     def _web_stop_voice_models(self) -> None:
         if self._voice_models_worker is not None and self._voice_models_worker.isRunning():

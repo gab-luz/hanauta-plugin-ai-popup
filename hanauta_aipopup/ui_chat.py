@@ -1073,24 +1073,29 @@ class VoiceModelsWarmupWorker(QThread):
         self.progress.emit(str(title).strip() or "Models", str(detail).strip())
 
     def run(self) -> None:
+        print(f"[VoiceModels] START selection={self.selection}")
         logging.info(f"[VoiceModels] START selection={self.selection} config keys={list(self.config.keys())}")
         try:
             updates: dict[str, dict[str, object]] = {}
             loaded: dict[str, bool] = {"stt": False, "llm": False, "tts": False}
 
             if self.selection.get("stt", False):
+                print("[VoiceModels] === STT warmup start ===")
                 logging.info("[VoiceModels] === STT warmup start ===")
                 self._emit("Starting STT", "Preparing speech-to-text backend.")
                 stt_updates = self._warm_stt()
+                print("[VoiceModels] === STT warmup done ===")
                 logging.info(f"[VoiceModels] === STT warmup done updates={stt_updates} ===")
                 if stt_updates:
                     updates.update(stt_updates)
                 loaded["stt"] = True
 
             if self.selection.get("llm", False):
+                print("[VoiceModels] === LLM warmup start ===")
                 logging.info("[VoiceModels] === LLM warmup start ===")
                 self._emit("Starting LLM", "Preparing the chat backend for voice mode.")
                 llm_updates = self._warm_llm()
+                print("[VoiceModels] === LLM warmup done ===")
                 logging.info(f"[VoiceModels] === LLM warmup done updates={llm_updates} ===")
                 if llm_updates:
                     updates.update(llm_updates)
