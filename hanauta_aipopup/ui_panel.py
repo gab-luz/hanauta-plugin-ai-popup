@@ -217,30 +217,11 @@ class SidebarPanel(QFrame):
         self._hidden_hero = self._build_hero()
         self._hidden_backend_strip = self._build_backend_strip()
 
-        chat_header = QFrame()
-        chat_header.setFixedHeight(44)
-        chat_header.setStyleSheet(f"background: {rgba(CARD_BG, 0.85)}; border-bottom: 1px solid {rgba(BORDER_SOFT, 0.5)};")
-        chat_header_layout = QHBoxLayout(chat_header)
-        chat_header_layout.setContentsMargins(16, 0, 16, 0)
+        # chat_header Qt widget removed — web UI has its own header.
+        # Keep button object alive for _show_chat_list signal connection.
         self.chat_list_btn = QPushButton("☰  Chat list")
-        self.chat_list_btn.setFont(QFont(self.ui_font, 11, QFont.Weight.Medium))
-        self.chat_list_btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
-        self.chat_list_btn.setStyleSheet(f"""
-            QPushButton {{
-                background: transparent;
-                border: none;
-                color: {UI_TEXT_STRONG};
-                padding: 8px 12px;
-                border-radius: 8px;
-            }}
-            QPushButton:hover {{
-                background: {rgba(HOVER_BG, 0.6)};
-            }}
-        """)
         self.chat_list_btn.clicked.connect(self._show_chat_list)
-        chat_header_layout.addWidget(self.chat_list_btn)
-        chat_header_layout.addStretch()
-        root.addWidget(chat_header)
+
 
         self.chat_view = ChatWebView()
         self.chat_view.audio_state_changed.connect(self._sync_web_ui)

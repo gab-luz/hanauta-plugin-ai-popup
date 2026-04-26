@@ -131,7 +131,7 @@ class DemoWindow(QMainWindow):
         self.layout.setContentsMargins(0, 0, 0, 0)
         self._build_panel()
 
-        self.resize(452, 650)
+        self.resize(452, 880)
         self._place_window()
         self.setWindowOpacity(1.0)
 
