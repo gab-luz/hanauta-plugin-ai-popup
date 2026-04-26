@@ -45,7 +45,18 @@ POPUP_JS = r"""
       const assistant = (state && state.assistant) ? state.assistant : {};
       const assistantName = assistant && assistant.name ? String(assistant.name) : 'Hanauta AI';
       const assistantPhoto = assistant && assistant.avatar_url ? String(assistant.avatar_url) : '';
-      (messages || []).forEach((m) => {
+      const list = (messages || []);
+      if (!list.length) {
+        const empty = document.createElement('div');
+        empty.className = 'empty-state';
+        empty.innerHTML =
+          `<div class="empty-title">Start a conversation</div>` +
+          `<div class="empty-copy">Type a message below. <span class="kbd">Enter</span> sends • <span class="kbd">Shift+Enter</span> newline.</div>` +
+          `<div class="empty-row"><span class="pill">/voice</span><span class="pill">/image</span><span class="pill">/say</span></div>`;
+        convo.appendChild(empty);
+        return;
+      }
+      list.forEach((m) => {
         const outer = document.createElement('div');
         const isUser = (m.role === 'user');
         const eligibleAssistant = (!isUser) && (!m.title || String(m.title) === 'Hanauta AI');
@@ -97,31 +108,49 @@ POPUP_JS = r"""
         }
 
         if (m.audio_path) {
-          const chip = document.createElement('button');
-          chip.className = 'audio-chip';
-          chip.type = 'button';
+          const playing = !!(m.is_active_audio && m.audio_playing);
+          const card = document.createElement('button');
+          card.className = 'audio-card' + (playing ? ' is-playing' : '');
+          card.type = 'button';
+          card.addEventListener('click', () => toggleAudio(String(m.audio_path)));
+
+          const play = document.createElement('div');
+          play.className = 'audio-play';
           const icon = document.createElement('span');
           icon.className = 'md3-icon';
-          icon.textContent = (m.is_active_audio && m.audio_playing) ? 'pause' : 'play_arrow';
+          icon.textContent = playing ? 'pause' : 'play_arrow';
+          play.appendChild(icon);
+
           const wave = document.createElement('div');
           wave.className = 'audio-wave';
-          for (let i = 0; i < 12; i++) {
+          const samples = Array.isArray(m.audio_waveform) ? m.audio_waveform : [];
+          const stub = [18, 26, 42, 58, 73, 54, 37, 24, 33, 49, 67, 54, 39, 28, 34, 51, 45, 30, 22, 36, 48, 41, 27, 22, 31, 44, 28, 18];
+          const values = (samples && samples.length) ? samples : stub;
+          const activeCut = Math.max(6, Math.min(values.length, playing ? 16 : 10));
+          values.slice(0, 28).forEach((amp, idx) => {
             const bar = document.createElement('span');
-            const h = 6 + Math.random() * 14;
+            const a = Math.max(0, Math.min(100, Number(amp || 0)));
+            const h = 6 + Math.round((a / 100.0) * 18);
             bar.style.height = h + 'px';
-            if (m.is_active_audio && m.audio_playing) {
-              bar.classList.add('active');
-            }
+            if (idx < activeCut) bar.classList.add('active');
             wave.appendChild(bar);
-          }
-          const label = document.createElement('span');
-          label.className = 'audio-chip-label';
-          label.textContent = 'Voice message';
-          chip.appendChild(icon);
-          chip.appendChild(wave);
-          chip.appendChild(label);
-          chip.addEventListener('click', () => toggleAudio(String(m.audio_path)));
-          bubble.appendChild(chip);
+          });
+
+          const meta = document.createElement('div');
+          meta.className = 'audio-meta';
+          const dur = document.createElement('div');
+          dur.className = 'audio-duration';
+          dur.textContent = m.audio_duration || '';
+          const lab = document.createElement('div');
+          lab.className = 'audio-label';
+          lab.textContent = 'Voice';
+          meta.appendChild(dur);
+          meta.appendChild(lab);
+
+          card.appendChild(play);
+          card.appendChild(wave);
+          card.appendChild(meta);
+          bubble.appendChild(card);
         }
         outer.appendChild(avatar);
         outer.appendChild(bubble);

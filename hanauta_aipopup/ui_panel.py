@@ -104,6 +104,7 @@ from .ui_widgets import (
     SurfaceFrame, FadeCard, BackendPill, AntiAliasButton, ActionIcon,
     HeaderBadge, _backend_icon, _apply_antialias_font,
     _button_css_weight, _button_qfont_weight,
+    _audio_duration_label,
 )
 from .ui_chat import (
     ChatWebView, VoiceModeWebView, PopupWebView,
@@ -112,6 +113,7 @@ from .ui_chat import (
 )
 from .ui_chat_cards import MessageCard, ComposerBar
 from .ui_dialogs import CharacterLibraryDialog, VoiceModeDialog
+from .html_sanitize import sanitize_message_html
 
 LOGGER = logging.getLogger("hanauta.ai_popup")
 
@@ -205,12 +207,10 @@ class SidebarPanel(QFrame):
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
 
-        # Keep the legacy widget tree alive off-screen for state plumbing and audio playback,
-        # but render the actual popup as a web app via QtWebEngine.
+        # Build hero off-screen — its child widgets (voice_button, header_status, etc.)
+        # are referenced throughout the panel but the frame itself is not shown.
         self._hidden_hero = self._build_hero()
         self._hidden_backend_strip = self._build_backend_strip()
-        root.addWidget(self._hidden_hero)
-        root.addWidget(self._hidden_backend_strip)
 
         chat_header = QFrame()
         chat_header.setFixedHeight(44)
@@ -819,15 +819,28 @@ class SidebarPanel(QFrame):
         current_audio = str(getattr(self.chat_view, "_active_audio_path", "") or "")
         audio_playing = bool(getattr(self.chat_view, "_audio_playing", False))
         item_audio = str(Path(item.audio_path).expanduser().resolve()) if item.audio_path.strip() else ""
+        waveform: list[int] = []
+        duration_label = ""
+        if item_audio:
+            waveform = list(item.audio_waveform or [])
+            if not waveform:
+                try:
+                    waveform = _waveform_from_hanauta_service(Path(item_audio), bars=28)
+                    item.audio_waveform = list(waveform)
+                except Exception:
+                    waveform = []
+            duration_label = _audio_duration_label(item_audio)
         return {
             "role": item.role,
             "title": item.title,
             "meta": item.meta,
             "timestamp": float(item.created_at or time.time()),
             "timestamp_label": _chat_timestamp_label(item.created_at),
-            "body_html": item.body,
+            "body_html": sanitize_message_html(item.body, allow_html=True),
             "chips": [chip.text for chip in item.chips],
             "audio_path": item_audio,
+            "audio_waveform": waveform,
+            "audio_duration": duration_label,
             "audio_playing": audio_playing,
             "is_active_audio": bool(item_audio and current_audio == item_audio),
             "pending": bool(item.pending),
@@ -2215,5 +2228,4 @@ class SidebarPanel(QFrame):
         self._pending_user_message = text
         self._set_pending_state(self.current_profile.label, "Connecting to backend…", "text generation")
         self._text_response_timer.start(200)
-
 

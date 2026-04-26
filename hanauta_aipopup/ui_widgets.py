@@ -27,6 +27,7 @@ from .style import (
     HOVER_BG, TEXT, TEXT_DIM, TEXT_MID, UI_ICON_ACTIVE, UI_ICON_DIM, THEME,
     mix, rgba, ACCENT_ALT, ASSISTANT_BG, CHAT_SURFACE_BG, CHAT_TEXT, UI_TEXT_STRONG, USER_BG,)
 from .fonts import load_ui_font, button_css_weight
+from .html_sanitize import sanitize_message_html
 
 import logging
 LOGGER = logging.getLogger("hanauta.ai_popup")
@@ -375,7 +376,7 @@ def _audio_wave_inline_html(samples: list[int], is_playing: bool) -> str:
     return "".join(bars)
 
 
-def render_chat_html(
+def _render_chat_html_legacy(
     history: list[ChatItemData],
     *,
     active_audio_path: str = "",
@@ -399,7 +400,9 @@ def render_chat_html(
             is_active = bool(active_audio_path and current == active_audio_path)
             chip_label = "Pause audio" if (is_active and audio_playing) else "Play audio"
             tooltip = html.escape(Path(current).name)
-            samples = item.audio_waveform or _waveform_from_hanauta_service(Path(current), bars=24)
+            # Legacy renderer: avoid depending on the TTS module. If no waveform is present,
+            # fall back to a static stub so we never crash the UI.
+            samples = list(item.audio_waveform or [])
             waveform = _audio_wave_inline_html(samples, is_active and audio_playing)
             card_border = "#7e72d6" if (is_active and audio_playing) else "#655da8"
             icon_color = "#f4eeff"
@@ -681,7 +684,7 @@ def render_chat_html(
     """
 
 
-def render_voice_mode_html(
+def _render_voice_mode_html_legacy(
     *,
     status: str,
     transcript: str,
@@ -1099,6 +1102,273 @@ def render_voice_mode_html(
     """
 
 
+def _qt_chat_doc_css() -> str:
+    # Keep CSS minimal for QTextDocument/QTextBrowser compatibility.
+    return f"""
+      html, body {{
+        margin: 0;
+        padding: 0;
+        background: {CHAT_SURFACE_BG};
+        color: {TEXT};
+        font-family: system-ui, sans-serif;
+      }}
+      body {{
+        padding: 10px 10px 14px 10px;
+      }}
+      a {{
+        color: {ACCENT};
+        text-decoration: none;
+      }}
+      pre {{
+        background: {rgba(CARD_BG_SOFT, 0.90)};
+        border: 1px solid {rgba(BORDER_SOFT, 0.92)};
+        padding: 10px 12px;
+        border-radius: 14px;
+        white-space: pre-wrap;
+      }}
+      code {{
+        background: {rgba(CARD_BG_SOFT, 0.82)};
+        padding: 2px 6px;
+        border-radius: 10px;
+      }}
+      img {{
+        max-width: 100%;
+        border-radius: 16px;
+        border: 1px solid {rgba(BORDER_SOFT, 0.92)};
+      }}
+      blockquote {{
+        margin: 8px 0;
+        padding: 8px 12px;
+        background: {rgba(CARD_BG_SOFT, 0.22)};
+        border-left: 3px solid {rgba(ACCENT, 0.55)};
+        border-radius: 14px;
+      }}
+    """.strip()
+
+
+def _qt_avatar_badge(text: str, *, is_user: bool) -> str:
+    bg = ACCENT_SOFT if is_user else rgba(CARD_BG_SOFT, 0.92)
+    border = rgba(ACCENT_ALT, 0.22) if is_user else rgba(ACCENT, 0.18)
+    fg = ACCENT_ALT if is_user else ACCENT
+    glyph = (text or "").strip()[:2].upper() or ("Y" if is_user else "AI")
+    return (
+        '<span style="display:inline-block;'
+        'width:28px;height:28px;line-height:28px;'
+        'text-align:center;vertical-align:top;'
+        'border-radius:14px;'
+        f'background:{bg};border:1px solid {border};'
+        f'color:{fg};font-size:11px;font-weight:700;">'
+        f"{html.escape(glyph)}</span>"
+    )
+
+
+def _qt_render_chip_row(chips: list[SourceChipData]) -> str:
+    items = [
+        str(chip.text or "").strip()
+        for chip in (chips or [])
+        if str(chip.text or "").strip() and not _looks_like_audio_filename(str(chip.text or ""))
+    ]
+    if not items:
+        return ""
+    rendered = "".join(
+        '<span style="display:inline-block;'
+        'padding:6px 10px;margin:0 6px 6px 0;'
+        'border-radius:999px;'
+        f'background:{rgba(CARD_BG_SOFT, 0.88)};'
+        f'border:1px solid {rgba(BORDER_SOFT, 0.92)};'
+        f'color:{CHAT_TEXT};font-size:11px;">'
+        f"{html.escape(text)}</span>"
+        for text in items
+    )
+    return f'<div style="margin-top:10px;line-height:1.15;">{rendered}</div>'
+
+
+def _qt_render_audio_row(*, audio_path: str, waveform: list[int], playing: bool) -> str:
+    current = str(Path(audio_path).expanduser())
+    tooltip = html.escape(Path(current).name)
+    href = _audio_chip_href(current)
+    icon_text = "⏸" if playing else "▶"
+    duration = _audio_duration_label(current)
+    border = rgba(ACCENT, 0.62) if playing else rgba(BORDER_ACCENT, 0.72)
+    fill = rgba(ACCENT_SOFT, 0.22) if playing else rgba(CARD_BG_SOFT, 0.18)
+    wave_html = _audio_wave_inline_html(waveform, playing)
+    return (
+        '<div style="margin-top:10px;">'
+        '<table cellspacing="0" cellpadding="0" style="border-collapse:collapse;">'
+        "<tr>"
+        '<td style="vertical-align:middle;">'
+        f'<a href="{href}" title="{tooltip}" style="text-decoration:none;">'
+        f'<span style="display:inline-block;width:32px;height:32px;line-height:32px;'
+        f'text-align:center;border-radius:16px;'
+        f'background:{rgba(ACCENT, 0.82)};'
+        f'border:1px solid {rgba(ACCENT, 0.38)};'
+        f'color:{THEME.active_text};font-weight:700;">{icon_text}</span>'
+        "</a>"
+        "</td>"
+        '<td style="padding-left:10px;vertical-align:middle;">'
+        f'<span style="display:inline-block;padding:8px 10px;border-radius:14px;'
+        f'background:{fill};border:1px solid {border};line-height:0;">{wave_html}</span>'
+        "</td>"
+        '<td style="padding-left:10px;vertical-align:middle;">'
+        f'<span style="color:{TEXT_DIM};font-size:11px;font-weight:700;">{html.escape(duration)}</span>'
+        "</td>"
+        "</tr></table></div>"
+    )
+
+
+def _qt_render_message(
+    item: ChatItemData,
+    *,
+    active_audio_path: str,
+    audio_playing: bool,
+    allow_message_html: bool,
+) -> str:
+    is_user = item.role == "user"
+    bubble_bg = USER_BG if is_user else ASSISTANT_BG
+    bubble_border = rgba(BORDER_ACCENT, 0.95) if is_user else rgba(BORDER_SOFT, 0.92)
+    title_color = ACCENT_ALT if is_user else ACCENT
+    avatar = _qt_avatar_badge("Y" if is_user else "AI", is_user=is_user)
+
+    safe_body = sanitize_message_html(item.body, allow_html=allow_message_html)
+    if not safe_body.strip() and item.pending:
+        safe_body = f'<p style="margin:0;color:{TEXT_DIM};">Thinking…</p>'
+
+    title = html.escape(str(item.title or "").strip() or ("You" if is_user else "Hanauta AI"))
+    meta = html.escape(str(item.meta or "").strip())
+    header = (
+        f'<div style="margin:0 0 8px 0;">'
+        f'<span style="color:{title_color};font-size:12px;font-weight:700;">{title}</span>'
+        + (f'<span style="color:{TEXT_DIM};font-size:11px;margin-left:8px;">{meta}</span>' if meta else "")
+        + "</div>"
+    )
+
+    audio_html = ""
+    if item.audio_path.strip():
+        current = str(Path(item.audio_path).expanduser().resolve())
+        playing = bool(audio_playing and active_audio_path and str(active_audio_path) == current)
+        audio_html = _qt_render_audio_row(
+            audio_path=current,
+            waveform=list(item.audio_waveform or []),
+            playing=playing,
+        )
+
+    chips_html = _qt_render_chip_row(item.chips)
+
+    bubble = (
+        f'<div style="display:inline-block;max-width:520px;'
+        f'background:{bubble_bg};border:1px solid {bubble_border};'
+        f'border-radius:18px;padding:12px 14px;">'
+        f"{header}"
+        f'<div style="color:{CHAT_TEXT};font-size:13px;line-height:1.55;">{safe_body}</div>'
+        f"{audio_html}"
+        f"{chips_html}"
+        f"</div>"
+    )
+
+    if is_user:
+        return (
+            '<table width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;margin:0 0 12px 0;">'
+            "<tr>"
+            '<td width="100%"></td>'
+            f'<td style="padding-right:10px;vertical-align:top;">{bubble}</td>'
+            f'<td style="vertical-align:top;">{avatar}</td>'
+            "</tr></table>"
+        )
+    return (
+        '<table width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;margin:0 0 12px 0;">'
+        "<tr>"
+        f'<td style="vertical-align:top;padding-right:10px;">{avatar}</td>'
+        f'<td style="padding-right:10px;vertical-align:top;">{bubble}</td>'
+        '<td width="100%"></td>'
+        "</tr></table>"
+    )
+
+
+def render_chat_html(
+    history: list[ChatItemData],
+    *,
+    active_audio_path: str = "",
+    audio_playing: bool = False,
+    allow_message_html: bool = True,
+) -> str:
+    blocks: list[str] = []
+    for item in history:
+        blocks.append(
+            _qt_render_message(
+                item,
+                active_audio_path=active_audio_path,
+                audio_playing=audio_playing,
+                allow_message_html=allow_message_html,
+            )
+        )
+    if not blocks:
+        blocks.append(
+            f"""
+            <div style="padding:18px 16px;border:1px dashed {rgba(BORDER_SOFT, 0.92)};
+                        border-radius:18px;background:{rgba(CARD_BG_SOFT, 0.16)};">
+              <div style="font-size:14px;font-weight:700;color:{UI_TEXT_STRONG};margin-bottom:6px;">No conversation yet</div>
+              <div style="font-size:13px;line-height:1.55;color:{TEXT_DIM};">
+                Pick a backend and start typing. Try <code>/image your prompt</code> with an SD backend.
+              </div>
+            </div>
+            """
+        )
+    style = _qt_chat_doc_css()
+    return f"<html><head><style>{style}</style></head><body>{''.join(blocks)}</body></html>"
+
+
+def render_voice_mode_html(
+    *,
+    status: str,
+    transcript: str,
+    response: str,
+    character_name: str = "",
+    character_image_url: str = "",
+    listening: bool = False,
+    speaking: bool = False,
+) -> str:
+    state_label = "Listening" if listening else "Speaking" if speaking else (status.strip() or "Voice mode")
+    character_html = html.escape(character_name.strip() or "Hanauta AI")
+    transcript_html = html.escape(transcript.strip() or "Say something whenever you're ready.")
+    response_html = html.escape(response.strip() or ("Captions appear here while speaking." if speaking else "Captions appear here."))
+    ring = rgba(ACCENT, 0.72) if listening else rgba(ACCENT_ALT, 0.62) if speaking else rgba(BORDER_ACCENT, 0.62)
+    fill = rgba(ACCENT_SOFT, 0.18) if listening else rgba(ACCENT_SOFT, 0.12) if speaking else rgba(CARD_BG_SOFT, 0.12)
+    if character_image_url.strip():
+        safe_url = html.escape(character_image_url.strip())
+        photo = (
+            f'<img src="{safe_url}" alt="{character_html}" '
+            'style="width:100%;height:100%;object-fit:cover;border-radius:22px;" />'
+        )
+    else:
+        photo = f'<div style="width:100%;height:100%;line-height:44px;text-align:center;font-weight:900;color:{TEXT_MID};">AI</div>'
+
+    style = f"""
+      html, body {{
+        margin: 0;
+        padding: 0;
+        background: {CHAT_SURFACE_BG};
+        color: {TEXT};
+        font-family: system-ui, sans-serif;
+      }}
+      body {{ padding: 16px; }}
+    """.strip()
+    return (
+        f"<html><head><style>{style}</style></head><body>"
+        f'<div style="border-radius:22px;border:1px solid {rgba(BORDER_SOFT, 0.92)};'
+        f'background:{rgba(CARD_BG, 0.78)};padding:16px;">'
+        f'<div style="color:{TEXT_DIM};font-size:11px;font-weight:700;margin-bottom:10px;">Hands-free Voice Mode</div>'
+        f'<div style="font-size:14px;font-weight:800;color:{UI_TEXT_STRONG};margin-bottom:6px;">{character_html}</div>'
+        f'<div style="font-size:22px;font-weight:900;color:{UI_TEXT_STRONG};margin-bottom:10px;">{html.escape(state_label)}</div>'
+        f'<table cellspacing="0" cellpadding="0" style="border-collapse:collapse;margin:10px auto 12px auto;">'
+        f'<tr><td style="width:44px;height:44px;border-radius:22px;overflow:hidden;'
+        f'background:{fill};border:2px solid {ring};">{photo}</td></tr></table>'
+        f'<div style="border-radius:18px;border:1px solid {rgba(BORDER_SOFT, 0.82)};'
+        f'background:{rgba(CARD_BG_SOFT, 0.18)};padding:12px 14px;color:{TEXT_MID};'
+        f'font-size:13px;line-height:1.55;">{response_html}</div>'
+        f'<div style="margin-top:12px;color:{TEXT_DIM};font-size:11px;font-weight:700;">You</div>'
+        f'<div style="margin-top:6px;color:{TEXT};font-size:13px;line-height:1.55;">{transcript_html}</div>'
+        f"</div></body></html>"
+    )
+
+
 from .web.popup_html import render_popup_html  # noqa: E402
-
-

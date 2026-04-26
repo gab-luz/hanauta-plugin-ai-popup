@@ -21,6 +21,7 @@ from PyQt6.QtWidgets import (
 )
 
 from .models import ChatItemData, SourceChipData
+from .html_sanitize import sanitize_message_html
 from .style import (
     ACCENT, ACCENT_SOFT, BORDER_SOFT, CARD_BG, CARD_BG_SOFT,
     HOVER_BG, TEXT, TEXT_DIM, TEXT_MID, THEME,
@@ -166,7 +167,7 @@ class MessageCard(FadeCard):
             }}
             """
         )
-        browser.setHtml(item.body)
+        browser.setHtml(sanitize_message_html(item.body, allow_html=True))
         browser.document().contentsChanged.connect(lambda b=browser: self._fit_browser_height(b))
         bubble_layout.addWidget(browser)
 
@@ -307,5 +308,4 @@ class ComposerBar(QFrame):
             self.send_requested.emit(text)
             self.entry.clear()
             self.entry._sync_height()
-
 

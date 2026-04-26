@@ -258,8 +258,14 @@ def popup_web_theme_css() -> str:
   --text-dim: {text_dim};
   --accent: {theme.primary};
   --accent-2: {theme.secondary};
+  --accent-soft: {accent_soft};
+  --accent-soft-hover: {accent_soft_hover};
   --border: {border};
   --border-2: {border_soft};
+  --card: {card_bg};
+  --card-2: {chip_bg};
+  --you-bg: {you_bg};
+  --you-border: {you_border};
   --shadow: {shadow};
   --shadow-2: {shadow_strong};
 }}

@@ -212,6 +212,7 @@ class PopupWebView(QWidget):
             self.view = fallback  # type: ignore[assignment]
             return
         self.view = QWebEngineView(self)
+        self.view.setPage(_PopupWebPage(self.view))
         self.view.setContextMenuPolicy(Qt.ContextMenuPolicy.NoContextMenu)
         self.view.setStyleSheet("background: transparent; border: none;")
         self.view.page().setBackgroundColor(QColor(0, 0, 0, 0))
@@ -249,6 +250,16 @@ class _AudioWebPage(QWebEnginePage):
         if nav_type == QWebEnginePage.NavigationType.NavigationTypeLinkClicked:
             self.link_clicked.emit(url)
             return False
+        return super().acceptNavigationRequest(url, nav_type, is_main_frame)
+
+
+class _PopupWebPage(QWebEnginePage):
+    def acceptNavigationRequest(self, url: QUrl, nav_type, is_main_frame: bool) -> bool:  # type: ignore[override]
+        if nav_type == QWebEnginePage.NavigationType.NavigationTypeLinkClicked:
+            scheme = (url.scheme() or "").lower()
+            if scheme in {"http", "https", "mailto", "file"}:
+                QDesktopServices.openUrl(url)
+                return False
         return super().acceptNavigationRequest(url, nav_type, is_main_frame)
 
 
@@ -1758,5 +1769,3 @@ class VoiceConversationWorker(QThread):
                 self.failed.emit(str(exc).strip() or exc.__class__.__name__)
                 time.sleep(0.8)
         self.status_changed.emit("Voice mode stopped")
-
-

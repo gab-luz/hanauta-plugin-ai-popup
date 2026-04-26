@@ -22,6 +22,7 @@ __POPUP_THEME_CSS__
   <div class="window">
     <div class="topbar">
       <div class="brand">
+        <div class="logo" aria-hidden="true">◉</div>
         <div class="title-wrap">
           <div style="display:flex; align-items:center; gap:8px;">
             <div class="title">Hanauta AI</div>

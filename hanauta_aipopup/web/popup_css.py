@@ -14,6 +14,8 @@ POPUP_CSS = r"""
       --text-dim: rgba(255,255,255,0.52);
       --accent: rgba(196, 181, 253, 0.95);
       --accent-2: rgba(125, 211, 252, 0.92);
+      --accent-soft: rgba(196, 181, 253, 0.16);
+      --accent-soft-hover: rgba(196, 181, 253, 0.22);
       --ok: rgba(57, 255, 136, 0.92);
       --warn: rgba(255, 212, 96, 0.92);
       --bad: rgba(255, 92, 130, 0.92);
@@ -21,6 +23,8 @@ POPUP_CSS = r"""
       --border-2: rgba(214,195,255,.08);
       --shadow: rgba(0,0,0,0.35);
       --shadow-2: rgba(0,0,0,0.55);
+      --you-bg: rgba(125,211,252,0.10);
+      --you-border: rgba(125,211,252,0.22);
       --radius: 22px;
       --radius-2: 18px;
       --radius-3: 14px;
@@ -129,7 +133,17 @@ POPUP_CSS = r"""
     }
     .brand .title-wrap { min-width: 0; }
     .brand .title { font-size: 14px; font-weight: 950; line-height: 1.05; letter-spacing: 0; }
-    .brand .status { display: none; }
+    .brand .status {
+      display: block;
+      margin-top: 4px;
+      font-size: 11px;
+      font-weight: 750;
+      color: var(--text-dim);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      max-width: 340px;
+    }
 
     .info-pop {
       position: relative;
@@ -237,8 +251,8 @@ POPUP_CSS = r"""
       gap: 8px;
       padding: 8px 10px;
       border-radius: 999px;
-      border: 1px solid rgba(214,195,255,.12);
-      background: rgba(255,255,255,0.04);
+      border: 1px solid var(--border-2);
+      background: var(--card-2);
       cursor: pointer;
       user-select: none;
       transition: transform .16s ease, background .16s ease, border-color .16s ease;
@@ -247,7 +261,7 @@ POPUP_CSS = r"""
       color: rgba(255,255,255,0.86);
     }
     .backend-pill:hover { transform: translateY(-1px); border-color: rgba(214,195,255,.22); }
-    .backend-pill.active { background: rgba(196,181,253,.16); border-color: rgba(196,181,253,.38); color: rgba(255,255,255,0.94); }
+    .backend-pill.active { background: var(--accent-soft); border-color: var(--border); color: rgba(255,255,255,0.94); }
     .backend-pill img { width: 16px; height: 16px; border-radius: 4px; }
 
     .conversation {
@@ -269,10 +283,56 @@ POPUP_CSS = r"""
       color: rgba(255,255,255,0.36);
     }
 
+    .empty-state {
+      margin: 14px auto 0 auto;
+      max-width: 520px;
+      padding: 18px 16px;
+      border-radius: 18px;
+      border: 1px dashed var(--border);
+      background: rgba(255,255,255,0.03);
+      box-shadow: inset 0 1px 0 rgba(255,255,255,0.06);
+      text-align: left;
+    }
+    .empty-title {
+      font-size: 14px;
+      font-weight: 950;
+      color: var(--text);
+      margin-bottom: 6px;
+    }
+    .empty-copy {
+      font-size: 12px;
+      font-weight: 700;
+      line-height: 1.55;
+      color: var(--text-mid);
+    }
+    .empty-row { margin-top: 12px; display: flex; gap: 8px; flex-wrap: wrap; }
+    .kbd {
+      display: inline-block;
+      padding: 1px 6px;
+      border-radius: 8px;
+      border: 1px solid var(--border-2);
+      background: rgba(255,255,255,0.04);
+      color: var(--text);
+      font-weight: 900;
+      font-size: 11px;
+      letter-spacing: 0;
+    }
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      padding: 5px 10px;
+      border-radius: 999px;
+      border: 1px solid var(--border-2);
+      background: rgba(255,255,255,0.04);
+      color: var(--text-mid);
+      font-weight: 850;
+      font-size: 11px;
+    }
+
     .message {
       display: flex;
       gap: 10px;
-      margin: 8px 2px;
+      margin: 10px 2px;
       align-items: flex-end;
       justify-content: flex-start;
       width: 100%;
@@ -282,19 +342,23 @@ POPUP_CSS = r"""
     .message.you .bubble { order: 1; }
     .message.ai { justify-content: flex-start; }
     .avatar {
-      width: 30px;
-      height: 30px;
-      border-radius: 50%;
+      width: 28px;
+      height: 28px;
+      border-radius: 12px;
       display: grid;
       place-items: center;
       font-weight: 900;
-      background: rgba(255,255,255,0.04);
-      border: 1px solid rgba(214,195,255,.12);
+      background: var(--card-2);
+      border: 1px solid var(--border-2);
       color: rgba(255,255,255,0.86);
       flex: 0 0 auto;
       overflow: hidden;
     }
-    .message.you .avatar { display: none; }
+    .message.you .avatar {
+      background: var(--you-bg);
+      border-color: var(--you-border);
+      color: var(--accent-2);
+    }
     .avatar.has-photo {
       color: transparent;
       border: 0;
@@ -303,20 +367,20 @@ POPUP_CSS = r"""
       box-shadow: 0 0 0 1px rgba(214,195,255,.10);
     }
     .bubble {
-      max-width: min(74%, 340px);
+      max-width: min(78%, 420px);
       border-radius: 18px;
-      border: 1px solid rgba(214,195,255,.10);
-      background: rgba(255,255,255,0.04);
-      padding: 9px 12px;
-      box-shadow: 0 8px 18px rgba(0,0,0,0.12);
+      border: 1px solid var(--border-2);
+      background: var(--card);
+      padding: 10px 12px 11px 12px;
+      box-shadow: 0 10px 22px rgba(0,0,0,0.14);
       overflow: hidden;
     }
     .bubble.ai {
       border-bottom-left-radius: 6px;
     }
     .bubble.you {
-      background: rgba(125,211,252,0.10);
-      border-color: rgba(125,211,252,0.20);
+      background: var(--you-bg);
+      border-color: var(--you-border);
       border-bottom-right-radius: 6px;
     }
     .chips-wrap { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
@@ -345,10 +409,9 @@ POPUP_CSS = r"""
     .meta .time { color: rgba(255,255,255,0.48); font-weight: 750; }
     .body-text {
       font-size: 13px;
-      line-height: 1.45;
+      line-height: 1.50;
       font-weight: 560;
       color: rgba(255,255,255,0.90);
-      white-space: pre-wrap;
       word-break: break-word;
     }
     .body-text p {
@@ -357,39 +420,72 @@ POPUP_CSS = r"""
     .body-text p + p {
       margin-top: 8px;
     }
-    .audio-chip {
+    .body-text a { color: var(--accent); text-decoration: none; }
+    .body-text code {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+      padding: 2px 6px;
+      border-radius: 10px;
+      background: rgba(255,255,255,0.06);
+      border: 1px solid rgba(214,195,255,.10);
+    }
+    .body-text pre {
+      margin: 10px 0 0 0;
+      padding: 10px 12px;
+      border-radius: 16px;
+      background: rgba(255,255,255,0.05);
+      border: 1px solid rgba(214,195,255,.10);
+      overflow-x: auto;
+    }
+    .body-text pre code { border: 0; background: transparent; padding: 0; }
+    .body-text ul, .body-text ol { margin: 8px 0 0 18px; padding: 0; }
+    .body-text li { margin: 4px 0; }
+    .body-text img {
+      display: block;
+      max-width: 100%;
+      border-radius: 16px;
+      margin-top: 10px;
+      border: 1px solid rgba(214,195,255,.10);
+    }
+
+    .audio-card {
       margin-top: 10px;
       width: 100%;
       border: 1px solid rgba(214,195,255,.14);
       background: rgba(255,255,255,0.05);
       color: var(--text);
-      border-radius: 999px;
+      border-radius: 16px;
       padding: 10px 12px;
-      display: inline-flex;
+      display: flex;
       align-items: center;
-      gap: 10px;
+      gap: 12px;
       cursor: pointer;
       user-select: none;
     }
-    .audio-chip:hover {
+    .audio-card:hover {
       background: rgba(255,255,255,0.07);
     }
-    .audio-chip .md3-icon {
-      font-size: 20px;
+    .audio-play {
+      width: 34px;
+      height: 34px;
+      border-radius: 999px;
+      display: grid;
+      place-items: center;
+      background: var(--accent);
+      border: 1px solid rgba(255,255,255,0.14);
+      color: rgba(12, 10, 20, 0.96);
+      flex: 0 0 auto;
     }
-    .audio-chip-label {
-      font-weight: 850;
-      font-size: 12px;
-      color: var(--text);
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
+    .audio-play .md3-icon { font-size: 20px; }
+    .audio-card.is-playing .audio-play {
+      background: rgba(196,181,253,0.98);
+      border-color: rgba(196,181,253,0.42);
     }
     .audio-wave {
       display: flex;
       align-items: center;
       gap: 2px;
       height: 24px;
+      flex: 1 1 auto;
     }
     .audio-wave span {
       width: 2px;
@@ -399,21 +495,26 @@ POPUP_CSS = r"""
     }
     .audio-wave span.active {
       background: rgba(196,181,253,0.92);
-      animation: waveAnim 0.5s ease-in-out infinite alternate;
     }
-    .audio-wave span:nth-child(1) { animation-delay: 0.0s; }
-    .audio-wave span:nth-child(2) { animation-delay: 0.05s; }
-    .audio-wave span:nth-child(3) { animation-delay: 0.1s; }
-    .audio-wave span:nth-child(4) { animation-delay: 0.15s; }
-    .audio-wave span:nth-child(5) { animation-delay: 0.2s; }
-    .audio-wave span:nth-child(6) { animation-delay: 0.25s; }
-    .audio-wave span:nth-child(7) { animation-delay: 0.3s; }
-    .audio-wave span:nth-child(8) { animation-delay: 0.35s; }
-    .audio-wave span:nth-child(9) { animation-delay: 0.4s; }
-    .audio-wave span:nth-child(10) { animation-delay: 0.45s; }
-    .audio-wave span:nth-child(11) { animation-delay: 0.5s; }
-    .audio-wave span:nth-child(12) { animation-delay: 0.55s; }
-    @keyframes waveAnim { 0% { transform: scaleY(0.5); } 100% { transform: scaleY(1.2); } }
+    .audio-meta {
+      display: flex;
+      flex-direction: column;
+      align-items: flex-end;
+      gap: 2px;
+      flex: 0 0 auto;
+      min-width: 54px;
+    }
+    .audio-duration {
+      font-size: 11px;
+      font-weight: 900;
+      color: var(--text);
+      opacity: 0.86;
+    }
+    .audio-label {
+      font-size: 10px;
+      font-weight: 800;
+      color: var(--text-dim);
+    }
 
     .message.pending .bubble { opacity: 0.6; }
     .message.pending .bubble::after {
