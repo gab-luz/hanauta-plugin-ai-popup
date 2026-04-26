@@ -490,34 +490,43 @@ def _transcribe_with_whisperlive(audio_path: Path, config: dict[str, object], *,
     if not host:
         raise RuntimeError("WhisperLive STT requires a host.")
     api_url = _api_url_from_host(host)
+    print(f"[WhisperLive] health check with retries: {api_url}")
     logging.info("[WhisperLive] health check with retries: %s", api_url)
 
     for attempt in range(5):
         try:
             if not _host_reachable(api_url, timeout=3.0):
+                print(f"[WhisperLive] attempt {attempt + 1}/5: host not reachable, waiting...")
                 logging.warning("[WhisperLive] attempt %d: host not reachable", attempt + 1)
                 time.sleep(1.0)
                 continue
             with request.urlopen(f"{api_url}/v1/models", timeout=5.0) as resp:
                 if resp.status >= 400:
+                    print(f"[WhisperLive] attempt {attempt + 1}/5: got status {resp.status}, waiting...")
                     logging.warning("[WhisperLive] attempt %d: got status %d", attempt + 1, resp.status)
                     time.sleep(1.0)
                     continue
+                print(f"[WhisperLive] ready! /v1/models returned status={resp.status}")
                 logging.info("[WhisperLive] health: /v1/models status=%d", resp.status)
                 break
         except Exception as exc:
+            print(f"[WhisperLive] attempt {attempt + 1}/5 failed: {exc}")
             logging.warning("[WhisperLive] attempt %d failed: %s", attempt + 1, exc)
             if attempt < 4:
-                time.sleep(2.0 ** attempt)
+                wait_time = 2.0 ** attempt
+                print(f"[WhisperLive] waiting {wait_time:.0f}s before retry...")
+                time.sleep(wait_time)
             else:
                 raise RuntimeError(f"WhisperLive not ready after 5 attempts: {exc}")
     else:
         raise RuntimeError(f"WhisperLive health check failed after 5 attempts")
 
+    print(f"[WhisperLive] transcribing audio: {audio_path.name}")
     model = str(config.get("stt_whisperlive_model", "small")).strip() or "small"
     fields: dict[str, str] = {"model": model, "response_format": "json"}
     if prompt.strip():
         fields["prompt"] = prompt.strip()
+    print(f"[WhisperLive] POST audio to {host}/v1/audio/transcriptions, model={model}")
     logging.info("[WhisperLive] posting to %s/model=%s", host, model)
     payload = _http_post_multipart(
         f"{_api_url_from_host(host)}/v1/audio/transcriptions",
@@ -527,6 +536,7 @@ def _transcribe_with_whisperlive(audio_path: Path, config: dict[str, object], *,
         timeout=240.0,
     )
     text = str(payload.get("text", "")).strip()
+    print(f"[WhisperLive] result: {text[:100] if text else '(empty)'}")
     logging.info("[WhisperLive] result: %s", text[:50] if text else "(empty)")
     if not text:
         raise RuntimeError("WhisperLive STT returned no text.")
