@@ -440,19 +440,34 @@ POPUP_CSS = r"""
     .body-text button:active {
       transform: translateY(0);
     }
+    .body-text button.filled-button,
+    .body-text button.tonal-button {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      padding: 8px 18px;
+      min-width: 80px;
+      border: none;
+      border-radius: 20px;
+      font-family: var(--font);
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      margin: 4px 6px 4px 0;
+      transition: opacity 0.15s, transform 0.1s;
+    }
+    .body-text button.filled-button:hover  { opacity: 0.88; }
+    .body-text button.tonal-button:hover   { opacity: 0.80; }
+    .body-text button.filled-button:active,
+    .body-text button.tonal-button:active  { transform: scale(0.97); }
     .body-text button.filled-button {
       background: var(--accent);
-      color: var(--text);
-      padding: 10px 20px;
-      min-width: 72px;
-      border: none;
+      color: #1a1025;
     }
     .body-text button.tonal-button {
-      background: var(--surface-container-high);
+      background: rgba(255,255,255,0.10);
       color: var(--text);
-      padding: 10px 20px;
-      min-width: 72px;
-      border: none;
+      border: 1px solid rgba(255,255,255,0.14);
     }
     .body-text p {
       margin: 0;

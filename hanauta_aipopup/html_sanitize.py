@@ -29,6 +29,7 @@ _ALLOWED_TAGS = {
     "b",
     "blockquote",
     "br",
+    "button",
     "code",
     "div",
     "em",
@@ -68,6 +69,7 @@ _GLOBAL_ALLOWED_ATTRS = {
 
 _TAG_ALLOWED_ATTRS: dict[str, set[str]] = {
     "a": {"href", "title"},
+    "button": {"class", "data-cmd", "data-card-id", "type", "style"},
     "img": {"src", "alt", "title", "width", "height"},
     "td": {"colspan", "rowspan", "align", "valign"},
     "th": {"colspan", "rowspan", "align", "valign"},

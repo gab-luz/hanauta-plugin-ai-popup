@@ -942,6 +942,7 @@ class SidebarPanel(QFrame):
                     waveform = []
             duration_label = _audio_duration_label(item_audio)
         return {
+            "id": str(getattr(item, 'id', '') or ''),
             "role": item.role,
             "title": item.title,
             "meta": item.meta,
