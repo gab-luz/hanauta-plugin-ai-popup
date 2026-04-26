@@ -71,6 +71,7 @@ from .http import (
 )
 from .backends import _existing_path, _is_pid_alive, _is_pgid_alive
 from .catalog import _format_bytes
+from .characters import _character_compose_prompt
 from .storage import _chmod_private
 from .prompt_smartness import PromptSmartness
 from .voice import (

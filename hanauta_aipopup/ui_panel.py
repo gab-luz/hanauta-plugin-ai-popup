@@ -205,11 +205,18 @@ class SidebarPanel(QFrame):
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
 
-        header = QFrame()
-        header.setFixedHeight(48)
-        header.setStyleSheet(f"background: {rgba(PANEL_BG, 0.95)};")
-        header_layout = QHBoxLayout(header)
-        header_layout.setContentsMargins(16, 0, 16, 0)
+        # Keep the legacy widget tree alive off-screen for state plumbing and audio playback,
+        # but render the actual popup as a web app via QtWebEngine.
+        self._hidden_hero = self._build_hero()
+        self._hidden_backend_strip = self._build_backend_strip()
+        root.addWidget(self._hidden_hero)
+        root.addWidget(self._hidden_backend_strip)
+
+        chat_header = QFrame()
+        chat_header.setFixedHeight(44)
+        chat_header.setStyleSheet(f"background: {rgba(CARD_BG, 0.85)}; border-bottom: 1px solid {rgba(BORDER_SOFT, 0.5)};")
+        chat_header_layout = QHBoxLayout(chat_header)
+        chat_header_layout.setContentsMargins(16, 0, 16, 0)
         self.chat_list_btn = QPushButton("☰  Chat list")
         self.chat_list_btn.setFont(QFont(self.ui_font, 11, QFont.Weight.Medium))
         self.chat_list_btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
@@ -226,16 +233,10 @@ class SidebarPanel(QFrame):
             }}
         """)
         self.chat_list_btn.clicked.connect(self._show_chat_list)
-        header_layout.addWidget(self.chat_list_btn)
-        header_layout.addStretch()
-        root.addWidget(header)
+        chat_header_layout.addWidget(self.chat_list_btn)
+        chat_header_layout.addStretch()
+        root.addWidget(chat_header)
 
-        # Keep the legacy widget tree alive off-screen for state plumbing and audio playback,
-        # but render the actual popup as a web app via QtWebEngine.
-        self._hidden_hero = self._build_hero()
-        self._hidden_backend_strip = self._build_backend_strip()
-        root.addWidget(self._hidden_hero)
-        root.addWidget(self._hidden_backend_strip)
         self.chat_view = ChatWebView()
         self.chat_view.audio_state_changed.connect(self._sync_web_ui)
         self.chat_view.audio_state_changed.connect(self._handle_audio_state_changed)
