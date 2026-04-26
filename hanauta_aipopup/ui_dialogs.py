@@ -460,6 +460,12 @@ class CharacterLibraryDialog(QDialog):
         layout.addWidget(scenario_label)
         layout.addWidget(scenario_input)
 
+        first_msg_label = QLabel("First message:")
+        first_msg_input = QPlainTextEdit(card.first_message)
+        first_msg_input.setFixedHeight(80)
+        layout.addWidget(first_msg_label)
+        layout.addWidget(first_msg_input)
+
         sys_label = QLabel("System prompt:")
         sys_input = QPlainTextEdit(card.system_prompt)
         sys_input.setFixedHeight(100)
@@ -484,6 +490,7 @@ class CharacterLibraryDialog(QDialog):
         card.description = desc_input.toPlainText().strip()
         card.personality = pers_input.toPlainText().strip()
         card.scenario = scenario_input.toPlainText().strip()
+        card.first_message = first_msg_input.toPlainText().strip()
         card.system_prompt = sys_input.toPlainText().strip()
 
         from .characters import save_character_library
