@@ -193,6 +193,48 @@ def archive_chat_history(items: list["ChatItemData"]) -> Path:
     return path
 
 
+def list_chat_archives() -> list[dict]:
+    from .runtime import CHAT_ARCHIVES_DIR
+    CHAT_ARCHIVES_DIR.mkdir(parents=True, exist_ok=True)
+    archives = []
+    for p in sorted(CHAT_ARCHIVES_DIR.glob("hanauta-chat-archive-*.json"), reverse=True):
+        try:
+            data = json.loads(p.read_text(encoding="utf-8"))
+            archives.append({
+                "path": str(p),
+                "filename": p.name,
+                "exported_at": data.get("exported_at", 0),
+                "message_count": len(data.get("messages", [])),
+                "plain_text": data.get("plain_text", "")[:100],
+            })
+        except Exception:
+            continue
+    return archives
+
+
+def load_chat_archive(path: str) -> list["ChatItemData"] | None:
+    from .models import ChatItemData, SourceChipData
+    try:
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    history = []
+    for msg in data.get("messages", []):
+        timestamp = msg.get("timestamp", time.time())
+        chips = [SourceChipData(str(c)) for c in msg.get("chips", []) if str(c).strip()]
+        history.append(ChatItemData(
+            role=str(msg.get("role", "assistant")),
+            title=str(msg.get("title", "")),
+            body=str(msg.get("body_html", "")),
+            meta=str(msg.get("meta", "")),
+            created_at=timestamp,
+            chips=chips,
+            audio_path=str(msg.get("audio_path", "")),
+            audio_waveform=[],
+        ))
+    return history
+
+
 __all__ = [
     "secure_store_secret",
     "secure_load_secret",
@@ -202,4 +244,6 @@ __all__ = [
     "_chat_timestamp_label",
     "_chat_export_payload",
     "archive_chat_history",
+    "list_chat_archives",
+    "load_chat_archive",
 ]

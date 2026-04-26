@@ -53,6 +53,7 @@ from .style import (
 from .storage import (
     secure_load_secret, secure_store_secret,
     secure_append_chat, secure_load_chat_history, secure_clear_chat_history,
+    list_chat_archives, load_chat_archive,
 )
 from .http import (
     load_backend_settings,
@@ -203,6 +204,31 @@ class SidebarPanel(QFrame):
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
+
+        header = QFrame()
+        header.setFixedHeight(48)
+        header.setStyleSheet(f"background: {rgba(PANEL_BG, 0.95)};")
+        header_layout = QHBoxLayout(header)
+        header_layout.setContentsMargins(16, 0, 16, 0)
+        self.chat_list_btn = QPushButton("☰  Chat list")
+        self.chat_list_btn.setFont(QFont(self.ui_font, 11, QFont.Weight.Medium))
+        self.chat_list_btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        self.chat_list_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: transparent;
+                border: none;
+                color: {UI_TEXT_STRONG};
+                padding: 8px 12px;
+                border-radius: 8px;
+            }}
+            QPushButton:hover {{
+                background: {rgba(HOVER_BG, 0.6)};
+            }}
+        """)
+        self.chat_list_btn.clicked.connect(self._show_chat_list)
+        header_layout.addWidget(self.chat_list_btn)
+        header_layout.addStretch()
+        root.addWidget(header)
 
         # Keep the legacy widget tree alive off-screen for state plumbing and audio playback,
         # but render the actual popup as a web app via QtWebEngine.
@@ -1612,6 +1638,88 @@ class SidebarPanel(QFrame):
         )
         self.chat_view.set_history(history)
         self._sync_web_ui()
+
+    def _show_chat_list(self) -> None:
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Chat History")
+        dialog.setFixedSize(400, 500)
+        dialog.setStyleSheet(f"background: {rgba(CARD_BG, 0.98)};")
+        layout = QVBoxLayout(dialog)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(8)
+
+        title = QLabel("Choose a chat to restore")
+        title.setFont(QFont(self.ui_font, 14, QFont.Weight.Bold))
+        title.setStyleSheet(f"color: {UI_TEXT_STRONG}; border: none;")
+        layout.addWidget(title)
+
+        list_widget = QListWidget()
+        list_widget.setStyleSheet(f"""
+            QListWidget {{
+                background: transparent;
+                border: 1px solid {rgba(BORDER_SOFT, 0.5)};
+                border-radius: 8px;
+                padding: 4px;
+            }}
+            QListWidget::item {{
+                padding: 10px;
+                border-radius: 6px;
+                margin: 2px 0;
+                color: {TEXT};
+            }}
+            QListWidget::item:selected {{
+                background: {rgba(ACCENT_SOFT, 0.5)};
+            }}
+            QListWidget::item:hover {{
+                background: {rgba(HOVER_BG, 0.4)};
+            }}
+        """)
+        layout.addWidget(list_widget)
+
+        archives = list_chat_archives()
+        for arch in archives:
+            label = f"{arch['filename']} — {arch['message_count']} messages"
+            item = QListWidgetItem(label)
+            item.setData(1, arch['path'])
+            list_widget.addItem(item)
+
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+        cancel_btn = QPushButton("Cancel")
+        cancel_btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        cancel_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: {rgba(BORDER_SOFT, 0.4)};
+                border: none;
+                padding: 8px 16px;
+                border-radius: 6px;
+                color: {TEXT};
+            }}
+            QPushButton:hover {{
+                background: {rgba(BORDER_SOFT, 0.7)};
+            }}
+        """)
+        cancel_btn.clicked.connect(dialog.close)
+        btn_row.addWidget(cancel_btn)
+        layout.addLayout(btn_row)
+
+        def on_select():
+            current = list_widget.currentItem()
+            if current is None:
+                return
+            path = current.data(1)
+            loaded = load_chat_archive(path)
+            if loaded is not None:
+                self.chat_history = loaded
+                secure_clear_chat_history()
+                for item in loaded:
+                    secure_append_chat(item)
+                self._render_chat_history()
+                dialog.close()
+
+        list_widget.itemDoubleClicked.connect(on_select)
+
+        dialog.exec()
 
     def _maybe_launch_koboldcpp(self, profile: BackendProfile) -> bool:
         payload = dict(self.backend_settings.get(profile.key, {}))
