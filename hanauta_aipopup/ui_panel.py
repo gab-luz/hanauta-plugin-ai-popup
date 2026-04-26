@@ -1923,18 +1923,18 @@ class SidebarPanel(QFrame):
             f'<button data-cmd="dismiss" data-card-id="{card_id}" class="tonal-button">Cancel</button>'
             f'</div>'
         )
-        self.add_card(ChatItemData(
+        item = ChatItemData(
             role="assistant",
             title="KoboldCpp",
             meta="runtime launch",
             body=body,
             chips=[SourceChipData("koboldcpp")],
-        ))
-        item = next((c for c in self.chat_history if getattr(c, 'id', None) == card_id), None)
-        if item:
-            item.id = card_id
+        )
+        item.id = card_id  # type: ignore[attr-defined]
+        self.add_card(item)
         self._pending_kobold_launch_profile = profile.key
         self._pending_kobold_launch_payload = payload
+        self._pending_kobold_launch_card_id = card_id
         return True
 
     def _launch_koboldcpp_process(self, profile: BackendProfile, payload: dict[str, object]) -> tuple[bool, str]:
@@ -1957,6 +1957,7 @@ class SidebarPanel(QFrame):
     def _launch_kobold_from_prompt(self) -> None:
         profile_key = getattr(self, "_pending_kobold_launch_profile", "") or ""
         payload = getattr(self, "_pending_kobold_launch_payload", None)
+        card_id = getattr(self, "_pending_kobold_launch_card_id", "") or ""
         if not profile_key or payload is None:
             return
         profile = self.profile_by_key.get(profile_key)
@@ -1964,8 +1965,10 @@ class SidebarPanel(QFrame):
             return
         self._pending_kobold_launch_profile = ""
         self._pending_kobold_launch_payload = None
+        self._pending_kobold_launch_card_id = ""
+        if card_id:
+            self._dismiss_card(card_id)
         ok, message = self._launch_koboldcpp_process(profile, payload)
-        self._dismiss_card(f"kobold-launch-")
         self.add_card(ChatItemData(
             role="assistant", title="Hanauta AI",
             meta="runtime launch" if ok else "runtime launch failed",
