@@ -60,6 +60,7 @@ from .http import (
     _http_json,
     _http_post_bytes,
     _http_post_json,
+    _http_post_multipart,
     _sd_auth_headers,
     _sdapi_not_found_message,
     _hf_resolve_url,
@@ -462,12 +463,13 @@ def _transcribe_with_external_api(audio_path: Path, config: dict[str, object]) -
         raise RuntimeError("External STT requires a host.")
     api_key = secure_load_secret("voice_mode:stt_api_key").strip()
     headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+    fields = {
+        "model": str(config.get("stt_remote_model", "whisper-1")).strip() or "whisper-1",
+        "response_format": "json",
+    }
     payload = _http_post_multipart(
         f"{_api_url_from_host(host)}/v1/audio/transcriptions",
-        fields={
-            "model": str(config.get("stt_remote_model", "whisper-1")).strip() or "whisper-1",
-            "response_format": "json",
-        },
+        fields=fields,
         files={"file": (audio_path.name, audio_path.read_bytes(), "audio/wav")},
         headers=headers,
         timeout=240.0,
@@ -486,6 +488,15 @@ def _transcribe_with_whisperlive(audio_path: Path, config: dict[str, object], *,
     host = str(config.get("stt_whisperlive_host", "")).strip()
     if not host:
         raise RuntimeError("WhisperLive STT requires a host.")
+    api_url = _api_url_from_host(host)
+    if not _host_reachable(api_url, timeout=3.0):
+        raise RuntimeError(f"WhisperLive is not ready at {api_url}")
+    try:
+        with request.urlopen(f"{api_url}/v1/models", timeout=3.0) as resp:
+            if resp.status >= 400:
+                raise RuntimeError(f"WhisperLive returned status {resp.status}")
+    except Exception as exc:
+        raise RuntimeError(f"WhisperLive health check failed: {exc}")
     model = str(config.get("stt_whisperlive_model", "small")).strip() or "small"
     fields: dict[str, str] = {"model": model, "response_format": "json"}
     if prompt.strip():

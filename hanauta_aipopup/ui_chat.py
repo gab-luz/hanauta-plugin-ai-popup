@@ -1063,42 +1063,53 @@ class VoiceModelsWarmupWorker(QThread):
         self.selection = dict(selection)
 
     def _emit(self, title: str, detail: str) -> None:
+        logging.info(f"[VoiceModels] {title}: {detail}")
         self.progress.emit(str(title).strip() or "Models", str(detail).strip())
 
     def run(self) -> None:
+        logging.info(f"[VoiceModels] START selection={self.selection} config keys={list(self.config.keys())}")
         try:
             updates: dict[str, dict[str, object]] = {}
             loaded: dict[str, bool] = {"stt": False, "llm": False, "tts": False}
 
             if self.selection.get("stt", False):
+                logging.info("[VoiceModels] === STT warmup start ===")
                 self._emit("Starting STT", "Preparing speech-to-text backend.")
                 stt_updates = self._warm_stt()
+                logging.info(f"[VoiceModels] === STT warmup done updates={stt_updates} ===")
                 if stt_updates:
                     updates.update(stt_updates)
                 loaded["stt"] = True
 
             if self.selection.get("llm", False):
+                logging.info("[VoiceModels] === LLM warmup start ===")
                 self._emit("Starting LLM", "Preparing the chat backend for voice mode.")
                 llm_updates = self._warm_llm()
+                logging.info(f"[VoiceModels] === LLM warmup done updates={llm_updates} ===")
                 if llm_updates:
                     updates.update(llm_updates)
                 loaded["llm"] = True
 
             if self.selection.get("tts", False):
+                logging.info("[VoiceModels] === TTS warmup start ===")
                 self._emit("Starting TTS", "Preparing speech synthesis backend.")
                 self._warm_tts()
+                logging.info("[VoiceModels] === TTS warmup done ===")
                 loaded["tts"] = True
 
             payload = {
                 "loaded": loaded,
                 "updates": updates,
             }
+            logging.info(f"[VoiceModels] DONE loaded={loaded}")
             self.finished_ok.emit(json.dumps(payload, ensure_ascii=False))
         except Exception as exc:
+            logging.exception(f"[VoiceModels] FAILED: {exc}")
             message = str(exc).strip() or exc.__class__.__name__
             self.failed.emit(message)
 
     def _warm_stt(self) -> dict[str, dict[str, object]]:
+        logging.info("[VoiceModels] _warm_stt: enter")
         updates: dict[str, dict[str, object]] = {}
         if bool(self.config.get("stt_external_api", False)):
             host = str(self.config.get("stt_host", "")).strip()
@@ -1108,6 +1119,7 @@ class VoiceModelsWarmupWorker(QThread):
                 raise RuntimeError(f"Unable to reach STT host: {_normalize_host_url(host)}")
             return updates
         backend = str(self.config.get("stt_backend", "whisper")).strip().lower()
+        logging.info(f"[VoiceModels] _warm_stt: backend={backend}")
         if backend == "llm_audio":
             # If LLM is also being started, let the LLM warmup own the startup.
             if bool(self.selection.get("llm", False)):
@@ -1115,6 +1127,7 @@ class VoiceModelsWarmupWorker(QThread):
             return self._warm_llm()
         if backend == "vosk":
             model_path = Path(str(self.config.get("stt_vosk_model_path", "")).strip()).expanduser()
+            logging.info(f"[VoiceModels] _warm_stt: vosk model_path={model_path} exists={model_path.exists()}")
             if not model_path.exists():
                 raise RuntimeError("Set a valid VOSK model folder in Voice Mode settings.")
             # Ensure venv and import; do not transcribe in warmup (fast feedback).
@@ -1123,6 +1136,7 @@ class VoiceModelsWarmupWorker(QThread):
 
         if backend == "whisperlive":
             host = str(self.config.get("stt_whisperlive_host", "")).strip()
+            logging.info(f"[VoiceModels] _warm_stt: whisperlive host={host}")
             if not host:
                 raise RuntimeError("WhisperLive host is not configured.")
             if not _host_reachable(host):
@@ -1134,6 +1148,7 @@ class VoiceModelsWarmupWorker(QThread):
         lowered = raw_model.lower()
         model_name = lowered if lowered in {"tiny", "small", "medium", "large"} else (raw_model or "small")
         device = "gpu" if str(self.config.get("stt_device", "cpu")).lower() == "gpu" else "cpu"
+        logging.info(f"[VoiceModels] _warm_stt: whisper model={model_name} device={device}")
         _ensure_voice_venv("whisper", model_name, device, ["faster-whisper", "huggingface-hub"], "faster_whisper")
         _ensure_voice_whisper_script()
 
@@ -1155,9 +1170,11 @@ class VoiceModelsWarmupWorker(QThread):
         return updates
 
     def _warm_llm(self) -> dict[str, dict[str, object]]:
+        logging.info("[VoiceModels] _warm_llm: enter")
         updates: dict[str, dict[str, object]] = {}
         if bool(self.config.get("llm_external_api", False)):
             host = str(self.config.get("llm_host", "")).strip()
+            logging.info(f"[VoiceModels] _warm_llm: external_api host={host}")
             if not host:
                 raise RuntimeError("LLM external API host is not configured.")
             if not _host_reachable(host):
@@ -1165,11 +1182,14 @@ class VoiceModelsWarmupWorker(QThread):
             return updates
         profile_key = str(self.config.get("llm_profile", "koboldcpp")).strip()
         profile = self.profiles.get(profile_key)
+        logging.info(f"[VoiceModels] _warm_llm: profile_key={profile_key} profile={profile}")
         if profile is None:
             raise RuntimeError("Select an LLM backend in Voice Mode settings.")
         payload = dict(self.backend_settings.get(profile.key, {}))
+        logging.info(f"[VoiceModels] _warm_llm: profile.key={profile.key} payload keys={list(payload.keys())}")
         if profile.key == "koboldcpp":
             ok, message = _start_koboldcpp(payload)
+            logging.info(f"[VoiceModels] _warm_llm: koboldcpp start ok={ok} msg={message}")
             if not ok:
                 raise RuntimeError(message)
             updates[profile.key] = payload
@@ -1182,14 +1202,18 @@ class VoiceModelsWarmupWorker(QThread):
         return updates
 
     def _warm_tts(self) -> None:
+        logging.info("[VoiceModels] _warm_tts: enter")
         profile_key = str(self.config.get("tts_profile", "kokorotts")).strip()
         profile = self.profiles.get(profile_key)
+        logging.info(f"[VoiceModels] _warm_tts: profile_key={profile_key} profile={profile}")
         if profile is None:
             raise RuntimeError("Select a TTS backend in Voice Mode settings.")
         payload = dict(self.backend_settings.get(profile.key, {}))
         mode = _default_tts_mode(payload)
+        logging.info(f"[VoiceModels] _warm_tts: profile.key={profile.key} mode={mode} payload keys={list(payload.keys())}")
         if mode == "external_api":
             host = str(payload.get("host", profile.host)).strip()
+            logging.info(f"[VoiceModels] _warm_tts: external_api host={host}")
             if not host:
                 raise RuntimeError("TTS external API host is not configured.")
             if not _host_reachable(host):

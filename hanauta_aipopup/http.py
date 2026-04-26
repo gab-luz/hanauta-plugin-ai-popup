@@ -113,7 +113,7 @@ def _http_post_bytes(url: str, payload: dict, timeout: float = 240.0, headers: d
         raise _friendly_network_error("Request", url, exc) from exc
 
 
-def _http_post_multipart(url: str, fields: dict, files: dict, timeout: float = 240.0) -> dict:
+def _http_post_multipart(url: str, fields: dict, files: dict, headers: dict | None = None, timeout: float = 240.0) -> dict:
     boundary = f"----Hanauta{int(time.time() * 1000)}{os.getpid()}"
     parts = []
     for name, value in fields.items():
@@ -128,7 +128,9 @@ def _http_post_multipart(url: str, fields: dict, files: dict, timeout: float = 2
         parts.append(b"\r\n")
     parts.append(f"--{boundary}--\r\n".encode())
     body = b"".join(parts)
-    merged = {"User-Agent": "Hanauta AI/1.0", "Content-Type": f"multipart/form-data; boundary={boundary}", "Content-Length": str(len(body))}
+    merged: dict[str, str] = {"User-Agent": "Hanauta AI/1.0", "Content-Type": f"multipart/form-data; boundary={boundary}", "Content-Length": str(len(body))}
+    if headers:
+        merged.update(headers)
     req = request.Request(url, data=body, headers=merged, method="POST")
     try:
         with request.urlopen(req, timeout=timeout) as resp:
