@@ -47,4 +47,5 @@ class CharacterCard:
     avatar_path: str = ""
     source_path: str = ""
     source_type: str = ""
+    voice_sample_path: str = ""  # path to a WAV/MP3 for KokoClone voice cloning
 

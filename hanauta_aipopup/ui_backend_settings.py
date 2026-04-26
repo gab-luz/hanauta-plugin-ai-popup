@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import time
 from pathlib import Path
+from urllib import error
 
 from PyQt6.QtCore import Qt, QTimer, QObject, pyqtSignal, QThread
 from PyQt6.QtGui import QColor, QCursor, QFont, QGuiApplication, QPainter, QPen
@@ -45,10 +46,12 @@ from .runtime import (
     trigger_fullscreen_alert,
 )
 from .style import (
-    ACCENT, ACCENT_SOFT, BORDER_ACCENT, BORDER_SOFT, CARD_BG, CARD_BG_SOFT,
-    HOVER_BG, INPUT_BG, PANEL_BG, PANEL_BG_FLOAT, THEME,
-    mix, rgba, ACCENT_ALT, BORDER_HARD, UI_ICON_DIM, UI_TEXT_MUTED, UI_TEXT_STRONG,)
-from .storage import secure_load_secret
+    ACCENT, ACCENT_ALT, ACCENT_SOFT, BORDER_ACCENT, BORDER_HARD, BORDER_SOFT,
+    CARD_BG, CARD_BG_SOFT, HOVER_BG, INPUT_BG, PANEL_BG, PANEL_BG_FLOAT,
+    TEXT, TEXT_DIM, TEXT_MID, THEME, UI_ICON_DIM, UI_TEXT_MUTED, UI_TEXT_STRONG,
+    mix, rgba,
+)
+from .storage import secure_load_secret, secure_store_secret
 from .http import (
     _normalize_host_url,
     _http_json,
@@ -58,7 +61,7 @@ from .http import (
     _openai_compat_alive,
     send_desktop_notification,
 )
-from .backends import _existing_path, _is_pid_alive, _is_pgid_alive, koboldcpp_status, start_koboldcpp, stop_koboldcpp
+from .backends import _existing_path, _is_pid_alive, _is_pgid_alive, koboldcpp_status as _koboldcpp_status, start_koboldcpp as _start_koboldcpp, stop_koboldcpp as _stop_koboldcpp
 from .catalog import MODEL_CATALOG, _dir_size_bytes, _format_bytes
 from .tts import (
     synthesize_tts, validate_backend,
@@ -1094,6 +1097,10 @@ class BackendSettingsDialog(QDialog):
         self.install_pocket_button.clicked.connect(self._install_pockettts)
         actions.addWidget(self.install_pocket_button)
 
+        self.install_kokoclone_button = QPushButton("Install KokoClone (voice cloning TTS)")
+        self.install_kokoclone_button.clicked.connect(self._install_kokoclone)
+        actions.addWidget(self.install_kokoclone_button)
+
         actions.addStretch(1)
 
         self.save_button = QPushButton("Save")
@@ -1385,6 +1392,261 @@ class BackendSettingsDialog(QDialog):
         emotion_layout.addWidget(emotion_desc)
         layout.addWidget(emotion_frame)
 
+        # ── Home Assistant ────────────────────────────────────────────────────
+        ha_cfg = settings.get("homeassistant", {})
+        ha_frame = SurfaceFrame(bg=rgba(CARD_BG_SOFT, 0.7), border=BORDER_SOFT, radius=16)
+        ha_layout = QVBoxLayout(ha_frame)
+        ha_layout.setContentsMargins(14, 12, 14, 12)
+        ha_layout.setSpacing(8)
+
+        ha_header = QHBoxLayout()
+        ha_title = QLabel("Home Assistant")
+        ha_title.setFont(QFont(self.ui_font, 11, QFont.Weight.DemiBold))
+        ha_title.setStyleSheet(f"color: {TEXT}; border: none;")
+        ha_header.addWidget(ha_title)
+        ha_header.addStretch()
+        ha_enabled = QCheckBox("Enabled")
+        ha_enabled.setChecked(bool(ha_cfg.get("enabled", True)))
+        ha_enabled.setStyleSheet(f"color: {TEXT};")
+        ha_header.addWidget(ha_enabled)
+        ha_layout.addLayout(ha_header)
+
+        ha_desc = QLabel(
+            "Control lights, switches, climate, covers, automations and more "
+            "via the Home Assistant REST API."
+        )
+        ha_desc.setWordWrap(True)
+        ha_desc.setStyleSheet(f"color: {TEXT_DIM}; border: none; font-size: 11px;")
+        ha_layout.addWidget(ha_desc)
+
+        # URL + port row
+        ha_url_row = QHBoxLayout()
+        ha_url_row.setSpacing(8)
+        ha_url_input = QLineEdit()
+        ha_url_input.setPlaceholderText("http://homeassistant.local")
+        ha_url_input.setText(str(ha_cfg.get("url", "")).strip())
+        ha_url_input.setStyleSheet(
+            f"background: {INPUT_BG}; color: {TEXT}; border: 1px solid {BORDER_SOFT};"
+            f"border-radius: 18px; padding: 8px 12px;"
+        )
+        ha_url_row.addWidget(ha_url_input, 3)
+        ha_port_input = QLineEdit()
+        ha_port_input.setPlaceholderText("8123")
+        ha_port_input.setMaximumWidth(90)
+        ha_port_input.setText(str(ha_cfg.get("port", "")).strip())
+        ha_port_input.setStyleSheet(
+            f"background: {INPUT_BG}; color: {TEXT}; border: 1px solid {BORDER_SOFT};"
+            f"border-radius: 18px; padding: 8px 12px;"
+        )
+        ha_url_row.addWidget(ha_port_input, 1)
+        ha_layout.addLayout(ha_url_row)
+
+        # Token
+        ha_token_input = QLineEdit()
+        ha_token_input.setPlaceholderText("Long-lived access token (stored encrypted)")
+        ha_token_input.setEchoMode(QLineEdit.EchoMode.Password)
+        _ha_stored_token = secure_load_secret("skills:homeassistant:token")
+        ha_token_input.setText(_ha_stored_token)
+        ha_token_input.setStyleSheet(
+            f"background: {INPUT_BG}; color: {TEXT}; border: 1px solid {BORDER_SOFT};"
+            f"border-radius: 18px; padding: 8px 12px;"
+        )
+        ha_layout.addWidget(ha_token_input)
+
+        # Test connection button
+        ha_test_row = QHBoxLayout()
+        ha_test_btn = QPushButton("Test connection")
+        ha_test_btn.setStyleSheet(
+            f"background: {CARD_BG_SOFT}; color: {TEXT}; border: 1px solid {BORDER_SOFT};"
+            f"border-radius: 18px; padding: 6px 14px;"
+        )
+        ha_status_label = QLabel("")
+        ha_status_label.setStyleSheet(f"color: {TEXT_DIM}; border: none; font-size: 11px;")
+
+        def _test_ha() -> None:
+            url = ha_url_input.text().strip().rstrip("/")
+            port = ha_port_input.text().strip()
+            token = ha_token_input.text().strip()
+            if port:
+                from urllib.parse import urlparse
+                parsed = urlparse(url if "://" in url else f"http://{url}")
+                url = f"{parsed.scheme}://{parsed.hostname}:{port}"
+            if not url or not token:
+                ha_status_label.setText("Set URL and token first.")
+                return
+            try:
+                from urllib import request as _req
+                req = _req.Request(
+                    f"{url}/api/",
+                    headers={"Authorization": f"Bearer {token}"},
+                )
+                with _req.urlopen(req, timeout=5) as resp:
+                    data = __import__('json').loads(resp.read())
+                msg = data.get("message", "Connected")
+                ha_status_label.setText(f"✓ {msg}")
+                ha_status_label.setStyleSheet(f"color: #7dff9a; border: none; font-size: 11px;")
+            except Exception as exc:
+                ha_status_label.setText(f"✗ {exc}")
+                ha_status_label.setStyleSheet(f"color: #ff7d7d; border: none; font-size: 11px;")
+
+        ha_test_btn.clicked.connect(_test_ha)
+        ha_test_row.addWidget(ha_test_btn)
+        ha_test_row.addWidget(ha_status_label, 1)
+        ha_layout.addLayout(ha_test_row)
+        layout.addWidget(ha_frame)
+
+        # ── Calendar ───────────────────────────────────────────────────────────
+        cal_cfg = settings.get("calendar", {})
+        cal_frame = SurfaceFrame(bg=rgba(CARD_BG_SOFT, 0.7), border=BORDER_SOFT, radius=16)
+        cal_layout = QVBoxLayout(cal_frame)
+        cal_layout.setContentsMargins(14, 12, 14, 12)
+        cal_layout.setSpacing(8)
+
+        cal_header = QHBoxLayout()
+        cal_title = QLabel("Calendar")
+        cal_title.setFont(QFont(self.ui_font, 11, QFont.Weight.DemiBold))
+        cal_title.setStyleSheet(f"color: {TEXT}; border: none;")
+        cal_header.addWidget(cal_title)
+        cal_header.addStretch()
+        cal_enabled = QCheckBox("Enabled")
+        cal_enabled.setChecked(bool(cal_cfg.get("enabled", True)))
+        cal_enabled.setStyleSheet(f"color: {TEXT};")
+        cal_header.addWidget(cal_enabled)
+        cal_layout.addLayout(cal_header)
+
+        cal_desc = QLabel(
+            "Read and create events via CalDAV (Nextcloud, Radicale, Google, iCloud) "
+            "or a local ICS file."
+        )
+        cal_desc.setWordWrap(True)
+        cal_desc.setStyleSheet(f"color: {TEXT_DIM}; border: none; font-size: 11px;")
+        cal_layout.addWidget(cal_desc)
+
+        # Backend selector
+        cal_backend_row = QHBoxLayout()
+        cal_backend_row.setSpacing(8)
+        cal_backend_label = QLabel("Backend")
+        cal_backend_label.setStyleSheet(f"color: {TEXT_MID}; border: none;")
+        cal_backend_row.addWidget(cal_backend_label)
+        cal_backend_combo = QComboBox()
+        cal_backend_combo.addItem("CalDAV", "caldav")
+        cal_backend_combo.addItem("Local ICS file", "ics")
+        stored_backend = str(cal_cfg.get("backend", "caldav"))
+        cal_backend_combo.setCurrentIndex(0 if stored_backend == "caldav" else 1)
+        cal_backend_combo.setStyleSheet(
+            f"background: {INPUT_BG}; color: {TEXT}; border: 1px solid {BORDER_SOFT};"
+            f"border-radius: 18px; padding: 6px 12px;"
+        )
+        cal_backend_row.addWidget(cal_backend_combo, 1)
+        cal_layout.addLayout(cal_backend_row)
+
+        # CalDAV URL
+        cal_url_input = QLineEdit()
+        cal_url_input.setPlaceholderText("CalDAV URL, e.g. https://nextcloud.example.com/remote.php/dav/calendars/user/")
+        cal_url_input.setText(str(cal_cfg.get("url", "")).strip())
+        cal_url_input.setStyleSheet(
+            f"background: {INPUT_BG}; color: {TEXT}; border: 1px solid {BORDER_SOFT};"
+            f"border-radius: 18px; padding: 8px 12px;"
+        )
+        cal_layout.addWidget(cal_url_input)
+
+        # Username + password row
+        cal_creds_row = QHBoxLayout()
+        cal_creds_row.setSpacing(8)
+        cal_user_input = QLineEdit()
+        cal_user_input.setPlaceholderText("Username")
+        cal_user_input.setText(str(cal_cfg.get("username", "")).strip())
+        cal_user_input.setStyleSheet(
+            f"background: {INPUT_BG}; color: {TEXT}; border: 1px solid {BORDER_SOFT};"
+            f"border-radius: 18px; padding: 8px 12px;"
+        )
+        cal_creds_row.addWidget(cal_user_input, 1)
+        cal_pass_input = QLineEdit()
+        cal_pass_input.setPlaceholderText("Password (stored encrypted)")
+        cal_pass_input.setEchoMode(QLineEdit.EchoMode.Password)
+        cal_pass_input.setText(secure_load_secret("skills:calendar:password"))
+        cal_pass_input.setStyleSheet(
+            f"background: {INPUT_BG}; color: {TEXT}; border: 1px solid {BORDER_SOFT};"
+            f"border-radius: 18px; padding: 8px 12px;"
+        )
+        cal_creds_row.addWidget(cal_pass_input, 1)
+        cal_layout.addLayout(cal_creds_row)
+
+        # ICS file path
+        cal_ics_input = ClickableLineEdit()
+        cal_ics_input.setPlaceholderText("Local ICS file path (click to browse)")
+        cal_ics_input.setText(str(cal_cfg.get("ics_path", "")).strip())
+        cal_ics_input.setStyleSheet(
+            f"background: {INPUT_BG}; color: {TEXT}; border: 1px solid {BORDER_SOFT};"
+            f"border-radius: 18px; padding: 8px 12px;"
+        )
+        cal_ics_input.clicked.connect(
+            lambda: cal_ics_input.setText(
+                QFileDialog.getOpenFileName(None, "Select ICS file", str(Path.home()), "Calendar files (*.ics)")[0]
+                or cal_ics_input.text()
+            )
+        )
+        cal_layout.addWidget(cal_ics_input)
+
+        # Show/hide fields based on backend
+        def _on_cal_backend_changed() -> None:
+            is_caldav = cal_backend_combo.currentData() == "caldav"
+            cal_url_input.setVisible(is_caldav)
+            cal_creds_row_widget = cal_url_input.parent()
+            for w in [cal_user_input, cal_pass_input]:
+                w.setVisible(is_caldav)
+            cal_ics_input.setVisible(not is_caldav)
+
+        cal_backend_combo.currentIndexChanged.connect(_on_cal_backend_changed)
+        _on_cal_backend_changed()
+
+        # Test button
+        cal_test_row = QHBoxLayout()
+        cal_test_btn = QPushButton("Test connection")
+        cal_test_btn.setStyleSheet(
+            f"background: {CARD_BG_SOFT}; color: {TEXT}; border: 1px solid {BORDER_SOFT};"
+            f"border-radius: 18px; padding: 6px 14px;"
+        )
+        cal_status_label = QLabel("")
+        cal_status_label.setStyleSheet(f"color: {TEXT_DIM}; border: none; font-size: 11px;")
+
+        def _test_cal() -> None:
+            import importlib.util as _ilu
+            _spec = _ilu.spec_from_file_location(
+                "skills.calendar",
+                Path(__file__).parent.parent.parent / "skills" / "calendar.py",
+            )
+            _mod = _ilu.module_from_spec(_spec)  # type: ignore[arg-type]
+            _spec.loader.exec_module(_mod)  # type: ignore[union-attr]
+            test_cfg = {
+                "enabled": True,
+                "backend": cal_backend_combo.currentData(),
+                "url": cal_url_input.text().strip(),
+                "username": cal_user_input.text().strip(),
+                "password": cal_pass_input.text().strip(),
+                "ics_path": cal_ics_input.text().strip(),
+            }
+            try:
+                if test_cfg["backend"] == "ics":
+                    p = Path(test_cfg["ics_path"]).expanduser()
+                    if not p.exists():
+                        raise FileNotFoundError(f"File not found: {p}")
+                    events = _mod._read_ics_file(test_cfg)
+                    cal_status_label.setText(f"✓ {len(events)} events found in ICS file")
+                else:
+                    cals = _mod._caldav_list_calendars(test_cfg)
+                    cal_status_label.setText(f"✓ Connected — {len(cals)} calendar(s)")
+                cal_status_label.setStyleSheet("color: #7dff9a; border: none; font-size: 11px;")
+            except Exception as exc:
+                cal_status_label.setText(f"✗ {exc}")
+                cal_status_label.setStyleSheet("color: #ff7d7d; border: none; font-size: 11px;")
+
+        cal_test_btn.clicked.connect(_test_cal)
+        cal_test_row.addWidget(cal_test_btn)
+        cal_test_row.addWidget(cal_status_label, 1)
+        cal_layout.addLayout(cal_test_row)
+        layout.addWidget(cal_frame)
+
         layout.addStretch()
 
         # Save button
@@ -1405,6 +1667,17 @@ class BackendSettingsDialog(QDialog):
 
         def _save_skills() -> None:
             urls = [u.strip() for u in apprise_urls_edit.toPlainText().splitlines() if u.strip()]
+            # Build HA URL with port
+            ha_url = ha_url_input.text().strip().rstrip("/")
+            ha_port = ha_port_input.text().strip()
+            if ha_port:
+                from urllib.parse import urlparse
+                parsed = urlparse(ha_url if "://" in ha_url else f"http://{ha_url}")
+                ha_url = f"{parsed.scheme}://{parsed.hostname}:{ha_port}"
+            # Save token encrypted
+            ha_token = ha_token_input.text().strip()
+            if ha_token:
+                secure_store_secret("skills:homeassistant:token", ha_token)
             data = self._load_skills_settings()
             data["skills_enabled"] = global_check.isChecked()
             data["apprise"] = {"enabled": apprise_enabled.isChecked(), "urls": urls}
@@ -1414,6 +1687,22 @@ class BackendSettingsDialog(QDialog):
             data["pc_sensors"] = {"enabled": sensors_enabled.isChecked()}
             data["hanauta_desktop"] = {"enabled": desktop_enabled.isChecked()}
             data["emotion_engine"] = {"enabled": emotion_enabled.isChecked()}
+            data["homeassistant"] = {
+                "enabled": ha_enabled.isChecked(),
+                "url": ha_url,
+                "port": ha_port_input.text().strip(),
+            }
+            # Save calendar password encrypted
+            cal_pw = cal_pass_input.text().strip()
+            if cal_pw:
+                secure_store_secret("skills:calendar:password", cal_pw)
+            data["calendar"] = {
+                "enabled": cal_enabled.isChecked(),
+                "backend": cal_backend_combo.currentData(),
+                "url": cal_url_input.text().strip(),
+                "username": cal_user_input.text().strip(),
+                "ics_path": cal_ics_input.text().strip(),
+            }
             self._save_skills_settings(data)
             save_skills_btn.setText("Saved ✓")
             QTimer.singleShot(2000, lambda: save_skills_btn.setText("Save Skills Settings"))
@@ -1763,6 +2052,64 @@ class BackendSettingsDialog(QDialog):
         if profile.key == "koboldcpp":
             self._refresh_kobold_status(payload)
 
+    def _install_kokoclone(self) -> None:
+        profile = self._selected_profile()
+        if profile.key != "kokoclone":
+            self.status_label.setText("Select the KokoClone backend first.")
+            return
+        self.install_kokoclone_button.setEnabled(False)
+        self.install_kokoclone_button.setText("Installing KokoClone\u2026")
+        self.status_label.setText("Installing KokoClone (this may take several minutes)\u2026")
+
+        from PyQt6.QtCore import QThread, pyqtSignal as _sig
+
+        class _Worker(QThread):
+            progress = _sig(int, str)
+            finished_ok = _sig()
+            failed = _sig(str)
+
+            def run(self) -> None:
+                try:
+                    from .tts import _ensure_kokoclone_installed
+                    _ensure_kokoclone_installed(
+                        progress_cb=lambda done, total, label: self.progress.emit(
+                            int(done / max(1, total) * 100), label
+                        )
+                    )
+                    self.finished_ok.emit()
+                except Exception as exc:
+                    self.failed.emit(str(exc))
+
+        worker = _Worker(self)
+        self._kokoclone_install_worker = worker
+
+        def _on_progress(pct: int, label: str) -> None:
+            self.download_progress.setValue(pct)
+            self.download_progress.show()
+            self.download_progress_label.setText(label)
+            self.download_progress_label.show()
+
+        def _on_ok() -> None:
+            self.install_kokoclone_button.setEnabled(True)
+            self.install_kokoclone_button.setText("Install KokoClone (voice cloning TTS)")
+            self.download_progress.hide()
+            self.download_progress_label.hide()
+            self.status_label.setText("KokoClone installed successfully.")
+            self.status_label.setStyleSheet(f"color: {ACCENT};")
+
+        def _on_fail(msg: str) -> None:
+            self.install_kokoclone_button.setEnabled(True)
+            self.install_kokoclone_button.setText("Install KokoClone (voice cloning TTS)")
+            self.download_progress.hide()
+            self.download_progress_label.hide()
+            self.status_label.setText(f"KokoClone install failed: {msg[:200]}")
+            self.status_label.setStyleSheet(f"color: {ACCENT_ALT};")
+
+        worker.progress.connect(_on_progress)
+        worker.finished_ok.connect(_on_ok)
+        worker.failed.connect(_on_fail)
+        worker.start()
+
     def _install_pockettts(self) -> None:
         profile = self._selected_profile()
         if profile.key != "pockettts":
@@ -2021,17 +2368,20 @@ class BackendSettingsDialog(QDialog):
         if not host:
             self._kobold_ready_timer.stop()
             return
-        if not _openai_compat_alive(host):
-            return
+        from .backends import _koboldcpp_model_loaded
+        loaded, model_name = _koboldcpp_model_loaded(host)
+        if not loaded:
+            return  # keep polling
         label = self._pending_kobold_ready_profile or "KoboldCpp"
         self._pending_kobold_ready_profile = ""
         self._pending_kobold_ready_host = ""
         self._kobold_ready_timer.stop()
         payload = self._current_payload()
-        payload["last_status"] = f"{label} is ready."
+        display_model = model_name or label
+        payload["last_status"] = f"{label} ready — {display_model}"
         self._persist_selected_backend_payload(payload)
         self._refresh_kobold_status(payload)
-        self.status_label.setText(f"{label} is ready.")
+        self.status_label.setText(f"{label} ready — model loaded: {display_model}")
         self.status_label.setStyleSheet(f"color: {ACCENT};")
 
     def _start_kobold_clicked(self) -> None:
@@ -2039,6 +2389,12 @@ class BackendSettingsDialog(QDialog):
         if profile.key != "koboldcpp":
             return
         payload = self._current_payload()
+        # Guard: don't spawn if already alive
+        host = str(payload.get("host", profile.host)).strip()
+        if (host and _openai_compat_alive(host)) or _koboldcpp_status(payload)[0]:
+            self.status_label.setText("KoboldCpp is already running.")
+            self.status_label.setStyleSheet(f"color: {ACCENT};")
+            return
         ok, message = _start_koboldcpp(payload)
         self._persist_selected_backend_payload(payload)
         self._refresh_kobold_status(payload)

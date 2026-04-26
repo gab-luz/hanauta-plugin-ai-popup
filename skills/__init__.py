@@ -23,10 +23,12 @@ LOGGER = logging.getLogger("hanauta.skills")
 # Maps logical module name -> filename (relative to this package directory)
 _SKILL_FILES: list[tuple[str, str]] = [
     ("skills.apprise",          "apprise.py"),
+    ("skills.calendar",         "calendar.py"),
     ("skills.docker",           "docker.py"),
     ("skills.emotion_engine",   "py-emotion-engine.py"),
     ("skills.hanauta_desktop",  "hanauta-desktop.py"),
     ("skills.hanauta_mail",     "hanauta-mail.py"),
+    ("skills.homeassistant",    "homeassistant.py"),
     ("skills.kdeconnect",       "kdeconnect.py"),
     ("skills.pc_sensors",       "pc-sensors.py"),
 ]
@@ -55,9 +57,11 @@ def _load() -> None:
 
     _SKILL_ENABLED_KEYS = {
         "apprise.py":            "apprise",
+        "calendar.py":           "calendar",
         "docker.py":             "docker",
         "hanauta-desktop.py":    "hanauta_desktop",
         "hanauta-mail.py":       "mail",
+        "homeassistant.py":      "homeassistant",
         "kdeconnect.py":         "kdeconnect",
         "pc-sensors.py":         "pc_sensors",
         "py-emotion-engine.py":  "emotion_engine",

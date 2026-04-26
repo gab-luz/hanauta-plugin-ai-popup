@@ -6,10 +6,12 @@ import logging
 import time
 from pathlib import Path
 
-from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QThread
-from PyQt6.QtGui import QColor, QCursor, QFont, QGuiApplication, QPixmap, QPainter, QPen
+from PyQt6.QtCore import Qt, QRectF, QTimer, pyqtSignal, QThread, QSize
+from PyQt6.QtGui import QIcon, QColor, QBrush, QLinearGradient, QCursor, QFont, QGuiApplication, QPixmap, QPainter, QPen
 from PyQt6.QtWidgets import (
     QCheckBox,
+    QAbstractItemView,
+    QPlainTextEdit,
     QComboBox,
     QDialog,
     QFileDialog,
@@ -17,6 +19,7 @@ from PyQt6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QListView,
     QListWidget,
     QListWidgetItem,
     QMessageBox,
@@ -45,7 +48,7 @@ from .http import send_desktop_notification
 from .characters import (
     load_character_library as _load_character_library,
     save_character_library as _save_character_library,
-    import_character_from_file as _import_character_from_file,
+    import_character_from_file,
 )
 from .ui_widgets import SurfaceFrame, _apply_antialias_font, _button_css_weight, _button_qfont_weight
 from .tts import (
@@ -159,6 +162,14 @@ class CharacterLibraryDialog(QDialog):
         remove_button = QPushButton("Remove selected")
         remove_button.clicked.connect(self._remove_selected)
         row.addWidget(remove_button)
+
+        voice_sample_button = QPushButton("\U0001f3a4 Set voice sample")
+        voice_sample_button.setToolTip(
+            "Set a WAV/MP3 voice sample for this character.\n"
+            "Used by KokoClone to clone the character's voice."
+        )
+        voice_sample_button.clicked.connect(self._set_voice_sample)
+        row.addWidget(voice_sample_button)
 
         row.addStretch(1)
         layout.addLayout(row)
@@ -359,6 +370,27 @@ class CharacterLibraryDialog(QDialog):
         if self.selected_id == card.id:
             self.selected_id = ""
         self._reload_grid()
+
+    def _set_voice_sample(self) -> None:
+        card = self._current_card()
+        if card is None:
+            send_desktop_notification("Voice sample", "Select a character first.")
+            return
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            f"Voice sample for {card.name}",
+            str(Path.home()),
+            "Audio files (*.wav *.mp3 *.ogg *.flac *.m4a *.aac)",
+        )
+        if not path:
+            return
+        card.voice_sample_path = str(Path(path).expanduser())
+        from .characters import save_character_library
+        save_character_library(self.cards, self.selected_id)
+        send_desktop_notification(
+            "Voice sample set",
+            f"{card.name}: {Path(path).name}",
+        )
 
     def _disable_character(self) -> None:
         self.selected_id = ""

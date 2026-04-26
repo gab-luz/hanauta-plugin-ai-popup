@@ -34,6 +34,7 @@ def _character_from_payload(payload: dict) -> CharacterCard:
         avatar_path=str(payload.get("avatar_path", "")).strip(),
         source_path=str(payload.get("source_path", "")).strip(),
         source_type=str(payload.get("source_type", "")).strip(),
+        voice_sample_path=str(payload.get("voice_sample_path", "")).strip(),
     )
 
 
@@ -72,6 +73,7 @@ def save_character_library(cards: list[CharacterCard], active_id: str):
             "avatar_path": c.avatar_path,
             "source_path": c.source_path,
             "source_type": c.source_type,
+            "voice_sample_path": c.voice_sample_path,
         } for c in cards]
     }, indent=2, ensure_ascii=False), encoding="utf-8")
 

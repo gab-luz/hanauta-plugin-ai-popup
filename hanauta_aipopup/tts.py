@@ -116,6 +116,10 @@ def _voice_log(kind: str, backend: str, model: str, message: str) -> None:
 def _render_llm_text_html(text: str) -> str:
     return _PROMPT_SMARTNESS.render_llm_text_html(text)
 
+
+def _strip_simple_markdown(text: str) -> str:
+    return _PROMPT_SMARTNESS.strip_simple_markdown(text)
+
 def _safe_slug(value: str) -> str:
     raw = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in value.strip())
     compact = "_".join(part for part in raw.split("_") if part)
@@ -2517,6 +2521,193 @@ if __name__ == "__main__":
     return script_path
 
 
+
+
+# ── KokoClone (voice cloning TTS) ────────────────────────────────────────────
+
+_KOKOCLONE_VENV_KEY = "kokoclone"
+_KOKOCLONE_REPO = "https://github.com/silasalves/kokoclone.git"
+_KOKOCLONE_BRANCH = "official-kokoro"
+_KOKOCLONE_INSTALL_DIR = AI_STATE_DIR / "kokoclone"
+
+
+def _kokoclone_venv_dir() -> Path:
+    return AI_STATE_DIR / "tts-venvs" / _KOKOCLONE_VENV_KEY
+
+
+def _kokoclone_venv_python() -> Path:
+    return _kokoclone_venv_dir() / "bin" / "python3"
+
+
+def _kokoclone_worker_script_path() -> Path:
+    return AI_STATE_DIR / "kokoclone_synth_worker.py"
+
+
+def _ensure_kokoclone_installed(progress_cb=None) -> Path:
+    """Clone the repo and install deps into an isolated venv. Returns python bin."""
+    venv_dir = _kokoclone_venv_dir()
+    python_bin = _kokoclone_venv_python()
+    install_dir = _KOKOCLONE_INSTALL_DIR
+
+    if callable(progress_cb):
+        progress_cb(5, 100, "Cloning KokoClone repository")
+
+    # Clone or update repo
+    if not install_dir.exists():
+        result = subprocess.run(
+            ["git", "clone", "--branch", _KOKOCLONE_BRANCH, "--depth", "1",
+             _KOKOCLONE_REPO, str(install_dir)],
+            capture_output=True, text=True, timeout=120, check=False,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(f"git clone failed: {(result.stderr or result.stdout).strip()[-300:]}")
+    else:
+        subprocess.run(
+            ["git", "-C", str(install_dir), "pull", "--ff-only"],
+            capture_output=True, timeout=60, check=False,
+        )
+
+    if callable(progress_cb):
+        progress_cb(20, 100, "Creating virtualenv")
+
+    # Create venv
+    if not python_bin.exists():
+        result = subprocess.run(
+            [sys.executable, "-m", "venv", str(venv_dir)],
+            capture_output=True, text=True, timeout=120, check=False,
+        )
+        if result.returncode != 0 or not python_bin.exists():
+            raise RuntimeError("Failed to create KokoClone venv.")
+
+    if callable(progress_cb):
+        progress_cb(30, 100, "Installing PyTorch (CPU)")
+
+    # Install torch (CPU by default; GPU users can swap the index URL)
+    subprocess.run(
+        [str(python_bin), "-m", "pip", "install", "-q", "-U", "pip", "setuptools", "wheel"],
+        capture_output=True, timeout=120, check=False,
+    )
+    torch_result = subprocess.run(
+        [str(python_bin), "-m", "pip", "install", "-q",
+         "torch", "torchaudio",
+         "--index-url", "https://download.pytorch.org/whl/cpu"],
+        capture_output=True, text=True, timeout=600, check=False,
+    )
+    if torch_result.returncode != 0:
+        raise RuntimeError(f"torch install failed: {(torch_result.stderr or torch_result.stdout).strip()[-300:]}")
+
+    if callable(progress_cb):
+        progress_cb(60, 100, "Installing KokoClone requirements")
+
+    req_file = install_dir / "requirements.txt"
+    if req_file.exists():
+        result = subprocess.run(
+            [str(python_bin), "-m", "pip", "install", "-q", "-r", str(req_file)],
+            capture_output=True, text=True, timeout=600, check=False,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(f"requirements install failed: {(result.stderr or result.stdout).strip()[-300:]}")
+
+    if callable(progress_cb):
+        progress_cb(100, 100, "KokoClone ready")
+
+    return python_bin
+
+
+def _ensure_kokoclone_worker_script() -> Path:
+    script_path = _kokoclone_worker_script_path()
+    script_path.parent.mkdir(parents=True, exist_ok=True)
+    script_text = r"""#!/usr/bin/env python3
+"""
+    script_text += r"""
+import argparse
+import sys
+from pathlib import Path
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--install-dir", required=True)
+    parser.add_argument("--text", required=True)
+    parser.add_argument("--lang", default="en")
+    parser.add_argument("--reference", default="")
+    parser.add_argument("--output", required=True)
+    args = parser.parse_args()
+
+    install_dir = Path(args.install_dir)
+    if str(install_dir) not in sys.path:
+        sys.path.insert(0, str(install_dir))
+
+    from core.cloner import KokoClone
+    cloner = KokoClone()
+
+    ref = args.reference.strip()
+    if ref and Path(ref).exists():
+        cloner.generate(
+            text=args.text,
+            lang=args.lang,
+            reference_audio=ref,
+            output_path=args.output,
+        )
+    else:
+        # No reference: use plain Kokoro TTS without voice conversion
+        import numpy as np
+        import soundfile as sf
+        pipeline = cloner._get_official_kokoro_pipeline(args.lang)
+        _, voice = cloner._get_config(args.lang)
+        samples, sr = cloner._synthesize_with_official_kokoro(pipeline, args.text, voice)
+        sf.write(args.output, samples, sr)
+
+    return 0
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+"""
+    script_path.write_text(script_text, encoding="utf-8")
+    try:
+        os.chmod(script_path, 0o700)
+    except Exception:
+        pass
+    return script_path
+
+
+def _generate_kokoclone_audio(
+    text: str,
+    output_path: Path,
+    lang: str = "en",
+    reference_audio: str = "",
+) -> None:
+    """Generate speech via KokoClone (with optional voice cloning)."""
+    python_bin = _kokoclone_venv_python()
+    if not python_bin.exists():
+        raise RuntimeError(
+            "KokoClone is not installed. Click 'Install KokoClone' in Backend Settings."
+        )
+    install_dir = _KOKOCLONE_INSTALL_DIR
+    if not install_dir.exists():
+        raise RuntimeError(
+            "KokoClone repository not found. Click 'Install KokoClone' in Backend Settings."
+        )
+    script_path = _ensure_kokoclone_worker_script()
+    TTS_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+
+    cmd = [
+        str(python_bin), str(script_path),
+        "--install-dir", str(install_dir),
+        "--text", text,
+        "--lang", lang,
+        "--output", str(output_path),
+    ]
+    ref = str(reference_audio).strip()
+    if ref and Path(ref).expanduser().exists():
+        cmd += ["--reference", str(Path(ref).expanduser())]
+
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=300, check=False)
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "no output").strip()[-400:]
+        raise RuntimeError(f"KokoClone synthesis failed: {detail}")
+    if not output_path.exists() or output_path.stat().st_size == 0:
+        raise RuntimeError("KokoClone produced no audio output.")
+
 def synthesize_tts(
     profile: BackendProfile,
     payload: dict[str, object],
@@ -2584,6 +2775,14 @@ def synthesize_tts(
             _default_pocket_language(payload),
             voice_mode=voice_mode,
         )
+    elif profile.key == "kokoclone":
+        lang = str(payload.get("tts_language", "en")).strip() or "en"
+        reference = str(payload.get("tts_voice_reference", "")).strip()
+        # Per-character voice sample takes priority
+        char_ref = str(payload.get("_character_voice_sample", "")).strip()
+        if char_ref and Path(char_ref).expanduser().exists():
+            reference = char_ref
+        _generate_kokoclone_audio(text, output_path, lang=lang, reference_audio=reference)
     else:
         if profile.key == "kokorotts":
             _generate_kokoro_audio_subprocess(model_dir, resolved_voice, text, output_path)

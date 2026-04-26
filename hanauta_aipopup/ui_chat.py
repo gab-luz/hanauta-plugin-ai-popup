@@ -54,6 +54,7 @@ from .runtime import (
     AI_STATE_DIR,
     IMAGE_OUTPUT_DIR,
     TTS_OUTPUT_DIR,
+    VOICE_RECORDINGS_DIR,
     PLUGIN_ROOT,
 )
 from .style import (
@@ -64,13 +65,21 @@ from .storage import secure_load_secret
 from .http import (
     _api_url_from_host,
     _http_post_json,
+    _normalize_host_url,
     _openai_compat_alive,
+    _sd_auth_headers,
     send_desktop_notification,
 )
-from .backends import _existing_path
+from .backends import _existing_path, start_koboldcpp as _start_koboldcpp
 from .tts import (
     synthesize_tts, _waveform_from_hanauta_service,
     _iter_openai_sse_deltas,
+    _ensure_voice_whisper_script,
+    _ensure_voice_whisper_stream_script,
+    _transcribe_with_whisper,
+    _transcribe_with_whisperlive,
+    _default_tts_mode,
+    _host_reachable,
 )
 from .ui_widgets import (
     SurfaceFrame, FadeCard, AvatarBadge, ActionIcon,
@@ -88,6 +97,13 @@ from .voice import (
     _privacy_word_list,
     _extract_emotion_and_clean_text,
     _emotion_prompt_suffix,
+    _record_microphone_wav,
+    _voice_recording_rms,
+    _wav_duration_seconds,
+    _matches_stop_phrase,
+    _ensure_voice_venv,
+    _voice_venv_dir,
+    _voice_venv_python,
 )
 from .tts import (
     synthesize_tts, _waveform_from_hanauta_service,
@@ -97,6 +113,8 @@ from .tts import (
     _voice_memory_recall, _voice_memory_store_pair,
     _chat_messages_for_prompt, _chat_messages_with_memory,
     _stream_openai_style_reply,
+    _render_llm_text_html,
+    _strip_simple_markdown,
 )
 
 LOGGER = logging.getLogger("hanauta.ai_popup")
@@ -700,6 +718,81 @@ class VoiceModeWebView(QWidget):
             return
         assert isinstance(self._view, QTextBrowser)
         self._view.setHtml(doc)
+
+
+class TextReplyWorker(QThread):
+    """Sends a chat message to an OpenAI-compatible or Ollama backend and returns the reply."""
+    finished_ok = pyqtSignal(str, str, str)  # reply, profile_label, model
+    failed = pyqtSignal(str)
+
+    def __init__(
+        self,
+        profile: "BackendProfile",
+        payload: dict,
+        backend_settings: dict,
+        text: str,
+        character=None,
+    ) -> None:
+        super().__init__()
+        self.profile = profile
+        self.payload = dict(payload)
+        self.backend_settings = dict(backend_settings)
+        self.text = text
+        self.character = character
+
+    def run(self) -> None:
+        try:
+            from .tts import (
+                generate_voice_chat_reply,
+                _chat_messages_with_memory,
+                _generate_openai_style_reply,
+                _load_skills,
+                _api_url_from_host,
+            )
+            from .http import _http_post_json
+            from .storage import secure_load_secret
+            from .user_profile import load_profile_state, preferred_user_name
+
+            profile = self.profile
+            payload = self.payload
+            host = str(payload.get("host", profile.host)).strip()
+            model = str(payload.get("model", profile.model)).strip() or profile.model
+            api_key = secure_load_secret(f"{profile.key}:api_key").strip()
+            user_name = preferred_user_name(load_profile_state())
+            tools = _load_skills()
+
+            messages = _chat_messages_with_memory(
+                self.text,
+                self.character,
+                tools=tools or None,
+                user_name=user_name,
+            )
+
+            if profile.key == "ollama":
+                response = _http_post_json(
+                    f"{_api_url_from_host(host)}/api/chat",
+                    {"model": model, "messages": messages, "stream": False},
+                    timeout=240.0,
+                )
+                msg = response.get("message", {})
+                reply = str(msg.get("content", "")).strip() if isinstance(msg, dict) else ""
+                if not reply:
+                    raise RuntimeError("Ollama returned no text.")
+            else:
+                reply = _generate_openai_style_reply(
+                    host, model, messages, api_key,
+                    tools=tools or None,
+                )
+
+            if profile.key == "koboldcpp":
+                from .backends import _existing_path
+                gguf = _existing_path(payload.get("gguf_path"))
+                if gguf:
+                    model = gguf.name
+
+            self.finished_ok.emit(reply, profile.label, model)
+        except Exception as exc:
+            self.failed.emit(str(exc))
 
 
 class SdImageWorker(QThread):

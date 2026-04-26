@@ -41,6 +41,27 @@ def _openai_compat_alive(host: str) -> bool:
         return False
 
 
+def _koboldcpp_model_loaded(host: str) -> tuple[bool, str]:
+    """
+    Returns (loaded, model_name).
+    Uses /api/v1/model which only returns a real name once the model is fully loaded.
+    Falls back to /api/extra/version to confirm the process is at least running.
+    """
+    from urllib import request as _req
+    base = _normalize_host_url(host)
+    try:
+        with _req.urlopen(f"{base}/api/v1/model", timeout=3.0) as resp:
+            import json as _json
+            data = _json.loads(resp.read().decode("utf-8", errors="ignore"))
+            model = str(data.get("result", "")).strip()
+            # KoboldCpp returns "koboldcpp" (no slash) when no model is loaded yet
+            if model and "/" in model:
+                return True, model.split("/", 1)[-1]
+            return False, model
+    except Exception:
+        return False, ""
+
+
 def _is_pid_alive(pid: int) -> bool:
     if pid <= 0:
         return False

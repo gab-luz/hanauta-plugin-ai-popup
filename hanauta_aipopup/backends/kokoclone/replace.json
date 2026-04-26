@@ -1,0 +1,701 @@
+{
+  "apply_in_order": true,
+  "replacement_syntax": "javascript_style_$1",
+  "substitutions": [
+    {
+      "pattern": "\\bhoje\\b",
+      "flags": "gi",
+      "replacement": "ôji"
+    },
+    {
+      "pattern": "\\bjá\\b",
+      "flags": "gi",
+      "replacement": "jáh"
+    },
+    {
+      "pattern": "\\bjoana\\b",
+      "flags": "gi",
+      "replacement": "Joána"
+    },
+      {
+    "pattern": "\\bhoje\\b",
+    "flags": "gi",
+    "replacement": "ôgi"
+    },
+    {
+        "pattern": "\\bjeito\\b",
+        "flags": "gi",
+        "replacement": "geito"
+    },
+    {
+        "pattern": "\\bJorge\\b",
+        "flags": "g",
+        "replacement": "Jórgi"
+    },
+    {
+        "pattern": "\\bjorge\\b",
+        "flags": "gi",
+        "replacement": "jórgi"
+    },
+    {
+        "pattern": "\\bviagem\\b",
+        "flags": "gi",
+        "replacement": "viágem"
+    },
+    {
+        "pattern": "\\bviaje\\b",
+        "flags": "gi",
+        "replacement": "viági"
+    },
+    {
+        "pattern": "\\bgente\\b",
+        "flags": "gi",
+        "replacement": "gênte"
+    },
+    {
+        "pattern": "\\bgeleia\\b|\\bgeléia\\b",
+        "flags": "gi",
+        "replacement": "geléia"
+    },
+    {
+        "pattern": "\\bgirafa\\b",
+        "flags": "gi",
+        "replacement": "giráfa"
+    },
+    {
+      "pattern": "\\bjúlia\\b",
+      "flags": "gi",
+      "replacement": "Júlya"
+    },
+    {
+      "pattern": "\\bjorge\\b",
+      "flags": "gi",
+      "replacement": "Jórji"
+    },
+    {
+      "pattern": "\\bjessica\\b|\\bjéssica\\b",
+      "flags": "gi",
+      "replacement": "Jéssica"
+    },
+    {
+      "pattern": "\\bjanete\\b",
+      "flags": "gi",
+      "replacement": "Janéti"
+    },
+    {
+    "pattern": "\\bpra\\b",
+    "flags": "gi",
+    "replacement": "prá"
+    },
+    {
+        "pattern": "\\bleve\\b",
+        "flags": "gi",
+        "replacement": "lévi"
+    },
+    {
+      "pattern": "\\bjaneiro\\b",
+      "flags": "gi",
+      "replacement": "janêiro"
+    },
+    {
+      "pattern": "\\bjardim\\b",
+      "flags": "gi",
+      "replacement": "jardím"
+    },
+    {
+      "pattern": "\\bjanela\\b",
+      "flags": "gi",
+      "replacement": "janéla"
+    },
+    {
+      "pattern": "\\bjeito\\b",
+      "flags": "gi",
+      "replacement": "jêito"
+    },
+    {
+      "pattern": "\\bjeans\\b",
+      "flags": "gi",
+      "replacement": "díns"
+    },
+    {
+      "pattern": "\\bjaqueta\\b",
+      "flags": "gi",
+      "replacement": "jaquéta"
+    },
+    {
+      "pattern": "\\bajeita(?:r|va|do|da)?\\b",
+      "flags": "gi",
+      "replacement": "ajieita"
+    },
+    {
+      "pattern": "\\bajeitava\\b",
+      "flags": "gi",
+      "replacement": "ajieitava"
+    },
+    {
+      "pattern": "\\bgente\\b",
+      "flags": "gi",
+      "replacement": "jênte"
+    },
+    {
+      "pattern": "\\bgeleia\\b|\\bgeléia\\b",
+      "flags": "gi",
+      "replacement": "jeléia"
+    },
+    {
+      "pattern": "\\bgelo\\b",
+      "flags": "gi",
+      "replacement": "jélo"
+    },
+    {
+      "pattern": "\\bgelado\\b",
+      "flags": "gi",
+      "replacement": "jeládo"
+    },
+    {
+      "pattern": "\\bgirafa\\b",
+      "flags": "gi",
+      "replacement": "jiráfa"
+    },
+    {
+      "pattern": "\\bgigante\\b",
+      "flags": "gi",
+      "replacement": "jigânte"
+    },
+    {
+      "pattern": "\\bviagem\\b",
+      "flags": "gi",
+      "replacement": "viájem"
+    },
+    {
+      "pattern": "\\bviaje\\b",
+      "flags": "gi",
+      "replacement": "viáji"
+    },
+    {
+      "pattern": "\\bviajar\\b",
+      "flags": "gi",
+      "replacement": "viajáh"
+    },
+    {
+      "pattern": "\\bjornal\\b",
+      "flags": "gi",
+      "replacement": "jornál"
+    },
+    {
+      "pattern": "\\bjiboia\\b|\\bjibóia\\b",
+      "flags": "gi",
+      "replacement": "jibóia"
+    },
+    {
+      "pattern": "\\bjiló\\b",
+      "flags": "gi",
+      "replacement": "jiló"
+    },
+    {
+      "pattern": "\\bjabuticaba\\b",
+      "flags": "gi",
+      "replacement": "jabuticába"
+    },
+    {
+      "pattern": "\\bjóia\\b|\\bjoia\\b",
+      "flags": "gi",
+      "replacement": "jóia"
+    },
+    {
+      "pattern": "\\bjunto\\b",
+      "flags": "gi",
+      "replacement": "júnto"
+    },
+
+    {
+      "pattern": "\\bda\\b",
+      "flags": "gi",
+      "replacement": "dá"
+    },
+    {
+      "pattern": "\\bdas\\b",
+      "flags": "gi",
+      "replacement": "dás"
+    },
+    {
+      "pattern": "\\bpra\\b",
+      "flags": "gi",
+      "replacement": "prá"
+    },
+    {
+      "pattern": "\\bpara\\b",
+      "flags": "gi",
+      "replacement": "pára"
+    },
+    {
+      "pattern": "\\bela\\b",
+      "flags": "gi",
+      "replacement": "éla"
+    },
+    {
+      "pattern": "\\bele\\b",
+      "flags": "gi",
+      "replacement": "êle"
+    },
+    {
+      "pattern": "\\bessa\\b",
+      "flags": "gi",
+      "replacement": "éssa"
+    },
+    {
+      "pattern": "\\besse\\b",
+      "flags": "gi",
+      "replacement": "êsse"
+    },
+    {
+      "pattern": "\\baquela\\b",
+      "flags": "gi",
+      "replacement": "aquéla"
+    },
+    {
+      "pattern": "\\baquele\\b",
+      "flags": "gi",
+      "replacement": "aquêle"
+    },
+
+    {
+      "pattern": "\\bcozinha\\b",
+      "flags": "gi",
+      "replacement": "cozínha"
+    },
+    {
+      "pattern": "\\bcafé\\b",
+      "flags": "gi",
+      "replacement": "caféh"
+    },
+    {
+      "pattern": "\\bquentinho\\b",
+      "flags": "gi",
+      "replacement": "quentínho"
+    },
+    {
+      "pattern": "\\bchamou\\b",
+      "flags": "gi",
+      "replacement": "chamôu"
+    },
+    {
+      "pattern": "\\bchuva\\b",
+      "flags": "gi",
+      "replacement": "chúva"
+    },
+    {
+      "pattern": "\\bgostosa\\b",
+      "flags": "gi",
+      "replacement": "gostósa"
+    },
+    {
+      "pattern": "\\bcachorro\\b",
+      "flags": "gi",
+      "replacement": "cachôrro"
+    },
+    {
+      "pattern": "\\bmarrom\\b",
+      "flags": "gi",
+      "replacement": "marróm"
+    },
+    {
+      "pattern": "\\bcorria\\b",
+      "flags": "gi",
+      "replacement": "corría"
+    },
+    {
+      "pattern": "\\batrás\\b",
+      "flags": "gi",
+      "replacement": "atráz"
+    },
+    {
+      "pattern": "\\bfolha\\b",
+      "flags": "gi",
+      "replacement": "fôlha"
+    },
+    {
+      "pattern": "\\bamarela\\b",
+      "flags": "gi",
+      "replacement": "amaréla"
+    },
+    {
+      "pattern": "\\benquanto\\b",
+      "flags": "gi",
+      "replacement": "enquânto"
+    },
+    {
+      "pattern": "\\bria\\b",
+      "flags": "gi",
+      "replacement": "ría"
+    },
+    {
+      "pattern": "\\bsozinho\\b",
+      "flags": "gi",
+      "replacement": "sozínho"
+    },
+    {
+      "pattern": "\\bbagunça\\b",
+      "flags": "gi",
+      "replacement": "bagúnça"
+    },
+    {
+      "pattern": "\\bqueijo\\b",
+      "flags": "gi",
+      "replacement": "quêijo"
+    },
+    {
+      "pattern": "\\bpão\\b",
+      "flags": "gi",
+      "replacement": "pãum"
+    },
+    {
+      "pattern": "\\bxícara\\b",
+      "flags": "gi",
+      "replacement": "xícára"
+    },
+    {
+      "pattern": "\\bazul\\b",
+      "flags": "gi",
+      "replacement": "azúl"
+    },
+    {
+      "pattern": "\\bamanhã\\b",
+      "flags": "gi",
+      "replacement": "amanhãh"
+    },
+    {
+      "pattern": "\\btalvez\\b",
+      "flags": "gi",
+      "replacement": "talvéz"
+    },
+    {
+      "pattern": "\\bfique\\b",
+      "flags": "gi",
+      "replacement": "fíque"
+    },
+    {
+      "pattern": "\\bcasa\\b",
+      "flags": "gi",
+      "replacement": "cáza"
+    },
+    {
+      "pattern": "\\brespire\\b",
+      "flags": "gi",
+      "replacement": "respíre"
+    },
+    {
+      "pattern": "\\bfundo\\b",
+      "flags": "gi",
+      "replacement": "fúndo"
+    },
+    {
+      "pattern": "\\bdiga\\b",
+      "flags": "gi",
+      "replacement": "díga"
+    },
+    {
+      "pattern": "\\btudo bem\\b",
+      "flags": "gi",
+      "replacement": "tudo bém"
+    },
+    {
+      "pattern": "\\bdevagarzinho\\b",
+      "flags": "gi",
+      "replacement": "divagarzinho"
+    },
+    {
+      "pattern": "\\bvida\\b",
+      "flags": "gi",
+      "replacement": "vída"
+    },
+    {
+      "pattern": "\\bmelhora\\b",
+      "flags": "gi",
+      "replacement": "melhórah"
+    },
+    {
+      "pattern": "\\bmelhorar\\b",
+      "flags": "gi",
+      "replacement": "melhoráh"
+    },
+
+    {
+      "pattern": "\\brua\\b",
+      "flags": "gi",
+      "replacement": "rúa"
+    },
+    {
+      "pattern": "\\brápido\\b|\\brapido\\b",
+      "flags": "gi",
+      "replacement": "rápido"
+    },
+    {
+      "pattern": "\\brecomeça\\b",
+      "flags": "gi",
+      "replacement": "recoméça"
+    },
+    {
+      "pattern": "\\brecomeçar\\b",
+      "flags": "gi",
+      "replacement": "recomeçáh"
+    },
+    {
+      "pattern": "\\brespira\\b",
+      "flags": "gi",
+      "replacement": "respíra"
+    },
+    {
+      "pattern": "\\brespirar\\b",
+      "flags": "gi",
+      "replacement": "respiráh"
+    },
+    {
+      "pattern": "\\bcoragem\\b",
+      "flags": "gi",
+      "replacement": "corájem"
+    },
+    {
+      "pattern": "\\bcarinho\\b",
+      "flags": "gi",
+      "replacement": "carínho"
+    },
+    {
+      "pattern": "\\bcarro\\b",
+      "flags": "gi",
+      "replacement": "cárro"
+    },
+    {
+      "pattern": "\\bcaro\\b",
+      "flags": "gi",
+      "replacement": "cáro"
+    },
+    {
+      "pattern": "\\barara\\b",
+      "flags": "gi",
+      "replacement": "arára"
+    },
+    {
+      "pattern": "\\braro\\b",
+      "flags": "gi",
+      "replacement": "ráro"
+    },
+    {
+      "pattern": "\\bmuro\\b",
+      "flags": "gi",
+      "replacement": "múro"
+    },
+    {
+      "pattern": "\\bmorro\\b",
+      "flags": "gi",
+      "replacement": "mórro"
+    },
+    {
+      "pattern": "\\bporta\\b",
+      "flags": "gi",
+      "replacement": "pórta"
+    },
+    {
+      "pattern": "\\bperto\\b",
+      "flags": "gi",
+      "replacement": "pérto"
+    },
+    {
+      "pattern": "\\bverde\\b",
+      "flags": "gi",
+      "replacement": "vérde"
+    },
+    {
+      "pattern": "\\btarde\\b",
+      "flags": "gi",
+      "replacement": "tárde"
+    },
+    {
+      "pattern": "\\bárvore\\b|\\barvore\\b",
+      "flags": "gi",
+      "replacement": "árvori"
+    },
+    {
+      "pattern": "\\bgaragem\\b",
+      "flags": "gi",
+      "replacement": "garájem"
+    },
+    {
+      "pattern": "\\bbranco\\b",
+      "flags": "gi",
+      "replacement": "brânco"
+    },
+    {
+      "pattern": "\\bbrisa\\b",
+      "flags": "gi",
+      "replacement": "bríza"
+    },
+    {
+      "pattern": "\\bprato\\b",
+      "flags": "gi",
+      "replacement": "práto"
+    },
+    {
+      "pattern": "\\bpreto\\b",
+      "flags": "gi",
+      "replacement": "prêto"
+    },
+    {
+      "pattern": "\\btrem\\b",
+      "flags": "gi",
+      "replacement": "trêm"
+    },
+    {
+      "pattern": "\\btrês\\b",
+      "flags": "gi",
+      "replacement": "trêis"
+    },
+    {
+      "pattern": "\\bfraco\\b",
+      "flags": "gi",
+      "replacement": "fráco"
+    },
+    {
+      "pattern": "\\bfrio\\b",
+      "flags": "gi",
+      "replacement": "frío"
+    },
+    {
+      "pattern": "\\bgrande\\b",
+      "flags": "gi",
+      "replacement": "grândi"
+    },
+    {
+      "pattern": "\\bgrita\\b",
+      "flags": "gi",
+      "replacement": "gríta"
+    },
+    {
+      "pattern": "\\bgritou\\b",
+      "flags": "gi",
+      "replacement": "gritôu"
+    },
+
+    {
+      "pattern": "\\bmelhor\\b",
+      "flags": "gi",
+      "replacement": "melhór"
+    },
+    {
+      "pattern": "\\bmulher\\b",
+      "flags": "gi",
+      "replacement": "mulhér"
+    },
+    {
+      "pattern": "\\bolhar\\b",
+      "flags": "gi",
+      "replacement": "olháh"
+    },
+    {
+      "pattern": "\\bcheirar\\b",
+      "flags": "gi",
+      "replacement": "cheiráh"
+    },
+    {
+      "pattern": "\\bchamar\\b",
+      "flags": "gi",
+      "replacement": "chamáh"
+    },
+    {
+      "pattern": "\\bfalar\\b",
+      "flags": "gi",
+      "replacement": "faláh"
+    },
+    {
+      "pattern": "\\bcantar\\b",
+      "flags": "gi",
+      "replacement": "cantáh"
+    },
+    {
+      "pattern": "\\bamar\\b",
+      "flags": "gi",
+      "replacement": "amáh"
+    },
+    {
+      "pattern": "\\bcomer\\b",
+      "flags": "gi",
+      "replacement": "comêh"
+    },
+    {
+      "pattern": "\\bbeber\\b",
+      "flags": "gi",
+      "replacement": "bebêh"
+    },
+    {
+      "pattern": "\\bviver\\b",
+      "flags": "gi",
+      "replacement": "vivêh"
+    },
+    {
+      "pattern": "\\bfazer\\b",
+      "flags": "gi",
+      "replacement": "fazêh"
+    },
+    {
+      "pattern": "\\bdizer\\b",
+      "flags": "gi",
+      "replacement": "dizêh"
+    },
+    {
+      "pattern": "\\bquerer\\b",
+      "flags": "gi",
+      "replacement": "querêh"
+    },
+    {
+      "pattern": "\\bpedir\\b",
+      "flags": "gi",
+      "replacement": "pedíh"
+    },
+    {
+      "pattern": "\\bdormir\\b",
+      "flags": "gi",
+      "replacement": "dormíh"
+    },
+    {
+      "pattern": "\\bpartir\\b",
+      "flags": "gi",
+      "replacement": "partíh"
+    },
+    {
+      "pattern": "\\bouvir\\b",
+      "flags": "gi",
+      "replacement": "ouvíh"
+    },
+
+    {
+      "pattern": "\\bcoração\\b",
+      "flags": "gi",
+      "replacement": "coraçãum"
+    },
+    {
+      "pattern": "\\bemoção\\b",
+      "flags": "gi",
+      "replacement": "emoçãum"
+    },
+    {
+      "pattern": "\\bcanção\\b",
+      "flags": "gi",
+      "replacement": "cançãum"
+    },
+    {
+      "pattern": "\\bmão\\b",
+      "flags": "gi",
+      "replacement": "mãum"
+    },
+    {
+      "pattern": "\\bnão\\b",
+      "flags": "gi",
+      "replacement": "nãum"
+    },
+    {
+      "pattern": "\\bentão\\b",
+      "flags": "gi",
+      "replacement": "entãum"
+    }
+  ]
+}

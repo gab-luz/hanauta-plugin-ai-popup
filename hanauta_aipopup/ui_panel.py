@@ -10,7 +10,7 @@ import time
 import zipfile
 from pathlib import Path
 
-from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QThread
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QThread, QSize
 from PyQt6.QtGui import QColor, QCursor, QFont, QGuiApplication, QIcon, QPixmap, QPainter, QPen
 from PyQt6.QtWidgets import (
     QApplication,
@@ -60,6 +60,7 @@ from .http import (
     send_desktop_notification,
     send_desktop_notification_with_action,
     maybe_notify_koboldcpp_release,
+    _api_url_from_host,
     _openai_compat_alive,
     _looks_like_gemma4_model_name,
     _looks_like_gemma4_audio_variant,
@@ -128,6 +129,7 @@ class SidebarPanel(QFrame):
             BackendProfile("sdwebui", "SD WebUI", "sdwebui", "sdxl", "127.0.0.1:7860", "sdwebui"),
             BackendProfile("sdreforge", "SD ReForge", "sdwebui", "sdxl", "127.0.0.1:7861", "sdreforge"),
             BackendProfile("kokorotts", "KokoroTTS", "tts_local", "kokoro", "127.0.0.1:8880", "kokorotts", False, True),
+            BackendProfile("kokoclone", "KokoClone", "tts_local", "en", "", "kokorotts", False, False),
             BackendProfile("pockettts", "PocketTTS", "tts_local", "pocket", "127.0.0.1:8890", "pockettts", False, True),
         ]
         self.profile_by_key = {profile.key: profile for profile in self.profiles}
@@ -145,6 +147,8 @@ class SidebarPanel(QFrame):
         self._sd_seen_outputs: dict[str, tuple[str, float]] = {}
         self._image_worker: SdImageWorker | None = None
         self._tts_worker: TtsSynthesisWorker | None = None
+        self._text_worker = None
+        self._pending_user_message: str = ""
         self._voice_worker: VoiceConversationWorker | None = None
         self._local_backend_processes: dict[str, subprocess.Popen[str]] = {}
         self._pending_item: ChatItemData | None = None
@@ -697,18 +701,25 @@ class SidebarPanel(QFrame):
         if not host:
             self._kobold_ready_timer.stop()
             return
-        if not _openai_compat_alive(host):
-            return
+        from .backends import _koboldcpp_model_loaded
+        loaded, model_name = _koboldcpp_model_loaded(host)
+        if not loaded:
+            return  # keep polling
         label = self._pending_kobold_ready_profile or "KoboldCpp"
         self._pending_kobold_ready_profile = ""
         self._pending_kobold_ready_host = ""
         self._kobold_ready_timer.stop()
+        display_model = model_name or label
         self.add_card(
             ChatItemData(
                 role="assistant",
                 title="Runtime",
                 meta="koboldcpp ready",
-                body=f"<p>{html.escape(label)} is ready at {html.escape(_normalize_host_url(host))}. Voice mode can start now.</p>",
+                body=(
+                    f"<p><b>{html.escape(label)}</b> is ready.</p>"
+                    f"<p>Model loaded: <b>{html.escape(display_model)}</b></p>"
+                    f"<p>You can now send messages or start voice mode.</p>"
+                ),
                 chips=[SourceChipData("koboldcpp"), SourceChipData("ready")],
             )
         )
@@ -1055,11 +1066,35 @@ class SidebarPanel(QFrame):
                         self._voice_models_loaded[k] = bool(loaded.get(k, False))
             self._apply_voice_button_state()
             self._sync_web_ui()
+            # Build an honest status message based on what actually loaded
+            config = _voice_mode_settings(self.backend_settings)
+            profile_key = str(config.get("llm_profile", "koboldcpp")).strip()
+            profile = self.profile_by_key.get(profile_key)
+            status_lines: list[str] = []
+            if profile is not None and profile.key == "koboldcpp":
+                kpayload = dict(self.backend_settings.get(profile.key, {}))
+                host = str(kpayload.get("host", profile.host)).strip()
+                from .backends import _koboldcpp_model_loaded
+                kloaded, kmodel = _koboldcpp_model_loaded(host)
+                if kloaded:
+                    status_lines.append(f"KoboldCpp ready — model: <b>{html.escape(kmodel)}</b>")
+                else:
+                    status_lines.append("KoboldCpp process started but model is still loading…")
+            elif profile is not None:
+                kpayload = dict(self.backend_settings.get(profile.key, {}))
+                host = str(kpayload.get("host", profile.host)).strip()
+                from .http import _openai_compat_alive
+                if host and _openai_compat_alive(host):
+                    status_lines.append(f"{html.escape(profile.label)} is reachable at <code>{html.escape(host)}</code>")
+                else:
+                    status_lines.append(f"{html.escape(profile.label)} did not respond at <code>{html.escape(host)}</code>")
+            body = "<p>" + "</p><p>".join(status_lines) + "</p>" if status_lines else "<p>Warmup complete.</p>"
+            tone = "success" if status_lines and "loading" not in body and "not respond" not in body else "warn"
             self._add_runtime_status_card(
                 "Model Warmup Complete",
-                "Selected backends are ready.",
-                tone="success",
-                chips=["voice", "models", "ready"],
+                body,
+                tone=tone,
+                chips=["voice", "models"],
             )
 
         def _on_fail(message: str) -> None:
@@ -1581,8 +1616,10 @@ class SidebarPanel(QFrame):
     def _maybe_launch_koboldcpp(self, profile: BackendProfile) -> bool:
         payload = dict(self.backend_settings.get(profile.key, {}))
         host = str(payload.get("host", profile.host)).strip()
+        # Already reachable via HTTP — don't launch again
         if host and _openai_compat_alive(host):
             return True
+        # Process already tracked and alive — don't launch again
         active, _message = _koboldcpp_status(payload)
         if active:
             return True
@@ -1593,24 +1630,28 @@ class SidebarPanel(QFrame):
         answer = QMessageBox.question(
             self,
             "Start KoboldCpp",
-            "KoboldCpp is not responding. Start it now with the configured GGUF model?",
+            f"KoboldCpp is not running.\nStart it now with {gguf_path.name}?",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.Yes,
         )
         if answer != QMessageBox.StandardButton.Yes:
             return False
         ok, message = self._launch_koboldcpp_process(profile, payload)
-        self.add_card(
-            ChatItemData(
-                role="assistant",
-                title="Hanauta AI",
-                meta="runtime launch" if ok else "runtime launch failed",
-                body=f"<p>{html.escape(message)}</p>",
-            )
-        )
+        self.add_card(ChatItemData(
+            role="assistant", title="Hanauta AI",
+            meta="runtime launch" if ok else "runtime launch failed",
+            body=f"<p>{html.escape(message)}</p>",
+        ))
         return ok
 
     def _launch_koboldcpp_process(self, profile: BackendProfile, payload: dict[str, object]) -> tuple[bool, str]:
+        # Final guard: don't spawn if already alive
+        host = str(payload.get("host", profile.host)).strip()
+        if host and _openai_compat_alive(host):
+            return True, "KoboldCpp is already running."
+        active, _ = _koboldcpp_status(payload)
+        if active:
+            return True, "KoboldCpp process is already running."
         ok, message = _start_koboldcpp(payload)
         if ok:
             self.backend_settings[profile.key] = dict(payload)
@@ -1810,6 +1851,11 @@ class SidebarPanel(QFrame):
             return
         self._set_pending_state(profile.label, "Synthesizing speech", "tts")
         payload = dict(self.backend_settings.get(profile.key, {}))
+        # Inject active character's voice sample for KokoClone
+        if profile.key == "kokoclone":
+            active_char = self._active_character()
+            if active_char is not None and active_char.voice_sample_path:
+                payload["_character_voice_sample"] = active_char.voice_sample_path
         self._tts_worker = TtsSynthesisWorker(profile, payload, clean)
         self._tts_worker.finished_ok.connect(self._handle_tts_generated)
         self._tts_worker.failed.connect(self._handle_tts_failed)
@@ -1853,46 +1899,105 @@ class SidebarPanel(QFrame):
         self._tts_worker = None
 
     def _finish_mock_text_response(self) -> None:
-        LOGGER.debug("finish_mock_text_response: timer fired")
+        """Replaced mock: check backend status and show real situation."""
+        LOGGER.debug("_finish_mock_text_response: checking real backend status")
         self._clear_pending_state()
         if self.current_profile is None:
-            LOGGER.debug("finish_mock_text_response: no current_profile")
             return
-        summary = (
-            "Mock response ready. "
-            f"Backend: {self.current_profile.label} ({self.current_profile.model})."
+        profile = self.current_profile
+        payload = dict(self.backend_settings.get(profile.key, {}))
+        host = str(payload.get("host", profile.host)).strip()
+
+        # Check if backend is reachable
+        alive = False
+        try:
+            from .http import _openai_compat_alive
+            alive = _openai_compat_alive(host) if host else False
+        except Exception:
+            pass
+
+        if profile.key == "koboldcpp":
+            active, status_msg = _koboldcpp_status(payload)
+            if not active:
+                gguf = _existing_path(payload.get("gguf_path"))
+                binary = _existing_path(payload.get("binary_path"))
+                if binary is None:
+                    body = "<p>KoboldCpp binary not configured. Set it in <b>Backend Settings</b>.</p>"
+                elif gguf is None:
+                    body = "<p>No GGUF model selected. Choose one in <b>Backend Settings → KoboldCpp</b>.</p>"
+                else:
+                    body = (
+                        f"<p>KoboldCpp is not running.</p>"
+                        f"<p>Model: <b>{html.escape(gguf.name)}</b></p>"
+                        f"<p>Click the <b>KoboldCpp icon</b> in the sidebar to start it, "
+                        f"or use <b>Backend Settings → Start</b>.</p>"
+                    )
+                self.add_card(ChatItemData(
+                    role="assistant", title="Hanauta AI", meta="backend offline",
+                    body=body, chips=[SourceChipData("koboldcpp")],
+                ))
+                return
+        elif not alive:
+            if not host:
+                body = f"<p>No host configured for <b>{html.escape(profile.label)}</b>. Set it in <b>Backend Settings</b>.</p>"
+            else:
+                body = (
+                    f"<p><b>{html.escape(profile.label)}</b> is not reachable at "
+                    f"<code>{html.escape(host)}</code>.</p>"
+                    f"<p>Make sure the backend is running and the host/port are correct.</p>"
+                )
+            self.add_card(ChatItemData(
+                role="assistant", title="Hanauta AI", meta="backend offline",
+                body=body, chips=[SourceChipData(profile.provider)],
+            ))
+            return
+
+        # Backend is alive — send the real message
+        if self._pending_user_message:
+            self._dispatch_real_llm(profile, payload, self._pending_user_message)
+        self._pending_user_message = ""
+
+    def _dispatch_real_llm(self, profile: BackendProfile, payload: dict, text: str) -> None:
+        """Send a real chat message to the LLM backend in a worker thread."""
+        from .ui_chat import TextReplyWorker
+        if hasattr(self, "_text_worker") and self._text_worker is not None and self._text_worker.isRunning():
+            return
+        self._set_pending_state(profile.label, "Generating response…", "text generation")
+        character = self._active_character()
+        worker = TextReplyWorker(
+            profile=profile,
+            payload=payload,
+            backend_settings=self.backend_settings,
+            text=text,
+            character=character,
         )
-        active_character = self._active_character()
-        character_line = ""
-        chips = [SourceChipData(self.current_profile.provider), SourceChipData(self.current_profile.model)]
-        if active_character is not None:
-            prompt_preview = _character_compose_prompt(active_character)
-            preview_html = html.escape(prompt_preview[:240] + ("..." if len(prompt_preview) > 240 else ""))
-            character_line = (
-                f"<p>Active character: <b>{html.escape(active_character.name)}</b>.</p>"
-                f"<p>Character prompt preview: <code>{preview_html}</code></p>"
-            )
-            chips.append(SourceChipData(f"character:{active_character.name}"))
-        self.add_card(
-            ChatItemData(
-                role="assistant",
-                title=self.current_profile.label,
-                meta=self.current_profile.model,
-                body=(
-                    "<p><b>Mock response:</b> text backends are still using the current placeholder response layer.</p>"
-                    f"<p>Active backend: <b>{html.escape(self.current_profile.label)}</b> at <b>{html.escape(self.current_profile.host)}</b>.</p>"
-                    f"{character_line}"
-                    "<p>The chat history and secure backend secrets are now stored outside the project in Hanauta state.</p>"
-                ),
-                chips=chips,
-            )
-        )
-        LOGGER.debug("finish_mock_text_response: answer card appended")
+        self._text_worker = worker
+        worker.finished_ok.connect(self._handle_text_reply)
+        worker.failed.connect(self._handle_text_reply_failed)
+        worker.finished.connect(lambda: setattr(self, "_text_worker", None))
+        worker.start()
+
+    def _handle_text_reply(self, reply: str, profile_label: str, model: str) -> None:
+        self._clear_pending_state()
+        from .tts import _render_llm_text_html
+        self.add_card(ChatItemData(
+            role="assistant",
+            title=profile_label,
+            meta=model,
+            body=_render_llm_text_html(reply),
+            chips=[SourceChipData(profile_label)],
+        ))
         send_desktop_notification(
-            "New AI answer",
-            summary,
+            "New AI answer", reply[:120],
             icon_path=self._active_character_avatar_icon(),
         )
+
+    def _handle_text_reply_failed(self, message: str) -> None:
+        self._clear_pending_state()
+        self.add_card(ChatItemData(
+            role="assistant", title="Hanauta AI", meta="error",
+            body=f"<p>{html.escape(message)}</p>",
+        ))
 
     def add_user_message(self, text: str) -> None:
         command = text.strip()
@@ -1994,8 +2099,9 @@ class SidebarPanel(QFrame):
             )
             return
 
-        LOGGER.debug("starting mock text response timer (1350ms)")
-        self._set_pending_state(self.current_profile.label, "Response is being generated", "text generation")
-        self._text_response_timer.start(1350)
+        LOGGER.debug("starting real LLM dispatch (backend check + send)")
+        self._pending_user_message = text
+        self._set_pending_state(self.current_profile.label, "Connecting to backend…", "text generation")
+        self._text_response_timer.start(200)
 
 
