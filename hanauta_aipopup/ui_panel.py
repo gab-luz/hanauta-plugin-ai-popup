@@ -1937,17 +1937,14 @@ class SidebarPanel(QFrame):
             "display:inline-flex;align-items:center;justify-content:center;"
             "margin:4px 6px 4px 0;padding:8px 20px;"
             "border-radius:20px;border:none;cursor:pointer;"
-            "font-size:12px;font-weight:700;font-family:inherit;"
-            "transition:transform 0.1s,box-shadow 0.2s;"
+            "font-size:13px;font-weight:600;font-family:inherit;"
         )
         body = (
             f"<p>KoboldCpp is not running.</p>"
             f"<p>Start it now with {html.escape(gguf_path.name)}?</p>"
-            f'<div style="display:flex;gap:8px;margin-top:8px;">'
-            f'<button data-cmd="launchKobold" style="{btn_style}background:var(--accent,#9b8fff);color:#fff;">'
-            f'Start</button>'
-            f'<button data-cmd="dismiss" style="{btn_style}background:rgba(255,255,255,0.08);color:rgba(255,255,255,0.72);">'
-            f'Cancel</button>'
+            f'<div style="margin-top:12px;">'
+            f'<button data-cmd="launchKobold" class="md3-button" style="{btn_style}background:var(--accent);color:#fff;">Start</button>'
+            f'<button data-cmd="dismiss" class="md3-button" style="{btn_style}background:rgba(255,255,255,0.1);color:var(--text);">Cancel</button>'
             f'</div>'
         )
         self.add_card(ChatItemData(

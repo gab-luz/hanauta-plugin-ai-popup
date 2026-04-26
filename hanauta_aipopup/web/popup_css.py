@@ -423,6 +423,12 @@ POPUP_CSS = r"""
       font-family: inherit;
       transition: transform 0.1s ease, box-shadow 0.2s ease;
     }
+    .body-text button.md3-button {
+      background: var(--accent);
+      color: var(--text);
+      padding: 10px 20px;
+      min-width: 72px;
+    }
     .body-text button[data-cmd] {
       background: var(--accent);
       color: var(--text);
