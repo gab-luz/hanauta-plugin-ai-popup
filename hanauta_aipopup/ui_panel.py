@@ -900,6 +900,31 @@ class SidebarPanel(QFrame):
             return
         self._select_backend(profile, button)
 
+    def _start_tts_generation_by_key(self, key: str, text: str) -> None:
+        """Switch to a TTS backend by key and immediately synthesize text."""
+        profile = self.profile_by_key.get(key)
+        if profile is None or profile.provider != "tts_local":
+            return
+        self._start_tts_generation(profile, text)
+
+    def _dismiss_card(self, card_id: str) -> None:
+        """Remove a card from chat history by its id field."""
+        self.chat_history = [c for c in self.chat_history if getattr(c, 'id', None) != card_id]
+        self._render_chat_history()
+        self._sync_web_ui()
+
+    def _select_tts_for_voice(self, key: str) -> None:
+        """Select a TTS backend for voice mode and restart the voice session."""
+        profile = self.profile_by_key.get(key)
+        if profile is None or profile.provider != "tts_local":
+            return
+        self.config["tts_profile"] = key
+        self.config["tts_device"] = str(self.backend_settings.get(key, {}).get("device", "cpu"))
+        self._save_config()
+        if self._voice_worker is not None and self._voice_worker.isRunning():
+            self._stop_voice_mode()
+        self._start_voice_mode(self.config)
+
     def _toggle_audio_from_web(self, path_text: str) -> None:
         clean = str(path_text).strip()
         if not clean:
@@ -1378,6 +1403,49 @@ class SidebarPanel(QFrame):
         stt_backend, stt_model = self._voice_stt_backend_model()
         llm_backend, llm_model = self._voice_llm_backend_model()
         tts_profile = self.profile_by_key.get(str(config.get("tts_profile", "kokorotts")).strip())
+        tts_profiles_available = [p for p in self.profiles if p.provider == "tts_local"]
+        if tts_profile is None or tts_profile.provider != "tts_local":
+            if tts_profiles_available:
+                tts_key = tts_profiles_available[0].key
+                card_id = f"voice-tts-pick-{int(time.time()*1000)}"
+                btn_style = (
+                    "display:inline-block;margin:4px 6px 4px 0;"
+                    "padding:7px 16px;border-radius:20px;border:none;cursor:pointer;"
+                    "font-size:12px;font-weight:700;"
+                )
+                buttons_html = "".join(
+                    f'<button style="{btn_style}background:var(--accent,#9b8fff);color:#fff" '
+                    f'onclick="bridge&&bridge.selectTtsForVoice&&bridge.selectTtsForVoice({json.dumps(p.key)});">{html.escape(p.label)}</button>'
+                    for p in tts_profiles_available
+                )
+                dismiss_btn = (
+                    f'<button style="{btn_style}background:rgba(255,255,255,0.08);color:rgba(255,255,255,0.6)" '
+                    f'onclick="bridge&&bridge.dismissCard&&bridge.dismissCard({json.dumps(card_id)});">Dismiss</button>'
+                )
+                body = (
+                    f"<p>Select a TTS engine for voice replies:</p>"
+                    f"<p>{buttons_html}{dismiss_btn}</p>"
+                )
+                item = ChatItemData(
+                    role="assistant",
+                    title="Voice mode",
+                    body=body,
+                    meta="voice tts",
+                )
+                item.id = card_id
+                self.add_card(item)
+                self._voice_pending_tts_select = True
+                return
+            self.add_card(
+                ChatItemData(
+                    role="assistant",
+                    title="Voice mode",
+                    meta="error",
+                    body="<p>No TTS backend configured. Add KokoroTTS or PocketTTS in Settings → Backends.</p>",
+                    chips=[SourceChipData("voice")],
+                )
+            )
+            return
         tts_label = tts_profile.label if tts_profile is not None else "TTS"
         tts_model = str(self.backend_settings.get(tts_profile.key, {}).get("model", tts_profile.model)).strip() if tts_profile is not None else "default"
         self._add_runtime_status_card("Voice Session Ready", f"STT {stt_backend} {stt_model} • LLM {llm_backend} {llm_model} • TTS {tts_label} {tts_model}", tone="success", chips=["voice", "models"])
@@ -2179,14 +2247,39 @@ class SidebarPanel(QFrame):
             prefix = "/say " if command.startswith("/say ") else "/speak "
             speak_prompt = command[len(prefix):].strip()
             if self.current_profile.provider != "tts_local":
-                self.add_card(
-                    ChatItemData(
-                        role="assistant",
-                        title="Hanauta AI",
-                        body="<p>Select KokoroTTS or PocketTTS before using <code>/say</code>.</p>",
-                        meta="tts command",
-                    )
+                import json as _json
+                safe_text = _json.dumps(speak_prompt)  # JS-safe quoted string
+                card_id = f"tts-pick-{int(time.time()*1000)}"
+                tts_profiles = [
+                    p for p in self.profiles if p.provider == "tts_local"
+                ]
+                btn_style = (
+                    "display:inline-block;margin:4px 6px 4px 0;"
+                    "padding:7px 16px;border-radius:20px;border:none;cursor:pointer;"
+                    "font-size:12px;font-weight:700;"
                 )
+                buttons_html = "".join(
+                    f'<button style="{btn_style}background:var(--accent,#9b8fff);color:#fff" onclick="bridge&&bridge.selectBackendAndSay&&bridge.selectBackendAndSay({_json.dumps(p.key)},{safe_text});">{html.escape(p.label)}</button>'
+                    for p in tts_profiles
+                )
+                dismiss_btn = (
+                    f'<button style="{btn_style}background:rgba(255,255,255,0.08);color:rgba(255,255,255,0.6)" '
+                    f'onclick="bridge&&bridge.dismissCard&&bridge.dismissCard({_json.dumps(card_id)});">'
+                    f"Dismiss</button>"
+                )
+                body = (
+                    f"<p>Choose a TTS engine to speak this with:</p>"
+                    f"<p><code>{html.escape(speak_prompt[:80])}{'...' if len(speak_prompt)>80 else ''}</code></p>"
+                    f"<p>{buttons_html}{dismiss_btn}</p>"
+                )
+                item = ChatItemData(
+                    role="assistant",
+                    title="Hanauta AI",
+                    body=body,
+                    meta="tts command",
+                )
+                item.id = card_id  # type: ignore[attr-defined]
+                self.add_card(item)
                 return
             self._start_tts_generation(self.current_profile, speak_prompt)
             return

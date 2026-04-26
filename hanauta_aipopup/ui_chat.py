@@ -187,6 +187,22 @@ class PopupWebBridge(QObject):
     def selectBackend(self, key: str) -> None:
         self.owner._select_backend_from_key(key)
 
+    @pyqtSlot(str, str)
+    def selectBackendAndSay(self, key: str, text: str) -> None:
+        """Switch to a TTS backend and immediately synthesize the given text."""
+        self.owner._select_backend_from_key(key)
+        self.owner._start_tts_generation_by_key(key, text)
+
+    @pyqtSlot(str)
+    def selectTtsForVoice(self, key: str) -> None:
+        """Select a TTS backend for voice mode and restart voice session."""
+        self.owner._select_tts_for_voice(key)
+
+    @pyqtSlot(str)
+    def dismissCard(self, card_id: str) -> None:
+        """Remove a card by its id from the chat history."""
+        self.owner._dismiss_card(card_id)
+
     @pyqtSlot(str)
     def toggleAudio(self, path: str) -> None:
         self.owner._toggle_audio_from_web(path)
@@ -1363,11 +1379,11 @@ class VoiceConversationWorker(QThread):
             configured = 0.035
         return max(self._silence_threshold() * 1.8, configured)
 
-    def _tts_profile(self) -> BackendProfile:
+    def _tts_profile(self) -> BackendProfile | None:
         key = str(self.config.get("tts_profile", "kokorotts")).strip()
         profile = self.profiles.get(key)
         if profile is None or profile.provider != "tts_local":
-            raise RuntimeError("Select KokoroTTS or PocketTTS for voice replies.")
+            return None
         return profile
 
     def _tts_payload(self, profile: BackendProfile) -> dict[str, object]:
@@ -1621,6 +1637,9 @@ class VoiceConversationWorker(QThread):
                     speak_cursor = 0
                     total_audio = 0.0
                     tts_profile = self._tts_profile()
+                    if tts_profile is None:
+                        self.failed.emit("No TTS backend selected for voice mode.")
+                        return
                     tts_payload = self._tts_payload(tts_profile)
                     min_chars = max(12, self._tts_streaming_min_chars())
                     max_chars = max(min_chars + 10, self._tts_streaming_max_chars())
@@ -1745,6 +1764,9 @@ class VoiceConversationWorker(QThread):
                     break
                 self.status_changed.emit("Speaking")
                 tts_profile = self._tts_profile()
+                if tts_profile is None:
+                    self.failed.emit("No TTS backend selected for voice mode.")
+                    break
                 tts_payload = self._tts_payload(tts_profile)
                 spoken_answer = _strip_simple_markdown(answer).strip()
                 audio_out, source = synthesize_tts(tts_profile, tts_payload, spoken_answer or answer)

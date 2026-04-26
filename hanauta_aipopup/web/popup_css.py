@@ -393,7 +393,7 @@ POPUP_CSS = r"""
       background: rgba(255,255,255,0.04);
       font-size: 10px;
       font-weight: 800;
-      color: rgba(255,255,255,0.64);
+      color: var(--text-dim);
     }
     .meta {
       display: flex;
@@ -424,15 +424,15 @@ POPUP_CSS = r"""
     }
     .body-text strong, .body-text b {
       font-weight: 700;
-      color: rgba(255,255,255,1.0);
+      color: var(--text);
     }
     .body-text em, .body-text i {
       font-style: italic;
-      color: rgba(255,255,255,0.85);
+      color: var(--text-dim);
     }
     .body-text h1, .body-text h2, .body-text h3 {
       font-weight: 700;
-      color: rgba(255,255,255,1.0);
+      color: var(--text);
       margin: 10px 0 4px 0;
       line-height: 1.3;
     }
