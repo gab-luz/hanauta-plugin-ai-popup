@@ -228,3 +228,119 @@ Use CSS variables (`var(--text)`, `var(--text-dim)`, `var(--text-mid)`) instead 
 - `.chip-pill` → `color: var(--text-dim)`
 
 Avoid hardcoded white/light colors in CSS - always use theme variables.
+
+---
+
+## ⚠️ Action Buttons Inside Chat Cards — Full Checklist
+
+Embedding clickable buttons in a chat card body requires ALL of the following to work. Missing any one step silently breaks the buttons.
+
+### 1. HTML sanitiser (`html_sanitize.py`)
+
+`sanitize_message_html()` is called on every `item.body` before it reaches the webview. It strips any tag not in `_ALLOWED_TAGS`.
+
+- `button` **must** be in `_ALLOWED_TAGS`
+- `data-cmd`, `data-card-id`, `class`, `type`, `style` **must** be in `_TAG_ALLOWED_ATTRS["button"]`
+
+```python
+# html_sanitize.py
+_ALLOWED_TAGS = { ..., "button", ... }
+_TAG_ALLOWED_ATTRS = {
+    "button": {"class", "data-cmd", "data-card-id", "type", "style"},
+    ...
+}
+```
+
+If you add a new `data-*` attribute, add it here or it will be silently stripped.
+
+### 2. CSS (`web/popup_css.py`)
+
+Buttons need explicit styles — browsers don't apply default button styles inside a `div.body-text`.
+
+```css
+.body-text button.filled-button,
+.body-text button.tonal-button {
+  display: inline-flex;
+  border-radius: 20px;
+  cursor: pointer;        /* ← without this, button looks unclickable */
+  font-family: var(--font);
+  border: none;
+  padding: 8px 18px;
+}
+.body-text button.filled-button { background: var(--accent); color: #1a1025; }
+.body-text button.tonal-button  { background: rgba(255,255,255,0.10); color: var(--text); }
+```
+
+**Do not use `var(--surface-container-high)` or other undefined CSS variables** — they silently produce transparent/invisible backgrounds. Only use variables defined in `:root` in `popup_css.py`.
+
+### 3. JS click handler (`web/popup_js.py`)
+
+After `body.innerHTML = m.body_html`, wire up `data-cmd` buttons:
+
+```js
+body.querySelectorAll('button[data-cmd]').forEach((btn) => {
+  btn.addEventListener('click', (e) => {
+    e.preventDefault();
+    const cmd = btn.getAttribute('data-cmd');
+    const cardId = btn.getAttribute('data-card-id') || m.id || '';
+    if (cmd === 'myCommand' && bridge && bridge.mySlot) {
+      bridge.mySlot(cardId);
+    }
+  });
+});
+```
+
+This block is already in `renderMessages()` — just add new `cmd` branches there.
+
+### 4. Bridge slot (`ui_chat.py` — `PopupWebBridge`)
+
+Every `bridge.X` call from JS needs a matching `@pyqtSlot` on `PopupWebBridge`:
+
+```python
+@pyqtSlot(str)
+def mySlot(self, card_id: str) -> None:
+    self.owner._my_handler(card_id)
+```
+
+### 5. Card `id` field in the JS payload (`ui_panel.py`)
+
+The JS uses `m.id` as a fallback for `data-card-id`. The message serialisation must include it:
+
+```python
+return {
+    "id": str(getattr(item, 'id', '') or ''),
+    "role": item.role,
+    ...
+}
+```
+
+Set `item.id = card_id` after creating the `ChatItemData` (it's a dynamic attribute — `ChatItemData` has no `id` field by default).
+
+### 6. `_dismiss_card` handler (`ui_panel.py`)
+
+To remove a card when the user clicks Dismiss/Cancel:
+
+```python
+def _dismiss_card(self, card_id: str) -> None:
+    self.chat_history = [c for c in self.chat_history if getattr(c, 'id', None) != card_id]
+    self._render_chat_history()
+    self._sync_web_ui()
+```
+
+### Quick debug checklist
+
+| Symptom | Likely cause |
+|---------|-------------|
+| Button not visible at all | `button` not in `_ALLOWED_TAGS` in `html_sanitize.py` |
+| Button visible but unstyled | CSS missing or using undefined CSS variable |
+| Button visible but not clickable | `cursor: pointer` missing in CSS, or JS handler not wired |
+| Click does nothing | Bridge slot missing `@pyqtSlot`, or `bridge.X` name mismatch |
+| Dismiss doesn't remove card | `item.id` not set, or `id` not in JS payload serialisation |
+
+Use CSS variables (`var(--text)`, `var(--text-dim)`, `var(--text-mid)`) instead of hardcoded `rgba(255,255,255,...)` for theme-adaptable colors:
+- `.body-text strong`, `.body-text b` → `color: var(--text)`
+- `.body-text em`, `.body-text i` → `color: var(--text-dim)`
+- `.body-text h1-h3` → `color: var(--text)`
+- `.chip-pill` → `color: var(--text-dim)`
+
+Avoid hardcoded white/light colors in CSS - always use theme variables.
