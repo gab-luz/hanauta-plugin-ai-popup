@@ -490,16 +490,30 @@ def _transcribe_with_whisperlive(audio_path: Path, config: dict[str, object], *,
     if not host:
         raise RuntimeError("WhisperLive STT requires a host.")
     api_url = _api_url_from_host(host)
-    logging.info("[WhisperLive] health check: %s", api_url)
-    if not _host_reachable(api_url, timeout=3.0):
-        raise RuntimeError(f"WhisperLive is not ready at {api_url}")
-    try:
-        with request.urlopen(f"{api_url}/v1/models", timeout=3.0) as resp:
-            if resp.status >= 400:
-                raise RuntimeError(f"WhisperLive returned status {resp.status}")
-            logging.info("[WhisperLive] health: /v1/models status=%d", resp.status)
-    except Exception as exc:
-        raise RuntimeError(f"WhisperLive health check failed: {exc}")
+    logging.info("[WhisperLive] health check with retries: %s", api_url)
+
+    for attempt in range(5):
+        try:
+            if not _host_reachable(api_url, timeout=3.0):
+                logging.warning("[WhisperLive] attempt %d: host not reachable", attempt + 1)
+                time.sleep(1.0)
+                continue
+            with request.urlopen(f"{api_url}/v1/models", timeout=5.0) as resp:
+                if resp.status >= 400:
+                    logging.warning("[WhisperLive] attempt %d: got status %d", attempt + 1, resp.status)
+                    time.sleep(1.0)
+                    continue
+                logging.info("[WhisperLive] health: /v1/models status=%d", resp.status)
+                break
+        except Exception as exc:
+            logging.warning("[WhisperLive] attempt %d failed: %s", attempt + 1, exc)
+            if attempt < 4:
+                time.sleep(2.0 ** attempt)
+            else:
+                raise RuntimeError(f"WhisperLive not ready after 5 attempts: {exc}")
+    else:
+        raise RuntimeError(f"WhisperLive health check failed after 5 attempts")
+
     model = str(config.get("stt_whisperlive_model", "small")).strip() or "small"
     fields: dict[str, str] = {"model": model, "response_format": "json"}
     if prompt.strip():
