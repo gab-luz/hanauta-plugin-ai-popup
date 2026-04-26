@@ -49,7 +49,7 @@ from .style import (
     ACCENT, ACCENT_SOFT, BORDER_ACCENT, BORDER_SOFT, CARD_BG, CARD_BG_SOFT,
     HERO_TOP, HERO_BOTTOM, HOVER_BG, PANEL_BG, PANEL_BG_FLOAT,
     TEXT, TEXT_DIM, TEXT_MID, THEME, UI_ICON_DIM, UI_ICON_ACTIVE, UI_TEXT_STRONG,
-    apply_theme_globals, focused_workspace, mix, rgba,
+    apply_theme_globals, focused_workspace, is_dark_theme, mix, rgba,
 )
 from .storage import (
     secure_load_secret, secure_store_secret,
@@ -175,6 +175,8 @@ class SidebarPanel(QFrame):
         self._voice_models_last_selection: dict[str, bool] = {"stt": True, "llm": True, "tts": True}
         self._voice_models_worker: VoiceModelsWarmupWorker | None = None
         self._stt_once_worker: OneShotSttWorker | None = None
+        self._pending_kobold_launch_profile: str = ""
+        self._pending_kobold_launch_payload: dict | None = None
         self._user_profile = load_ai_popup_user_profile()
         self._web_draft_text: str = ""
         self._web_draft_id: int = 0
@@ -1921,10 +1923,8 @@ class SidebarPanel(QFrame):
     def _maybe_launch_koboldcpp(self, profile: BackendProfile) -> bool:
         payload = dict(self.backend_settings.get(profile.key, {}))
         host = str(payload.get("host", profile.host)).strip()
-        # Already reachable via HTTP — don't launch again
         if host and _openai_compat_alive(host):
             return True
-        # Process already tracked and alive — don't launch again
         active, _message = _koboldcpp_status(payload)
         if active:
             return True
@@ -1932,25 +1932,38 @@ class SidebarPanel(QFrame):
         gguf_path = _existing_path(payload.get("gguf_path"))
         if binary_path is None or gguf_path is None:
             return False
-        answer = QMessageBox.question(
-            self,
-            "Start KoboldCpp",
-            f"KoboldCpp is not running.\nStart it now with {gguf_path.name}?",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.Yes,
+        card_id = f"kobold-launch-{int(time.time()*1000)}"
+        btn_style = (
+            "display:inline-block;margin:4px 6px 4px 0;"
+            "padding:8px 18px;border-radius:20px;border:none;cursor:pointer;"
+            "font-size:12px;font-weight:700;"
         )
-        if answer != QMessageBox.StandardButton.Yes:
-            return False
-        ok, message = self._launch_koboldcpp_process(profile, payload)
+        dark = is_dark_theme()
+        body = (
+            f"<p>KoboldCpp is not running.</p>"
+            f"<p>Start it now with {html.escape(gguf_path.name)}?</p>"
+            f'<p>'
+            f'<button style="{btn_style}background:var(--accent,#9b8fff);color:#fff" '
+            f'onclick="bridge&&bridge.launchKobold&&bridge.launchKobold();">Start</button>'
+            f'<button style="{btn_style}background:{"rgba(255,255,255,0.08)" if dark else "rgba(0,0,0,0.06)"};color:{"rgba(255,255,255,0.6)" if dark else "rgba(0,0,0,0.6)"}" '
+            f'onclick="bridge&&bridge.dismissCard&&bridge.dismissCard(\\"{card_id}\\"):">Cancel</button>'
+            f'</p>'
+        )
         self.add_card(ChatItemData(
-            role="assistant", title="Hanauta AI",
-            meta="runtime launch" if ok else "runtime launch failed",
-            body=f"<p>{html.escape(message)}</p>",
+            role="assistant",
+            title="KoboldCpp",
+            meta="runtime launch",
+            body=body,
+            chips=[SourceChipData("koboldcpp")],
         ))
-        return ok
+        item = next((c for c in self.chat_history if getattr(c, 'id', None) == card_id), None)
+        if item:
+            item.id = card_id
+        self._pending_kobold_launch_profile = profile.key
+        self._pending_kobold_launch_payload = payload
+        return True
 
     def _launch_koboldcpp_process(self, profile: BackendProfile, payload: dict[str, object]) -> tuple[bool, str]:
-        # Final guard: don't spawn if already alive
         host = str(payload.get("host", profile.host)).strip()
         if host and _openai_compat_alive(host):
             return True, "KoboldCpp is already running."
@@ -1966,6 +1979,24 @@ class SidebarPanel(QFrame):
             if gguf_path is not None:
                 send_desktop_notification("KoboldCpp starting", f"{profile.label} is starting with {gguf_path.name}.")
         return ok, message
+
+    def _launch_kobold_from_prompt(self) -> None:
+        profile_key = getattr(self, "_pending_kobold_launch_profile", "") or ""
+        payload = getattr(self, "_pending_kobold_launch_payload", None)
+        if not profile_key or payload is None:
+            return
+        profile = self.profile_by_key.get(profile_key)
+        if profile is None:
+            return
+        self._pending_kobold_launch_profile = ""
+        self._pending_kobold_launch_payload = None
+        ok, message = self._launch_koboldcpp_process(profile, payload)
+        self._dismiss_card(f"kobold-launch-")
+        self.add_card(ChatItemData(
+            role="assistant", title="Hanauta AI",
+            meta="runtime launch" if ok else "runtime launch failed",
+            body=f"<p>{html.escape(message)}</p>",
+        ))
 
     def _clear_cards(self) -> None:
         self.chat_history = []

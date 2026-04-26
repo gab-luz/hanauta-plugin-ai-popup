@@ -198,6 +198,11 @@ class PopupWebBridge(QObject):
         """Select a TTS backend for voice mode and restart voice session."""
         self.owner._select_tts_for_voice(key)
 
+    @pyqtSlot()
+    def launchKobold(self) -> None:
+        """Launch KoboldCpp from the prompt card."""
+        self.owner._launch_kobold_from_prompt()
+
     @pyqtSlot(str)
     def dismissCard(self, card_id: str) -> None:
         """Remove a card by its id from the chat history."""
