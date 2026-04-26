@@ -1057,10 +1057,16 @@ class VoiceModelsWarmupWorker(QThread):
         selection: dict[str, bool],
     ) -> None:
         super().__init__()
+        logging.info("[VoiceModels] __init__: config keys=%s", list(config.keys()))
+        logging.info("[VoiceModels] __init__: profiles keys=%s", list(profiles.keys()))
+        logging.info("[VoiceModels] __init__: backend_settings keys=%s", list(backend_settings.keys()))
+        logging.info("[VoiceModels] __init__: selection=%s", selection)
         self.config = dict(config)
         self.profiles = dict(profiles)
         self.backend_settings = json.loads(json.dumps(backend_settings))
         self.selection = dict(selection)
+        logging.info("[VoiceModels] __init__: done, selected profiles: stt=%s llm=%s tts=%s",
+            config.get("stt_backend"), config.get("llm_profile"), config.get("tts_profile"))
 
     def _emit(self, title: str, detail: str) -> None:
         logging.info(f"[VoiceModels] {title}: {detail}")

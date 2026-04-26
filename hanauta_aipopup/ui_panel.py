@@ -1195,6 +1195,8 @@ class SidebarPanel(QFrame):
         self._maybe_probe_kobold_gemma4_audio_support()
         config = _voice_mode_settings(self.backend_settings)
         logging.info("[VoiceModels] _web_start_voice_models called, selection=%s", selection)
+        logging.info("[VoiceModels] config: stt_backend=%s llm_profile=%s tts_profile=%s",
+            config.get("stt_backend"), config.get("llm_profile"), config.get("tts_profile"))
 
         self._voice_models_busy = True
         self._sync_web_ui()
@@ -1204,8 +1206,9 @@ class SidebarPanel(QFrame):
             "Starting selected voice backends. This may take a moment on first run.",
             chips=["voice", "models"],
         )
+        logging.info("[VoiceModels] BEFORE worker creation")
         worker = VoiceModelsWarmupWorker(config, self.profile_by_key, self.backend_settings, selection)
-        logging.info("[VoiceModels] Worker created, selection=%s", selection)
+        logging.info("[VoiceModels] AFTER worker creation, worker id=%s", id(worker))
         self._voice_models_worker = worker
 
         def _on_progress(title: str, detail: str) -> None:
