@@ -1567,7 +1567,6 @@ class SidebarPanel(QFrame):
         tts_profiles_available = [p for p in self.profiles if p.provider == "tts_local"]
         if tts_profile is None or tts_profile.provider != "tts_local":
             if tts_profiles_available:
-                tts_key = tts_profiles_available[0].key
                 card_id = f"voice-tts-pick-{int(time.time()*1000)}"
                 btn_style = (
                     "display:inline-block;margin:4px 6px 4px 0;"
@@ -1575,13 +1574,13 @@ class SidebarPanel(QFrame):
                     "font-size:12px;font-weight:700;"
                 )
                 buttons_html = "".join(
-                    f'<button style="{btn_style}background:var(--accent,#9b8fff);color:#fff" '
-                    f'onclick="bridge&&bridge.selectTtsForVoice&&bridge.selectTtsForVoice({json.dumps(p.key)});">{html.escape(p.label)}</button>'
+                    f'<button type="button" data-cmd="selectTtsForVoice" data-key="{html.escape(p.key)}" '
+                    f'style="{btn_style}background:var(--accent,#9b8fff);color:#fff">{html.escape(p.label)}</button>'
                     for p in tts_profiles_available
                 )
                 dismiss_btn = (
                     f'<button style="{btn_style}background:rgba(255,255,255,0.08);color:rgba(255,255,255,0.6)" '
-                    f'onclick="bridge&&bridge.dismissCard&&bridge.dismissCard({json.dumps(card_id)});">Dismiss</button>'
+                    f'type="button" data-cmd="dismiss" data-card-id="{html.escape(card_id)}">Dismiss</button>'
                 )
                 body = (
                     f"<p>Select a TTS engine for voice replies:</p>"
@@ -2442,8 +2441,6 @@ class SidebarPanel(QFrame):
             prefix = "/say " if command.startswith("/say ") else "/speak "
             speak_prompt = command[len(prefix):].strip()
             if self.current_profile.provider != "tts_local":
-                import json as _json
-                safe_text = _json.dumps(speak_prompt)  # JS-safe quoted string
                 card_id = f"tts-pick-{int(time.time()*1000)}"
                 tts_profiles = [
                     p for p in self.profiles if p.provider == "tts_local"
@@ -2454,12 +2451,14 @@ class SidebarPanel(QFrame):
                     "font-size:12px;font-weight:700;"
                 )
                 buttons_html = "".join(
-                    f'<button style="{btn_style}background:var(--accent,#9b8fff);color:#fff" onclick="bridge&&bridge.selectBackendAndSay&&bridge.selectBackendAndSay({_json.dumps(p.key)},{safe_text});">{html.escape(p.label)}</button>'
+                    f'<button type="button" data-cmd="selectBackendAndSay" data-key="{html.escape(p.key)}" '
+                    f'data-text="{html.escape(speak_prompt)}" '
+                    f'style="{btn_style}background:var(--accent,#9b8fff);color:#fff">{html.escape(p.label)}</button>'
                     for p in tts_profiles
                 )
                 dismiss_btn = (
                     f'<button style="{btn_style}background:rgba(255,255,255,0.08);color:rgba(255,255,255,0.6)" '
-                    f'onclick="bridge&&bridge.dismissCard&&bridge.dismissCard({_json.dumps(card_id)});">'
+                    f'type="button" data-cmd="dismiss" data-card-id="{html.escape(card_id)}">'
                     f"Dismiss</button>"
                 )
                 body = (

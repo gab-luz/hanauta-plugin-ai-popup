@@ -96,6 +96,13 @@ POPUP_JS = r"""
               const cardId = btn.getAttribute('data-card-id') || m.id || '';
               if (cmd === 'launchKobold' && bridge && bridge.launchKobold) {
                 bridge.launchKobold();
+              } else if (cmd === 'selectBackendAndSay' && bridge && bridge.selectBackendAndSay) {
+                const key = btn.getAttribute('data-key') || '';
+                const text = btn.getAttribute('data-text') || '';
+                if (key && text) bridge.selectBackendAndSay(String(key), String(text));
+              } else if (cmd === 'selectTtsForVoice' && bridge && bridge.selectTtsForVoice) {
+                const key = btn.getAttribute('data-key') || '';
+                if (key) bridge.selectTtsForVoice(String(key));
               } else if (cmd === 'dismiss' && bridge && bridge.dismissCard && cardId) {
                 bridge.dismissCard(cardId);
               }

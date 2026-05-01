@@ -69,7 +69,7 @@ _GLOBAL_ALLOWED_ATTRS = {
 
 _TAG_ALLOWED_ATTRS: dict[str, set[str]] = {
     "a": {"href", "title"},
-    "button": {"class", "data-cmd", "data-card-id", "type", "style"},
+    "button": {"class", "data-cmd", "data-card-id", "data-key", "data-text", "type", "style"},
     "img": {"src", "alt", "title", "width", "height"},
     "td": {"colspan", "rowspan", "align", "valign"},
     "th": {"colspan", "rowspan", "align", "valign"},
@@ -228,4 +228,3 @@ def sanitize_message_html(text: str, *, allow_html: bool = True) -> str:
     except Exception:
         return f"<p>{html.escape(raw)}</p>"
     return parser.get_html()
-
