@@ -1,0 +1,6 @@
+# Minimal deps for the in-tree KokoClone wrapper.
+# Torch is installed separately in `hanauta_aipopup/tts.py` so users can swap CPU/GPU wheels.
+kokoro>=0.8.0
+numpy>=1.24
+soundfile>=0.12
+

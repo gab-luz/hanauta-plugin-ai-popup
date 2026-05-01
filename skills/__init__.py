@@ -27,10 +27,15 @@ _SKILL_FILES: list[tuple[str, str]] = [
     ("skills.docker",           "docker.py"),
     ("skills.emotion_engine",   "py-emotion-engine.py"),
     ("skills.hanauta_desktop",  "hanauta-desktop.py"),
-    ("skills.hanauta_mail",     "hanauta-mail.py"),
+("skills.hanauta_mail",     "hanauta-mail.py"),
     ("skills.homeassistant",    "homeassistant.py"),
-    ("skills.kdeconnect",       "kdeconnect.py"),
-    ("skills.pc_sensors",       "pc-sensors.py"),
+    ("skills.image",          "image.py"),
+    ("skills.jellyfin",      "jellyfin.py"),
+("skills.kdeconnect",       "kdeconnect.py"),
+    ("skills.lutris",          "lutris.py"),
+    ("skills.pc_sensors",     "pc-sensors.py"),
+    ("skills.reminders",        "reminders.py"),
+    ("skills.spotify",       "spotify.py"),
 ]
 
 _registry: dict[str, tuple[dict, Any]] = {}  # name -> (definition, module)
@@ -60,10 +65,15 @@ def _load() -> None:
         "calendar.py":           "calendar",
         "docker.py":             "docker",
         "hanauta-desktop.py":    "hanauta_desktop",
-        "hanauta-mail.py":       "mail",
+"hanauta-mail.py":       "mail",
         "homeassistant.py":      "homeassistant",
-        "kdeconnect.py":         "kdeconnect",
-        "pc-sensors.py":         "pc_sensors",
+        "image.py":            "sdwebui",
+        "jellyfin.py":         "jellyfin",
+"kdeconnect.py":         "kdeconnect",
+        "lutris.py":           "lutris",
+        "pc-sensors.py":       "pc_sensors",
+        "reminders.py":         "reminders",
+        "spotify.py":          "spotify",
         "py-emotion-engine.py":  "emotion_engine",
     }
 

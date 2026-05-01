@@ -8,7 +8,7 @@ import soundfile as sf
 import torch
 from kokoro import KPipeline
 
-from core.seedvc_backend import SeedVCBackend
+from .seedvc_backend import SeedVCBackend
 
 
 class KokoClone:
@@ -23,13 +23,17 @@ class KokoClone:
 
         self.kokoro_repo = kokoro_repo
         self.kokoro_pipeline_cache: dict[str, KPipeline] = {}
+        self._seedvc_dir = seedvc_dir
+        self._seedvc_python = seedvc_python
+        self._seedvc_backend: SeedVCBackend | None = None
 
+    def _seedvc(self) -> SeedVCBackend:
+        if self._seedvc_backend is not None:
+            return self._seedvc_backend
         print("Loading Seed-VC V2 backend...")
-        self.seedvc = SeedVCBackend(
-            seedvc_dir=seedvc_dir,
-            python_bin=seedvc_python,
-
-            # Bons defaults para pt-BR TTS → voz feminina de referência
+        self._seedvc_backend = SeedVCBackend(
+            seedvc_dir=self._seedvc_dir,
+            python_bin=self._seedvc_python,
             diffusion_steps=50,
             length_adjust=1.0,
             intelligibility_cfg_rate=0.80,
@@ -41,6 +45,7 @@ class KokoClone:
             repetition_penalty=1.05,
             compile_model=False,
         )
+        return self._seedvc_backend
 
     def _get_config(self, lang: str) -> tuple[str, str]:
         """
@@ -131,7 +136,7 @@ class KokoClone:
             sf.write(temp_path, samples, sr)
 
             print("Applying Seed-VC V2 voice/accent conversion...")
-            self.seedvc.convert(
+            self._seedvc().convert(
                 source_audio=temp_path,
                 reference_audio=reference_audio,
                 output_path=output_path,
@@ -154,7 +159,7 @@ class KokoClone:
         """
         print("Applying Seed-VC V2 voice/accent conversion...")
 
-        self.seedvc.convert(
+        self._seedvc().convert(
             source_audio=source_audio,
             reference_audio=reference_audio,
             output_path=output_path,

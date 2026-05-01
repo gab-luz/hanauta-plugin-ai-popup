@@ -145,6 +145,10 @@ class PopupWebBridge(QObject):
 
     @pyqtSlot()
     def toggleVoiceMode(self) -> None:
+        try:
+            LOGGER.info("[VoiceMode] web.toggleVoiceMode()")
+        except Exception:
+            pass
         self.owner._toggle_voice_mode()
 
     @pyqtSlot()
@@ -153,10 +157,18 @@ class PopupWebBridge(QObject):
 
     @pyqtSlot(str)
     def startVoiceModels(self, selection_json: str) -> None:
+        try:
+            LOGGER.info("[VoiceModels] web.startVoiceModels(selection_json_len=%s)", len(selection_json or ""))
+        except Exception:
+            pass
         self.owner._web_request_start_voice_models(selection_json)
 
     @pyqtSlot()
     def stopVoiceModels(self) -> None:
+        try:
+            LOGGER.info("[VoiceModels] web.stopVoiceModels()")
+        except Exception:
+            pass
         self.owner._web_stop_voice_models()
 
     @pyqtSlot()

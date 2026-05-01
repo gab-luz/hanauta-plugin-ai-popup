@@ -60,6 +60,9 @@ from .http import (
     _sdapi_not_found_message,
     _openai_compat_alive,
     send_desktop_notification,
+    _looks_like_gemma4_model_name,
+    save_backend_settings,
+    _looks_like_gemma4_audio_variant,
 )
 from .backends import _existing_path, _is_pid_alive, _is_pgid_alive, koboldcpp_status as _koboldcpp_status, start_koboldcpp as _start_koboldcpp, stop_koboldcpp as _stop_koboldcpp
 from .catalog import MODEL_CATALOG, _dir_size_bytes, _format_bytes
@@ -1097,7 +1100,7 @@ class BackendSettingsDialog(QDialog):
         self.install_pocket_button.clicked.connect(self._install_pockettts)
         actions.addWidget(self.install_pocket_button)
 
-        self.install_kokoclone_button = QPushButton("Install KokoClone (voice cloning TTS)")
+        self.install_kokoclone_button = QPushButton("Install KokoClone + Seed-VC (voice cloning TTS)")
         self.install_kokoclone_button.clicked.connect(self._install_kokoclone)
         actions.addWidget(self.install_kokoclone_button)
 
@@ -1647,6 +1650,86 @@ class BackendSettingsDialog(QDialog):
         cal_layout.addLayout(cal_test_row)
         layout.addWidget(cal_frame)
 
+        # ── Jellyfin ──────────────────────────────────────────────────────────
+        jf_cfg = settings.get("jellyfin", {})
+        jf_frame = SurfaceFrame(bg=rgba(CARD_BG_SOFT, 0.7), border=BORDER_SOFT, radius=16)
+        jf_layout = QVBoxLayout(jf_frame)
+        jf_layout.setContentsMargins(14, 12, 14, 12)
+        jf_layout.setSpacing(8)
+
+        jf_header = QHBoxLayout()
+        jf_title = QLabel("🎬 Jellyfin")
+        jf_title.setFont(QFont(self.ui_font, 11, QFont.Weight.DemiBold))
+        jf_title.setStyleSheet(f"color: {TEXT}; border: none;")
+        jf_header.addWidget(jf_title)
+        jf_header.addStretch()
+        jf_enabled = QCheckBox("Enabled")
+        jf_enabled.setChecked(bool(jf_cfg.get("enabled", True)))
+        jf_enabled.setStyleSheet(f"color: {TEXT};")
+        jf_header.addWidget(jf_enabled)
+        jf_layout.addLayout(jf_header)
+
+        jf_desc = QLabel("Control playback, search library, browse recently added, and manage sessions.")
+        jf_desc.setWordWrap(True)
+        jf_desc.setStyleSheet(f"color: {TEXT_DIM}; border: none; font-size: 11px;")
+        jf_layout.addWidget(jf_desc)
+
+        jf_url_input = QLineEdit()
+        jf_url_input.setPlaceholderText("Jellyfin URL, e.g. http://jellyfin.local:8096")
+        jf_url_input.setText(str(jf_cfg.get("url", "")).strip())
+        jf_url_input.setStyleSheet(
+            f"background: {INPUT_BG}; color: {TEXT}; border: 1px solid {BORDER_SOFT};"
+            f"border-radius: 18px; padding: 8px 12px;"
+        )
+        jf_layout.addWidget(jf_url_input)
+
+        jf_key_input = QLineEdit()
+        jf_key_input.setPlaceholderText("API key (Dashboard → Administration → API Keys, stored encrypted)")
+        jf_key_input.setEchoMode(QLineEdit.EchoMode.Password)
+        jf_key_input.setText(secure_load_secret("skills:jellyfin:api_key"))
+        jf_key_input.setStyleSheet(
+            f"background: {INPUT_BG}; color: {TEXT}; border: 1px solid {BORDER_SOFT};"
+            f"border-radius: 18px; padding: 8px 12px;"
+        )
+        jf_layout.addWidget(jf_key_input)
+
+        jf_test_row = QHBoxLayout()
+        jf_test_btn = QPushButton("Test connection")
+        jf_test_btn.setStyleSheet(
+            f"background: {CARD_BG_SOFT}; color: {TEXT}; border: 1px solid {BORDER_SOFT};"
+            f"border-radius: 18px; padding: 6px 14px;"
+        )
+        jf_status_label = QLabel("")
+        jf_status_label.setStyleSheet(f"color: {TEXT_DIM}; border: none; font-size: 11px;")
+
+        def _test_jf() -> None:
+            url = jf_url_input.text().strip().rstrip("/")
+            key = jf_key_input.text().strip()
+            if not url or not key:
+                jf_status_label.setText("Set URL and API key first.")
+                return
+            try:
+                from urllib import request as _req
+                req = _req.Request(
+                    f"{url}/System/Info?api_key={key}",
+                    headers={"Accept": "application/json"},
+                )
+                with _req.urlopen(req, timeout=5) as resp:
+                    data = __import__("json").loads(resp.read())
+                server_name = data.get("ServerName", "Jellyfin")
+                version = data.get("Version", "?")
+                jf_status_label.setText(f"✓ {server_name} v{version}")
+                jf_status_label.setStyleSheet("color: #7dff9a; border: none; font-size: 11px;")
+            except Exception as exc:
+                jf_status_label.setText(f"✗ {exc}")
+                jf_status_label.setStyleSheet("color: #ff7d7d; border: none; font-size: 11px;")
+
+        jf_test_btn.clicked.connect(_test_jf)
+        jf_test_row.addWidget(jf_test_btn)
+        jf_test_row.addWidget(jf_status_label, 1)
+        jf_layout.addLayout(jf_test_row)
+        layout.addWidget(jf_frame)
+
         layout.addStretch()
 
         # Save button
@@ -1702,6 +1785,13 @@ class BackendSettingsDialog(QDialog):
                 "url": cal_url_input.text().strip(),
                 "username": cal_user_input.text().strip(),
                 "ics_path": cal_ics_input.text().strip(),
+            }
+            jf_key = jf_key_input.text().strip()
+            if jf_key:
+                secure_store_secret("skills:jellyfin:api_key", jf_key)
+            data["jellyfin"] = {
+                "enabled": jf_enabled.isChecked(),
+                "url": jf_url_input.text().strip(),
             }
             self._save_skills_settings(data)
             save_skills_btn.setText("Saved ✓")
@@ -2059,7 +2149,7 @@ class BackendSettingsDialog(QDialog):
             return
         self.install_kokoclone_button.setEnabled(False)
         self.install_kokoclone_button.setText("Installing KokoClone\u2026")
-        self.status_label.setText("Installing KokoClone (this may take several minutes)\u2026")
+        self.status_label.setText("Installing KokoClone + Seed-VC (this may take several minutes)\u2026")
 
         from PyQt6.QtCore import QThread, pyqtSignal as _sig
 
@@ -2091,7 +2181,7 @@ class BackendSettingsDialog(QDialog):
 
         def _on_ok() -> None:
             self.install_kokoclone_button.setEnabled(True)
-            self.install_kokoclone_button.setText("Install KokoClone (voice cloning TTS)")
+            self.install_kokoclone_button.setText("Install KokoClone + Seed-VC (voice cloning TTS)")
             self.download_progress.hide()
             self.download_progress_label.hide()
             self.status_label.setText("KokoClone installed successfully.")
@@ -2099,7 +2189,7 @@ class BackendSettingsDialog(QDialog):
 
         def _on_fail(msg: str) -> None:
             self.install_kokoclone_button.setEnabled(True)
-            self.install_kokoclone_button.setText("Install KokoClone (voice cloning TTS)")
+            self.install_kokoclone_button.setText("Install KokoClone + Seed-VC (voice cloning TTS)")
             self.download_progress.hide()
             self.download_progress_label.hide()
             self.status_label.setText(f"KokoClone install failed: {msg[:200]}")

@@ -2577,9 +2577,12 @@ if __name__ == "__main__":
 # ── KokoClone (voice cloning TTS) ────────────────────────────────────────────
 
 _KOKOCLONE_VENV_KEY = "kokoclone"
-_KOKOCLONE_REPO = "https://github.com/silasalves/kokoclone.git"
-_KOKOCLONE_BRANCH = "official-kokoro"
-_KOKOCLONE_INSTALL_DIR = AI_STATE_DIR / "kokoclone"
+_KOKOCLONE_REQUIREMENTS_FILE = (Path(__file__).resolve().parent / "backends" / "kokoclone" / "requirements.txt")
+
+_SEEDVC_VENV_KEY = "seedvc"
+_SEEDVC_REPO = "https://github.com/Plachtaa/seed-vc.git"
+_SEEDVC_BRANCH = "main"
+_SEEDVC_INSTALL_DIR = AI_STATE_DIR / "seed-vc"
 
 
 def _kokoclone_venv_dir() -> Path:
@@ -2593,30 +2596,98 @@ def _kokoclone_venv_python() -> Path:
 def _kokoclone_worker_script_path() -> Path:
     return AI_STATE_DIR / "kokoclone_synth_worker.py"
 
+def _seedvc_venv_dir() -> Path:
+    return AI_STATE_DIR / "tts-venvs" / _SEEDVC_VENV_KEY
 
-def _ensure_kokoclone_installed(progress_cb=None) -> Path:
-    """Clone the repo and install deps into an isolated venv. Returns python bin."""
-    venv_dir = _kokoclone_venv_dir()
-    python_bin = _kokoclone_venv_python()
-    install_dir = _KOKOCLONE_INSTALL_DIR
+
+def _seedvc_venv_python() -> Path:
+    return _seedvc_venv_dir() / "bin" / "python3"
+
+
+def _ensure_seedvc_installed(progress_cb=None) -> tuple[Path, Path]:
+    seedvc_dir = _SEEDVC_INSTALL_DIR
+    venv_dir = _seedvc_venv_dir()
+    python_bin = _seedvc_venv_python()
 
     if callable(progress_cb):
-        progress_cb(5, 100, "Cloning KokoClone repository")
+        progress_cb(70, 100, "Cloning Seed-VC repository")
 
-    # Clone or update repo
-    if not install_dir.exists():
+    if not seedvc_dir.exists():
         result = subprocess.run(
-            ["git", "clone", "--branch", _KOKOCLONE_BRANCH, "--depth", "1",
-             _KOKOCLONE_REPO, str(install_dir)],
-            capture_output=True, text=True, timeout=120, check=False,
+            ["git", "clone", "--branch", _SEEDVC_BRANCH, "--depth", "1", _SEEDVC_REPO, str(seedvc_dir)],
+            capture_output=True,
+            text=True,
+            timeout=240,
+            check=False,
         )
         if result.returncode != 0:
-            raise RuntimeError(f"git clone failed: {(result.stderr or result.stdout).strip()[-300:]}")
+            raise RuntimeError(f"seed-vc git clone failed: {(result.stderr or result.stdout).strip()[-300:]}")
     else:
         subprocess.run(
-            ["git", "-C", str(install_dir), "pull", "--ff-only"],
-            capture_output=True, timeout=60, check=False,
+            ["git", "-C", str(seedvc_dir), "pull", "--ff-only"],
+            capture_output=True,
+            timeout=90,
+            check=False,
         )
+
+    if callable(progress_cb):
+        progress_cb(78, 100, "Creating Seed-VC virtualenv")
+
+    if not python_bin.exists():
+        result = subprocess.run(
+            [sys.executable, "-m", "venv", str(venv_dir)],
+            capture_output=True,
+            text=True,
+            timeout=240,
+            check=False,
+        )
+        if result.returncode != 0 or not python_bin.exists():
+            raise RuntimeError("Failed to create Seed-VC venv.")
+
+    subprocess.run(
+        [str(python_bin), "-m", "pip", "install", "-q", "-U", "pip", "setuptools", "wheel"],
+        capture_output=True,
+        timeout=240,
+        check=False,
+    )
+
+    if callable(progress_cb):
+        progress_cb(85, 100, "Installing Seed-VC dependencies")
+
+    req_file = seedvc_dir / "requirements.txt"
+    if req_file.exists():
+        result = subprocess.run(
+            [str(python_bin), "-m", "pip", "install", "-q", "-r", str(req_file)],
+            capture_output=True,
+            text=True,
+            timeout=1200,
+            check=False,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(f"seed-vc requirements install failed: {(result.stderr or result.stdout).strip()[-300:]}")
+    else:
+        # Fallback: attempt editable install if Seed-VC ships as a package.
+        result = subprocess.run(
+            [str(python_bin), "-m", "pip", "install", "-q", "-e", "."],
+            cwd=str(seedvc_dir),
+            capture_output=True,
+            text=True,
+            timeout=1200,
+            check=False,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(
+                "Seed-VC has no requirements.txt and editable install failed: "
+                f"{(result.stderr or result.stdout).strip()[-300:]}"
+            )
+
+    return seedvc_dir, python_bin
+
+
+def _ensure_kokoclone_installed(progress_cb=None) -> Path:
+    """Install KokoClone + Seed-VC deps into isolated venvs. Returns KokoClone python bin."""
+    venv_dir = _kokoclone_venv_dir()
+    python_bin = _kokoclone_venv_python()
 
     if callable(progress_cb):
         progress_cb(20, 100, "Creating virtualenv")
@@ -2650,14 +2721,22 @@ def _ensure_kokoclone_installed(progress_cb=None) -> Path:
     if callable(progress_cb):
         progress_cb(60, 100, "Installing KokoClone requirements")
 
-    req_file = install_dir / "requirements.txt"
-    if req_file.exists():
-        result = subprocess.run(
-            [str(python_bin), "-m", "pip", "install", "-q", "-r", str(req_file)],
-            capture_output=True, text=True, timeout=600, check=False,
-        )
-        if result.returncode != 0:
-            raise RuntimeError(f"requirements install failed: {(result.stderr or result.stdout).strip()[-300:]}")
+    if not _KOKOCLONE_REQUIREMENTS_FILE.exists():
+        raise RuntimeError(f"KokoClone requirements file missing: {_KOKOCLONE_REQUIREMENTS_FILE}")
+
+    result = subprocess.run(
+        [str(python_bin), "-m", "pip", "install", "-q", "-r", str(_KOKOCLONE_REQUIREMENTS_FILE)],
+        capture_output=True,
+        text=True,
+        timeout=600,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"kokoclone requirements install failed: {(result.stderr or result.stdout).strip()[-300:]}")
+
+    # Seed-VC is optional at runtime (only used when a reference voice sample exists),
+    # but we install it here so the backend can do accent/voice conversion reliably.
+    _ensure_seedvc_installed(progress_cb=progress_cb)
 
     if callable(progress_cb):
         progress_cb(100, 100, "KokoClone ready")
@@ -2668,28 +2747,35 @@ def _ensure_kokoclone_installed(progress_cb=None) -> Path:
 def _ensure_kokoclone_worker_script() -> Path:
     script_path = _kokoclone_worker_script_path()
     script_path.parent.mkdir(parents=True, exist_ok=True)
+    plugin_root = str(Path(__file__).resolve().parent.parent)
     script_text = r"""#!/usr/bin/env python3
 """
-    script_text += r"""
+    script_text += f"""
 import argparse
+import os
 import sys
 from pathlib import Path
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--install-dir", required=True)
     parser.add_argument("--text", required=True)
     parser.add_argument("--lang", default="en")
     parser.add_argument("--reference", default="")
     parser.add_argument("--output", required=True)
     args = parser.parse_args()
 
-    install_dir = Path(args.install_dir)
-    if str(install_dir) not in sys.path:
-        sys.path.insert(0, str(install_dir))
+    plugin_root = Path({plugin_root!r})
+    if str(plugin_root) not in sys.path:
+        sys.path.insert(0, str(plugin_root))
 
-    from core.cloner import KokoClone
-    cloner = KokoClone()
+    seedvc_dir = os.environ.get("SEEDVC_DIR", "").strip()
+    seedvc_python = os.environ.get("SEEDVC_PYTHON", "").strip()
+
+    from hanauta_aipopup.backends.kokoclone.cloner import KokoClone
+    cloner = KokoClone(
+        seedvc_dir=seedvc_dir or None,
+        seedvc_python=seedvc_python or None,
+    )
 
     ref = args.reference.strip()
     if ref and Path(ref).exists():
@@ -2733,26 +2819,24 @@ def _generate_kokoclone_audio(
         raise RuntimeError(
             "KokoClone is not installed. Click 'Install KokoClone' in Backend Settings."
         )
-    install_dir = _KOKOCLONE_INSTALL_DIR
-    if not install_dir.exists():
-        raise RuntimeError(
-            "KokoClone repository not found. Click 'Install KokoClone' in Backend Settings."
-        )
     script_path = _ensure_kokoclone_worker_script()
     TTS_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
     cmd = [
         str(python_bin), str(script_path),
-        "--install-dir", str(install_dir),
         "--text", text,
         "--lang", lang,
         "--output", str(output_path),
     ]
     ref = str(reference_audio).strip()
+    env = dict(os.environ)
     if ref and Path(ref).expanduser().exists():
         cmd += ["--reference", str(Path(ref).expanduser())]
+        seedvc_dir, seedvc_python = _ensure_seedvc_installed()
+        env["SEEDVC_DIR"] = str(seedvc_dir)
+        env["SEEDVC_PYTHON"] = str(seedvc_python)
 
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=300, check=False)
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=600, check=False, env=env)
     if result.returncode != 0:
         detail = (result.stderr or result.stdout or "no output").strip()[-400:]
         raise RuntimeError(f"KokoClone synthesis failed: {detail}")
@@ -3463,5 +3547,3 @@ def _set_kokoro_autostart(payload: dict[str, object], enabled: bool) -> tuple[bo
         if "not loaded" not in lowered and "does not exist" not in lowered:
             return False, f"Failed to disable autostart: {detail or 'unknown error'}"
     return True, "Kokoro autostart disabled."
-
-

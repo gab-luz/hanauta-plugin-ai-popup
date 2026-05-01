@@ -1026,18 +1026,31 @@ class SidebarPanel(QFrame):
         self._sync_web_ui()
 
     def _toggle_voice_mode(self) -> None:
+        LOGGER.info(
+            "[VoiceMode] toggle requested (running=%s)",
+            bool(self._voice_worker is not None and self._voice_worker.isRunning()),
+        )
         if self._voice_worker is not None and self._voice_worker.isRunning():
             self._stop_voice_mode()
             return
         config = _voice_mode_settings(self.backend_settings)
         if not bool(config.get("enabled", False)):
+            LOGGER.info("[VoiceMode] disabled in settings; opening voice mode settings dialog")
             if not self._open_voice_mode_settings():
+                LOGGER.info("[VoiceMode] settings dialog canceled; voice mode not started")
                 return
             config = _voice_mode_settings(self.backend_settings)
         if not bool(config.get("enabled", False)):
+            LOGGER.info("[VoiceMode] still disabled after settings; voice mode not started")
             return
         self._maybe_probe_kobold_gemma4_audio_support()
         config = _voice_mode_settings(self.backend_settings)
+        LOGGER.info(
+            "[VoiceMode] starting: stt_backend=%s llm_profile=%s tts_profile=%s",
+            config.get("stt_backend"),
+            config.get("llm_profile"),
+            config.get("tts_profile"),
+        )
         self._start_voice_mode(config)
 
     def _maybe_probe_kobold_gemma4_audio_support(self) -> None:
@@ -1162,8 +1175,6 @@ class SidebarPanel(QFrame):
         return " ".join(warnings).strip()
 
     def _web_request_start_voice_models(self, selection_json: str) -> None:
-        import logging
-
         try:
             raw = json.loads(selection_json or "{}")
         except Exception:
@@ -1182,6 +1193,7 @@ class SidebarPanel(QFrame):
 
         warning = self._voice_models_preflight_warning(selection)
         if warning and not (self._voice_models_needs_confirm and self._voice_models_last_selection == selection):
+            LOGGER.info("[VoiceModels] preflight warning (needs_confirm): %s selection=%s", warning, selection)
             self._voice_models_warning = f"{warning} Click Start Selected again to continue."
             self._voice_models_needs_confirm = True
             self._voice_models_last_selection = selection
@@ -1194,8 +1206,8 @@ class SidebarPanel(QFrame):
 
         self._maybe_probe_kobold_gemma4_audio_support()
         config = _voice_mode_settings(self.backend_settings)
-        logging.info("[VoiceModels] _web_start_voice_models called, selection=%s", selection)
-        logging.info("[VoiceModels] config: stt_backend=%s llm_profile=%s tts_profile=%s",
+        LOGGER.info("[VoiceModels] start requested, selection=%s", selection)
+        LOGGER.info("[VoiceModels] config: stt_backend=%s llm_profile=%s tts_profile=%s",
             config.get("stt_backend"), config.get("llm_profile"), config.get("tts_profile"))
 
         self._voice_models_busy = True
@@ -1206,21 +1218,17 @@ class SidebarPanel(QFrame):
             "Starting selected voice backends. This may take a moment on first run.",
             chips=["voice", "models"],
         )
-        logging.info("[VoiceModels] BEFORE worker creation")
+        LOGGER.debug("[VoiceModels] creating worker thread")
         worker = VoiceModelsWarmupWorker(config, self.profile_by_key, self.backend_settings, selection)
-        print(f"[VoiceModels] Worker created, id={id(worker)}, selection={selection}")
-        logging.info("[VoiceModels] AFTER worker creation, worker id=%s", id(worker))
+        LOGGER.info("[VoiceModels] worker created id=%s selection=%s", id(worker), selection)
         self._voice_models_worker = worker
 
-        print("[VoiceModels] Connecting signals...")
         def _on_progress(title: str, detail: str) -> None:
-            print(f"[VoiceModels] progress: {title} - {detail}")
-            logging.info("[VoiceModels] progress: %s - %s", title, detail)
+            LOGGER.info("[VoiceModels] progress: %s - %s", title, detail)
             self._add_runtime_status_card(str(title), str(detail), chips=["voice", "models"])
 
         def _on_ok(raw_payload: str) -> None:
-            print(f"[VoiceModels] finished_ok: {raw_payload[:100] if raw_payload else 'empty'}")
-            logging.info("[VoiceModels] finished_ok: %s", raw_payload[:200] if raw_payload else "empty")
+            LOGGER.info("[VoiceModels] finished_ok: %s", raw_payload[:200] if raw_payload else "empty")
             self._voice_models_busy = False
             self._voice_models_worker = None
             try:
@@ -1273,8 +1281,7 @@ class SidebarPanel(QFrame):
             )
 
         def _on_fail(message: str) -> None:
-            print(f"[VoiceModels] failed: {message}")
-            logging.exception("[VoiceModels] failed: %s", message)
+            LOGGER.exception("[VoiceModels] failed: %s", message)
             self._voice_models_busy = False
             self._voice_models_worker = None
             clean = str(message).strip() or "Model warmup failed."
@@ -1290,9 +1297,9 @@ class SidebarPanel(QFrame):
         worker.progress.connect(_on_progress)
         worker.finished_ok.connect(_on_ok)
         worker.failed.connect(_on_fail)
-        print(f"[VoiceModels] Starting worker thread...")
+        LOGGER.info("[VoiceModels] starting worker thread id=%s", id(worker))
         worker.start()
-        print(f"[VoiceModels] worker.start() called, isRunning={worker.isRunning()}")
+        LOGGER.info("[VoiceModels] worker.start() called isRunning=%s", bool(worker.isRunning()))
 
     def _web_stop_voice_models(self) -> None:
         if self._voice_models_worker is not None and self._voice_models_worker.isRunning():
@@ -1474,6 +1481,14 @@ class SidebarPanel(QFrame):
         worker.start()
 
     def _start_voice_mode(self, config: dict[str, object]) -> None:
+        LOGGER.info(
+            "[VoiceMode] _start_voice_mode: stt_backend=%s stt_external_api=%s llm_profile=%s llm_external_api=%s tts_profile=%s",
+            config.get("stt_backend"),
+            bool(config.get("stt_external_api", False)),
+            config.get("llm_profile"),
+            bool(config.get("llm_external_api", False)),
+            config.get("tts_profile"),
+        )
         if self._voice_worker is not None and self._voice_worker.isRunning():
             return
         if not bool(config.get("llm_external_api", False)):
@@ -1594,6 +1609,7 @@ class SidebarPanel(QFrame):
         )
 
     def _stop_voice_mode(self) -> None:
+        LOGGER.info("[VoiceMode] stopping voice mode")
         worker = self._voice_worker
         if worker is not None:
             worker.stop()
@@ -2468,4 +2484,3 @@ class SidebarPanel(QFrame):
         self._pending_user_message = text
         self._set_pending_state(self.current_profile.label, "Connecting to backend…", "text generation")
         self._text_response_timer.start(200)
-
