@@ -26,6 +26,7 @@ from PyQt6.QtCore import Qt
 
 from .models import BackendProfile, CharacterCard, ChatItemData, SourceChipData
 from .runtime import (
+    APP_DIR,
     AI_STATE_DIR,
     BACKEND_ICONS_DIR,
     CHAT_ARCHIVES_DIR,

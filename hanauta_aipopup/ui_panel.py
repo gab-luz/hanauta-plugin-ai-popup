@@ -2254,7 +2254,11 @@ class SidebarPanel(QFrame):
         self._clear_pending_state()
         audio_path = Path(audio_path_text)
         resolved_audio = audio_path.expanduser().resolve()
-        waveform = _waveform_from_hanauta_service(resolved_audio, bars=24)
+        try:
+            waveform = _waveform_from_hanauta_service(resolved_audio, bars=24)
+        except Exception:
+            LOGGER.exception("[TTS] waveform generation failed for %s", resolved_audio)
+            waveform = []
         self.add_card(
             ChatItemData(
                 role="assistant",
