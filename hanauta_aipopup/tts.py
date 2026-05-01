@@ -2848,11 +2848,24 @@ def synthesize_tts(
     payload: dict[str, object],
     text: str,
 ) -> tuple[Path, str]:
-    mode = _default_tts_mode(payload)
     voice = str(payload.get("model", profile.model)).strip() or profile.model
     stamp = int(time.time() * 1000)
     out_name = f"{profile.key}_{stamp}_{_safe_slug(voice)}.wav"
     output_path = TTS_OUTPUT_DIR / out_name
+
+    # KokoClone is always local (Kokoro -> optional Seed-VC conversion). If the user
+    # accidentally saved a host URL in this backend's settings, don't treat it as an
+    # OpenAI-style external TTS endpoint.
+    if profile.key == "kokoclone":
+        lang = str(payload.get("tts_language", "en")).strip() or "en"
+        reference = str(payload.get("tts_voice_reference", "")).strip()
+        char_ref = str(payload.get("_character_voice_sample", "")).strip()
+        if char_ref and Path(char_ref).expanduser().exists():
+            reference = char_ref
+        _generate_kokoclone_audio(text, output_path, lang=lang, reference_audio=reference)
+        return output_path, "kokoclone"
+
+    mode = _default_tts_mode(payload)
     if mode == "external_api":
         host = str(payload.get("host", "")).strip()
         if not host:
@@ -2911,13 +2924,8 @@ def synthesize_tts(
             voice_mode=voice_mode,
         )
     elif profile.key == "kokoclone":
-        lang = str(payload.get("tts_language", "en")).strip() or "en"
-        reference = str(payload.get("tts_voice_reference", "")).strip()
-        # Per-character voice sample takes priority
-        char_ref = str(payload.get("_character_voice_sample", "")).strip()
-        if char_ref and Path(char_ref).expanduser().exists():
-            reference = char_ref
-        _generate_kokoclone_audio(text, output_path, lang=lang, reference_audio=reference)
+        # handled earlier
+        raise RuntimeError("internal error: kokoclone should be handled before mode selection")
     else:
         if profile.key == "kokorotts":
             _generate_kokoro_audio_subprocess(model_dir, resolved_voice, text, output_path)

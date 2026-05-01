@@ -906,11 +906,22 @@ class TtsSynthesisWorker(QThread):
 
     def run(self) -> None:
         try:
+            LOGGER.info(
+                "[TTS] start profile=%s mode=%s text_len=%s",
+                getattr(self.profile, "key", "?"),
+                _default_tts_mode(self.settings),
+                len(self.text or ""),
+            )
+        except Exception:
+            pass
+        try:
             audio_path, source = synthesize_tts(self.profile, self.settings, self.text)
         except Exception as exc:
             details = str(exc).strip() or exc.__class__.__name__
+            LOGGER.exception("[TTS] failed profile=%s: %s", getattr(self.profile, "key", "?"), details)
             self.failed.emit(details)
             return
+        LOGGER.info("[TTS] ok profile=%s source=%s out=%s", getattr(self.profile, "key", "?"), source, audio_path)
         self.finished_ok.emit(str(audio_path), self.profile.label, source)
 
 

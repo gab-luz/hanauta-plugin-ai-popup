@@ -2274,6 +2274,10 @@ class SidebarPanel(QFrame):
 
     def _handle_tts_failed(self, message: str) -> None:
         self._clear_pending_state()
+        try:
+            LOGGER.error("[TTS] synthesis failed: %s", str(message or "").strip())
+        except Exception:
+            pass
         self.add_card(
             ChatItemData(
                 role="assistant",
