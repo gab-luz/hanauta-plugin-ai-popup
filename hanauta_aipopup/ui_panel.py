@@ -1034,6 +1034,15 @@ class SidebarPanel(QFrame):
             self._stop_voice_mode()
             return
         config = _voice_mode_settings(self.backend_settings)
+        LOGGER.debug(
+            "[VoiceMode] resolved settings: enabled=%s stt_backend=%s stt_external_api=%s llm_profile=%s llm_external_api=%s tts_profile=%s",
+            bool(config.get("enabled", False)),
+            config.get("stt_backend"),
+            bool(config.get("stt_external_api", False)),
+            config.get("llm_profile"),
+            bool(config.get("llm_external_api", False)),
+            config.get("tts_profile"),
+        )
         if not bool(config.get("enabled", False)):
             LOGGER.info("[VoiceMode] disabled in settings; opening voice mode settings dialog")
             if not self._open_voice_mode_settings():
@@ -1179,11 +1188,23 @@ class SidebarPanel(QFrame):
             raw = json.loads(selection_json or "{}")
         except Exception:
             raw = {}
+        LOGGER.debug(
+            "[VoiceModels] web request: selection_json_len=%s raw_type=%s",
+            len(selection_json or ""),
+            type(raw).__name__,
+        )
         selection = {
             "stt": bool(raw.get("stt", False)) if isinstance(raw, dict) else False,
             "llm": bool(raw.get("llm", False)) if isinstance(raw, dict) else False,
             "tts": bool(raw.get("tts", False)) if isinstance(raw, dict) else False,
         }
+        LOGGER.info(
+            "[VoiceModels] selection parsed=%s busy=%s needs_confirm=%s last_selection=%s",
+            selection,
+            bool(getattr(self, "_voice_models_busy", False)),
+            bool(getattr(self, "_voice_models_needs_confirm", False)),
+            getattr(self, "_voice_models_last_selection", None),
+        )
         if not any(selection.values()):
             self._voice_models_warning = "Select at least one model to start."
             self._voice_models_needs_confirm = False
@@ -1488,6 +1509,20 @@ class SidebarPanel(QFrame):
             config.get("llm_profile"),
             bool(config.get("llm_external_api", False)),
             config.get("tts_profile"),
+        )
+        try:
+            stt_backend, stt_model = self._voice_stt_backend_model()
+            llm_backend, llm_model = self._voice_llm_backend_model()
+        except Exception as exc:
+            LOGGER.exception("[VoiceMode] failed to resolve backend/model: %s", exc)
+            stt_backend, stt_model, llm_backend, llm_model = "?", "?", "?", "?"
+        LOGGER.info(
+            "[VoiceMode] backends: stt=%s model=%s llm=%s model=%s voice_models_loaded=%s",
+            stt_backend,
+            stt_model,
+            llm_backend,
+            llm_model,
+            getattr(self, "_voice_models_loaded", None),
         )
         if self._voice_worker is not None and self._voice_worker.isRunning():
             return

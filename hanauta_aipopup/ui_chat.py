@@ -158,7 +158,11 @@ class PopupWebBridge(QObject):
     @pyqtSlot(str)
     def startVoiceModels(self, selection_json: str) -> None:
         try:
-            LOGGER.info("[VoiceModels] web.startVoiceModels(selection_json_len=%s)", len(selection_json or ""))
+            LOGGER.info(
+                "[VoiceModels] web.startVoiceModels(selection_json_len=%s preview=%r)",
+                len(selection_json or ""),
+                (selection_json or "")[:200],
+            )
         except Exception:
             pass
         self.owner._web_request_start_voice_models(selection_json)
