@@ -209,6 +209,15 @@ POPUP_CSS = r"""
       box-shadow: none;
     }
     .icon-btn .md3-icon { font-size: 21px; }
+    .icon-btn .icon-svg {
+      width: 18px;
+      height: 18px;
+      display: inline-block;
+      object-fit: contain;
+      filter: brightness(0) saturate(100%) invert(95%) opacity(0.92);
+      pointer-events: none;
+      user-select: none;
+    }
     .icon-btn:hover {
       transform: translateY(-1px);
       background: rgba(255,255,255,0.05);
@@ -263,6 +272,7 @@ POPUP_CSS = r"""
     .backend-pill:hover { transform: translateY(-1px); border-color: rgba(214,195,255,.22); }
     .backend-pill.active { background: var(--accent-soft); border-color: var(--border); color: rgba(255,255,255,0.94); }
     .backend-pill img { width: 16px; height: 16px; border-radius: 4px; }
+    .backend-fallback-icon { width: 16px; text-align: center; font-size: 12px; opacity: .85; }
 
     .conversation {
       flex: 1;

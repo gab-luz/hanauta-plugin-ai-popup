@@ -30,6 +30,11 @@ POPUP_JS = r"""
           const img = document.createElement('img');
           img.src = b.icon;
           pill.appendChild(img);
+        } else {
+          const fallback = document.createElement('span');
+          fallback.className = 'backend-fallback-icon';
+          fallback.textContent = '◉';
+          pill.appendChild(fallback);
         }
         const span = document.createElement('span');
         span.textContent = b.label || b.key;
@@ -137,7 +142,7 @@ POPUP_JS = r"""
           play.className = 'audio-play';
           const icon = document.createElement('span');
           icon.className = 'md3-icon';
-          icon.textContent = playing ? 'pause' : 'play_arrow';
+          icon.textContent = playing ? '⏸' : '▶';
           play.appendChild(icon);
 
           const wave = document.createElement('div');
@@ -436,8 +441,11 @@ POPUP_JS = r"""
       if (!btn) return;
       const active = !!(models && models.active);
       const ready = !!(voice && voice.stack_ready);
+      const icons = (state && state.ui_icons) ? state.ui_icons : {};
       const icon = document.getElementById('modelsIcon');
-      if (icon) icon.textContent = active ? 'stop' : 'play_arrow';
+      if (icon && (icons.models_stop || icons.models_play)) {
+        icon.src = active ? String(icons.models_stop || icons.models_play || '') : String(icons.models_play || icons.models_stop || '');
+      }
       btn.classList.toggle('magic-ready', ready);
 
       const warnBox = document.getElementById('modelWarn');
@@ -494,8 +502,31 @@ POPUP_JS = r"""
     function render(payload) {
       state = payload || {};
       const inVoice = state.mode === 'voice';
+      const icons = state.ui_icons || {};
       const windowEl = document.querySelector('.window');
       if (windowEl) windowEl.classList.toggle('voice-active', inVoice);
+      const settingsIcon = document.getElementById('settingsIcon');
+      if (settingsIcon && icons.settings) settingsIcon.src = String(icons.settings);
+      const closeIcon = document.getElementById('closeIcon');
+      if (closeIcon && icons.close) closeIcon.src = String(icons.close);
+      const modalCloseIcon = document.getElementById('modalCloseIcon');
+      if (modalCloseIcon && icons.close) modalCloseIcon.src = String(icons.close);
+      const charactersIcon = document.getElementById('charactersIcon');
+      if (charactersIcon && icons.person) charactersIcon.src = String(icons.person);
+      const infoIcon = document.getElementById('infoIcon');
+      if (infoIcon && icons.info) infoIcon.src = String(icons.info);
+      const attachIcon = document.getElementById('attachIcon');
+      if (attachIcon && icons.attach_file) attachIcon.src = String(icons.attach_file);
+      const sttIcon = document.getElementById('sttIcon');
+      if (sttIcon && icons.voice_mic) sttIcon.src = String(icons.voice_mic);
+      const archiveIcon = document.getElementById('archiveIcon');
+      if (archiveIcon && icons.archive) archiveIcon.src = String(icons.archive);
+      const exportIcon = document.getElementById('exportIcon');
+      if (exportIcon && icons.download) exportIcon.src = String(icons.download);
+      const clearIcon = document.getElementById('clearIcon');
+      if (clearIcon && icons.delete_sweep) clearIcon.src = String(icons.delete_sweep);
+      const sendIcon = document.getElementById('sendIcon');
+      if (sendIcon && icons.send) sendIcon.src = String(icons.send);
       document.getElementById('headerStatus').textContent = state.header_status || '';
       document.getElementById('providerLabel').textContent = state.provider_label || '';
       renderBackends(state.backends || []);
@@ -508,7 +539,9 @@ POPUP_JS = r"""
       document.getElementById('chatPage').hidden = inVoice;
       document.getElementById('voicePage').hidden = !inVoice;
       const voiceIcon = document.getElementById('voiceIcon');
-      if (voiceIcon) voiceIcon.textContent = inVoice ? 'stop' : 'mic';
+      if (voiceIcon && (icons.voice_stop || icons.voice_mic)) {
+        voiceIcon.src = inVoice ? String(icons.voice_stop || icons.voice_mic || '') : String(icons.voice_mic || icons.voice_stop || '');
+      }
       document.getElementById('voiceBtn').classList.toggle('magic-ready', !!(state.voice && state.voice.stack_ready));
 
       // Auto-enter Voice Mode once models have finished warming up.

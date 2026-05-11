@@ -21,7 +21,7 @@ from PyQt6.QtWidgets import (
 )
 
 from .models import ChatItemData, SourceChipData
-from .runtime import BACKEND_ICONS_DIR
+from .runtime import AI_ASSETS_DIR, BACKEND_ICONS_DIR
 from .style import (
     ACCENT, ACCENT_SOFT, BORDER_ACCENT, BORDER_SOFT, CARD_BG, CARD_BG_SOFT,
     HOVER_BG, TEXT, TEXT_DIM, TEXT_MID, UI_ICON_ACTIVE, UI_ICON_DIM, THEME,
@@ -155,14 +155,31 @@ class BackendPill(QPushButton):
 
 
 def _backend_icon_path(icon_name: str) -> Path | None:
-    path = BACKEND_ICONS_DIR / f"{icon_name}.png"
-    return path if path.exists() else None
+    candidates = (
+        BACKEND_ICONS_DIR / f"{icon_name}.png",
+        BACKEND_ICONS_DIR / f"{icon_name}.svg",
+        BACKEND_ICONS_DIR.parent / f"{icon_name}.png",
+        BACKEND_ICONS_DIR.parent / f"{icon_name}.svg",
+    )
+    for path in candidates:
+        if path.exists():
+            return path
+    return None
 
 
 def _backend_icon(icon_name: str) -> QIcon:
     path = _backend_icon_path(icon_name)
     if path is not None:
         return QIcon(str(path))
+    generic_candidates = (
+        AI_ASSETS_DIR / "icon_color.svg",
+        AI_ASSETS_DIR / "icon.svg",
+    )
+    for generic in generic_candidates:
+        if generic.exists():
+            icon = QIcon(str(generic))
+            if not icon.isNull():
+                return icon
     placeholder = QPixmap(22, 22)
     placeholder.fill(Qt.GlobalColor.transparent)
     painter = QPainter(placeholder)
@@ -171,9 +188,11 @@ def _backend_icon(icon_name: str) -> QIcon:
     painter.setPen(Qt.PenStyle.NoPen)
     painter.setBrush(QColor(rgba(ACCENT_SOFT, 0.92)))
     painter.drawRoundedRect(rect, 7, 7)
-    painter.setPen(QColor(ACCENT))
-    painter.setFont(QFont(load_ui_font(), 9, QFont.Weight.Black))
-    painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, icon_name[:2].upper())
+    painter.setPen(QPen(QColor(ACCENT), 1.6))
+    painter.setBrush(Qt.BrushStyle.NoBrush)
+    painter.drawEllipse(rect.adjusted(3, 3, -3, -3))
+    painter.drawLine(rect.center().x(), rect.top() + 5, rect.center().x(), rect.bottom() - 5)
+    painter.drawLine(rect.left() + 5, rect.center().y(), rect.right() - 5, rect.center().y())
     painter.end()
     return QIcon(placeholder)
 
@@ -245,13 +264,32 @@ class AntiAliasButton(QPushButton):
 
 
 class ActionIcon(QToolButton):
-    def __init__(self, text: str, tooltip: str, ui_font: str, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        text: str,
+        tooltip: str,
+        ui_font: str,
+        parent: QWidget | None = None,
+        icon_name: str = "",
+    ) -> None:
         super().__init__(parent)
-        self.setText(text)
         self.setToolTip(tooltip)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setFixedSize(30, 30)
         self.setFont(QFont(ui_font, 11, _button_qfont_weight(ui_font)))
+        icon_loaded = False
+        icon_name = str(icon_name or "").strip()
+        if icon_name:
+            svg_path = AI_ASSETS_DIR / f"{icon_name}.svg"
+            if svg_path.exists():
+                icon = QIcon(str(svg_path))
+                if not icon.isNull():
+                    self.setIcon(icon)
+                    self.setIconSize(QPixmap(16, 16).size())
+                    self.setText("")
+                    icon_loaded = True
+        if not icon_loaded:
+            self.setText(text)
         self.setStyleSheet(
             f"""
             QToolButton {{

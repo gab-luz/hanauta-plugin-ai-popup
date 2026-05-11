@@ -23,6 +23,13 @@ DEFAULT_POPUP = {
 }
 
 
+def _asset_icon(name: str) -> str:
+    path = PLUGIN_ROOT / "assets" / f"{name}.svg"
+    if path.exists():
+        return str(path)
+    return ""
+
+
 def _save_settings(window) -> None:
     module = sys.modules.get(window.__class__.__module__)
     save_function = (
@@ -134,6 +141,7 @@ def build_ai_popup_service_section(window, api: dict[str, object]) -> QWidget:
             window.icon_font,
             window.ui_font,
             display_switch,
+            icon_svg_path=_asset_icon("widgets"),
         )
     )
 
@@ -149,6 +157,7 @@ def build_ai_popup_service_section(window, api: dict[str, object]) -> QWidget:
             window.icon_font,
             window.ui_font,
             bar_switch,
+            icon_svg_path=_asset_icon("auto_awesome"),
         )
     )
 
@@ -180,6 +189,7 @@ def build_ai_popup_service_section(window, api: dict[str, object]) -> QWidget:
             window.icon_font,
             window.ui_font,
             size_wrap,
+            icon_svg_path=_asset_icon("crop_square"),
         )
     )
 
@@ -195,6 +205,7 @@ def build_ai_popup_service_section(window, api: dict[str, object]) -> QWidget:
             window.icon_font,
             window.ui_font,
             open_button,
+            icon_svg_path=_asset_icon("open_in_new"),
         )
     )
 

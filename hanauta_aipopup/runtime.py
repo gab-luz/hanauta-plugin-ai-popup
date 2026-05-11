@@ -54,11 +54,35 @@ except Exception:  # noqa: E402
         return False
 
 
-AI_ASSETS_DIR = (
-    PLUGIN_ROOT / "assets"
-    if (PLUGIN_ROOT / "assets" / "backend-icons").exists()
-    else APP_DIR / "pyqt" / "ai-popup" / "assets"
-)
+def _resolve_ai_assets_dir() -> Path:
+    env_hint = Path(str(os.environ.get("HANAUTA_AI_POPUP_ASSETS", "")).strip()).expanduser()
+    candidates: list[Path] = []
+    if str(env_hint).strip():
+        candidates.append(env_hint)
+    candidates.append(PLUGIN_ROOT / "assets")
+    candidates.append(Path.home() / ".config" / "i3" / "hanauta" / "hanauta" / "plugins" / "ai_popup" / "assets")
+    for parent in PLUGIN_ROOT.parents:
+        candidates.append(parent / "plugins" / "ai_popup" / "assets")
+        candidates.append(parent / "hanauta" / "plugins" / "ai_popup" / "assets")
+    candidates.append(APP_DIR / "pyqt" / "ai-popup" / "assets")
+
+    seen: set[str] = set()
+    for candidate in candidates:
+        try:
+            resolved = candidate.resolve()
+        except Exception:
+            resolved = candidate
+        key = str(resolved)
+        if key in seen:
+            continue
+        seen.add(key)
+        if (resolved / "backend-icons").exists():
+            return resolved
+
+    return APP_DIR / "pyqt" / "ai-popup" / "assets"
+
+
+AI_ASSETS_DIR = _resolve_ai_assets_dir()
 BACKEND_ICONS_DIR = AI_ASSETS_DIR / "backend-icons"
 
 AI_STATE_DIR = Path.home() / ".local" / "state" / "hanauta" / "ai-popup"

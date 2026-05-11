@@ -27,7 +27,7 @@ __POPUP_THEME_CSS__
           <div style="display:flex; align-items:center; gap:8px;">
             <div class="title">Hanauta AI</div>
             <div class="info-pop" title="Info">
-              <div class="info-dot md3-icon" aria-label="Information">info</div>
+              <div class="info-dot" aria-label="Information"><img class="icon-svg" id="infoIcon" alt="" /></div>
               <div class="info-tip" id="infoTip"><div class="tip-title">Loaded Backends</div><div class="tip-line">Loading...</div></div>
             </div>
           </div>
@@ -35,11 +35,11 @@ __POPUP_THEME_CSS__
         </div>
       </div>
       <div class="actions">
-        <button class="icon-btn" id="modelsBtn" title="Start/Stop voice backends" aria-label="Start/Stop models"><span class="md3-icon" id="modelsIcon" aria-hidden="true">play_arrow</span></button>
-        <button class="icon-btn" id="voiceBtn" title="Voice mode" aria-label="Voice mode"><span class="md3-icon" id="voiceIcon" aria-hidden="true">mic</span></button>
-        <button class="icon-btn" id="settingsBtn" title="Settings" aria-label="Settings"><span class="md3-icon" aria-hidden="true">settings</span></button>
-        <button class="icon-btn" id="charactersBtn" title="Characters" aria-label="Characters"><span class="md3-icon" aria-hidden="true">person</span></button>
-        <button class="icon-btn" id="closeBtn" title="Close" aria-label="Close"><span class="md3-icon" aria-hidden="true">close</span></button>
+        <button class="icon-btn" id="modelsBtn" title="Start/Stop voice backends" aria-label="Start/Stop models"><img class="icon-svg" id="modelsIcon" alt="" /></button>
+        <button class="icon-btn" id="voiceBtn" title="Voice mode" aria-label="Voice mode"><img class="icon-svg" id="voiceIcon" alt="" /></button>
+        <button class="icon-btn" id="settingsBtn" title="Settings" aria-label="Settings"><img class="icon-svg" id="settingsIcon" alt="" /></button>
+        <button class="icon-btn" id="charactersBtn" title="Characters" aria-label="Characters"><img class="icon-svg" id="charactersIcon" alt="" /></button>
+        <button class="icon-btn" id="closeBtn" title="Close" aria-label="Close"><img class="icon-svg" id="closeIcon" alt="" /></button>
       </div>
     </div>
     <div class="body">
@@ -52,12 +52,12 @@ __POPUP_THEME_CSS__
           <div class="slash-menu" id="slashMenu" hidden></div>
           <div class="composer-row">
             <div class="provider" id="providerLabel"></div>
-            <button class="send-btn secondary" id="attachBtn" title="Add attachments" aria-label="Add attachments"><span class="md3-icon btn-icon" aria-hidden="true">attach_file</span></button>
-            <button class="send-btn secondary" id="sttBtn" title="Dictate (speech to text)" aria-label="Dictate"><span class="md3-icon btn-icon" aria-hidden="true">mic</span></button>
-            <button class="send-btn secondary" id="archiveBtn" title="Archive chat" aria-label="Archive chat"><span class="md3-icon btn-icon" aria-hidden="true">archive</span></button>
-            <button class="send-btn secondary" id="exportBtn" title="Export chat" aria-label="Export chat"><span class="md3-icon btn-icon" aria-hidden="true">download</span></button>
-            <button class="send-btn secondary" id="clearBtn" title="Clear chat" aria-label="Clear chat"><span class="md3-icon btn-icon" aria-hidden="true">delete_sweep</span></button>
-            <button class="send-btn" id="sendBtn" title="Send message" aria-label="Send message"><span class="md3-icon btn-icon" aria-hidden="true">send</span></button>
+            <button class="send-btn secondary" id="attachBtn" title="Add attachments" aria-label="Add attachments"><img class="icon-svg btn-icon" id="attachIcon" alt="" /></button>
+            <button class="send-btn secondary" id="sttBtn" title="Dictate (speech to text)" aria-label="Dictate"><img class="icon-svg btn-icon" id="sttIcon" alt="" /></button>
+            <button class="send-btn secondary" id="archiveBtn" title="Archive chat" aria-label="Archive chat"><img class="icon-svg btn-icon" id="archiveIcon" alt="" /></button>
+            <button class="send-btn secondary" id="exportBtn" title="Export chat" aria-label="Export chat"><img class="icon-svg btn-icon" id="exportIcon" alt="" /></button>
+            <button class="send-btn secondary" id="clearBtn" title="Clear chat" aria-label="Clear chat"><img class="icon-svg btn-icon" id="clearIcon" alt="" /></button>
+            <button class="send-btn" id="sendBtn" title="Send message" aria-label="Send message"><img class="icon-svg btn-icon" id="sendIcon" alt="" /></button>
           </div>
         </div>
       </div>
@@ -130,7 +130,7 @@ __POPUP_THEME_CSS__
               <div class="sheet-title">Voice Backends</div>
               <div class="sheet-sub" id="modelModalSub">Preload models for hands-free voice mode.</div>
             </div>
-            <button class="icon-btn" id="modelModalCloseBtn" title="Close" aria-label="Close"><span class="md3-icon" aria-hidden="true">close</span></button>
+            <button class="icon-btn" id="modelModalCloseBtn" title="Close" aria-label="Close"><img class="icon-svg" id="modalCloseIcon" alt="" /></button>
           </div>
           <div class="sheet-body">
             <div class="sheet-warn" id="modelWarn" hidden></div>

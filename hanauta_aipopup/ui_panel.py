@@ -38,7 +38,9 @@ from PyQt6.QtWidgets import (
 
 from .models import BackendProfile, CharacterCard, ChatItemData, SourceChipData
 from .runtime import (
+    AI_ASSETS_DIR,
     AI_STATE_DIR,
+    BACKEND_ICONS_DIR,
     BACKEND_SETTINGS_FILE,
     CHARACTER_LIBRARY_FILE,
     NOTIFICATION_CENTER_SETTINGS_FILE,
@@ -118,6 +120,36 @@ from .ui_dialogs import CharacterLibraryDialog, VoiceModeDialog
 from .html_sanitize import sanitize_message_html
 
 LOGGER = logging.getLogger("hanauta.ai_popup")
+
+
+def _backend_icon_uri(icon_name: str) -> str:
+    candidates = (
+        BACKEND_ICONS_DIR / f"{icon_name}.png",
+        BACKEND_ICONS_DIR / f"{icon_name}.svg",
+        AI_ASSETS_DIR / f"{icon_name}.png",
+        AI_ASSETS_DIR / f"{icon_name}.svg",
+    )
+    for path in candidates:
+        try:
+            if path.exists():
+                return path.resolve().as_uri()
+        except Exception:
+            continue
+    return ""
+
+
+def _ui_icon_uri(icon_name: str) -> str:
+    candidates = (
+        AI_ASSETS_DIR / f"{icon_name}.svg",
+        AI_ASSETS_DIR / f"{icon_name}.png",
+    )
+    for path in candidates:
+        try:
+            if path.exists():
+                return path.resolve().as_uri()
+        except Exception:
+            continue
+    return ""
 
 class SidebarPanel(QFrame):
     def __init__(self, ui_font: str) -> None:
@@ -303,32 +335,15 @@ class SidebarPanel(QFrame):
         title_wrap.addWidget(subtitle)
         top.addLayout(title_wrap, 1)
 
-        self.voice_button = ActionIcon("🎙", "Start voice mode", self.ui_font)
+        self.voice_button = ActionIcon("", "Start voice mode", self.ui_font, icon_name="mic")
         self.voice_button.clicked.connect(self._toggle_voice_mode)
         top.addWidget(self.voice_button)
 
-        settings_button = ActionIcon("⚙", "Backend settings", self.ui_font)
+        settings_button = ActionIcon("", "Backend settings", self.ui_font, icon_name="settings")
         settings_button.clicked.connect(self._open_backend_settings)
         top.addWidget(settings_button)
 
-        close_button = create_close_button("\ue5cd", self.icon_font)
-        close_button.setToolTip("Close")
-        close_button.setProperty("iconButton", True)
-        close_button.setFixedSize(34, 34)
-        close_button.setStyleSheet(
-            f"""
-            QPushButton {{
-                background: transparent;
-                color: {UI_ICON_DIM};
-                border: none;
-                border-radius: 17px;
-            }}
-            QPushButton:hover {{
-                background: {HOVER_BG};
-                color: {UI_ICON_ACTIVE};
-            }}
-            """
-        )
+        close_button = ActionIcon("", "Close", self.ui_font, icon_name="close")
         close_button.clicked.connect(self._close_popup_window)
         top.addWidget(close_button)
         layout.addLayout(top)
@@ -951,6 +966,7 @@ class SidebarPanel(QFrame):
                     {
                         "key": profile.key,
                         "label": profile.label,
+                        "icon": _backend_icon_uri(profile.icon_name),
                         "active": bool(self.current_profile is not None and self.current_profile.key == profile.key),
                     }
                 )
@@ -965,6 +981,21 @@ class SidebarPanel(QFrame):
             "provider_label": provider_label,
             "draft": {"id": int(self._web_draft_id or 0), "text": str(self._web_draft_text or "")},
             "assistant": {"name": assistant_name, "avatar_url": assistant_avatar},
+            "ui_icons": {
+                "models_play": _ui_icon_uri("play_arrow"),
+                "models_stop": _ui_icon_uri("stop"),
+                "voice_mic": _ui_icon_uri("mic"),
+                "voice_stop": _ui_icon_uri("stop"),
+                "settings": _ui_icon_uri("settings"),
+                "close": _ui_icon_uri("close"),
+                "person": _ui_icon_uri("person"),
+                "info": _ui_icon_uri("info"),
+                "attach_file": _ui_icon_uri("attach_file"),
+                "archive": _ui_icon_uri("archive"),
+                "download": _ui_icon_uri("download"),
+                "delete_sweep": _ui_icon_uri("delete_sweep"),
+                "send": _ui_icon_uri("send"),
+            },
             "info": self._web_info_payload(),
             "models": self._voice_models_payload(),
             "backends": available_backends,
