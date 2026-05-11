@@ -214,7 +214,8 @@ POPUP_CSS = r"""
       height: 18px;
       display: inline-block;
       object-fit: contain;
-      filter: brightness(0) saturate(100%) invert(95%) opacity(0.92);
+      filter: var(--icon-filter, brightness(0) saturate(100%) invert(100%));
+      opacity: 0.92;
       pointer-events: none;
       user-select: none;
     }

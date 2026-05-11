@@ -72,6 +72,7 @@ from .tts import (
     _start_pocket_server, _stop_pocket_server, _pocket_server_status,
     _set_kokoro_autostart, _set_pocket_autostart,
     _install_pockettts_server,
+    _ensure_all_pocket_preset_voices,
     _default_tts_model_dir, _list_kokoro_voice_names, _list_pocket_voice_references,
     _pocket_preset_voice_path, _ensure_pocket_preset_voice,
     _default_pocket_language, _default_tts_mode, _default_tts_repo, _default_tts_bundle_url,
@@ -819,9 +820,17 @@ class BackendSettingsDialog(QDialog):
         shell_layout.addWidget(self.kobold_server_row)
 
         self.pocket_language_combo = QComboBox()
-        self.pocket_language_combo.setToolTip("PocketTTS language")
+        self.pocket_language_combo.setToolTip(
+            "PocketTTS output language. Auto follows the user's input language when possible."
+        )
         for label, code in POCKETTTS_LANGUAGES:
             self.pocket_language_combo.addItem(label, code)
+        self.pocket_auto_pt_combo = QComboBox()
+        self.pocket_auto_pt_combo.setToolTip(
+            "When Language is Auto and Portuguese is detected, choose which Portuguese variant to prefer."
+        )
+        self.pocket_auto_pt_combo.addItem("Brazil (pt-BR)", "ptbr")
+        self.pocket_auto_pt_combo.addItem("Portugal (pt-PT / 24L)", "ptpt")
         self.pocket_preset_combo = QComboBox()
         self.pocket_preset_combo.setToolTip("PocketTTS preset voices (downloaded from Kyutai voice repository)")
         self.pocket_preset_combo.addItem("Voice cloning (custom reference)", "")
@@ -833,9 +842,12 @@ class BackendSettingsDialog(QDialog):
         pocket_lang_layout = QHBoxLayout(self.pocket_lang_preset_row)
         pocket_lang_layout.setContentsMargins(0, 0, 0, 0)
         pocket_lang_layout.setSpacing(8)
-        self.pocket_language_label = QLabel("Language")
+        self.pocket_language_label = QLabel("Language (Auto = user's language)")
         pocket_lang_layout.addWidget(self.pocket_language_label)
         pocket_lang_layout.addWidget(self.pocket_language_combo, 1)
+        self.pocket_auto_pt_label = QLabel("Auto Portuguese default")
+        pocket_lang_layout.addWidget(self.pocket_auto_pt_label)
+        pocket_lang_layout.addWidget(self.pocket_auto_pt_combo, 1)
         self.pocket_preset_label = QLabel("Voice")
         pocket_lang_layout.addWidget(self.pocket_preset_label)
         pocket_lang_layout.addWidget(self.pocket_preset_combo, 2)
@@ -1876,6 +1888,7 @@ class BackendSettingsDialog(QDialog):
                 "tts_server_command": self.tts_server_command_input.text().strip(),
                 "tts_voice_reference": self.tts_voice_ref_input.text().strip() if voice_mode == "reference" else "",
                 "tts_language": str(self.pocket_language_combo.currentData() or "").strip(),
+                "tts_auto_portuguese_variant": str(self.pocket_auto_pt_combo.currentData() or "ptbr").strip().lower(),
                 "tts_voice_preset": pocket_preset if voice_mode == "preset" else "",
                 "tts_voice_mode": voice_mode,
                 "tts_download_if_missing": bool(self.tts_auto_download_check.isChecked()),
@@ -1936,6 +1949,10 @@ class BackendSettingsDialog(QDialog):
         self.tts_bundle_url_input.setText(_default_tts_bundle_url(profile, payload))
         self.tts_server_command_input.setText(str(payload.get("tts_server_command", "")))
         self._set_combo_selected(self.pocket_language_combo, _default_pocket_language(payload))
+        self._set_combo_selected(
+            self.pocket_auto_pt_combo,
+            str(payload.get("tts_auto_portuguese_variant", "ptbr")).strip().lower() or "ptbr",
+        )
         preset = str(payload.get("tts_voice_preset", "")).strip().lower()
         self._set_combo_selected(self.pocket_preset_combo, preset)
         voice_mode = str(payload.get("tts_voice_mode", "reference")).strip().lower()

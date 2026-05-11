@@ -247,6 +247,12 @@ def popup_web_theme_css() -> str:
     text_mid = UI_TEXT_MUTED
     text_dim = UI_ICON_DIM
 
+    icon_filter = (
+        "brightness(0) saturate(100%) invert(100%)"
+        if dark
+        else "brightness(0) saturate(100%) invert(0%)"
+    )
+
     return (
         f"""
 /* Theme overrides (generated from Hanauta palette). */
@@ -268,6 +274,7 @@ def popup_web_theme_css() -> str:
   --you-border: {you_border};
   --shadow: {shadow};
   --shadow-2: {shadow_strong};
+  --icon-filter: {icon_filter};
 }}
 
 body {{

@@ -22,6 +22,7 @@ from .runtime import (
     AI_POPUP_CRASH_FILE,
     AI_POPUP_ERROR_LOG_FILE,
     AI_STATE_DIR,
+    NOTIFICATION_CENTER_SETTINGS_FILE,
     palette_mtime,
 )
 from .style import apply_theme_globals, focused_workspace
@@ -34,6 +35,13 @@ from .http import (
 from .ui_panel import SidebarPanel
 
 LOGGER = logging.getLogger("hanauta.ai_popup")
+
+
+def _safe_mtime(path: str) -> float:
+    try:
+        return float(os.path.getmtime(path))
+    except Exception:
+        return 0.0
 
 
 def _setup_diagnostics() -> None:
@@ -109,6 +117,7 @@ class DemoWindow(QMainWindow):
         super().__init__()
         self.ui_font = ui_font
         self._theme_mtime = palette_mtime()
+        self._appearance_mtime = _safe_mtime(str(NOTIFICATION_CENTER_SETTINGS_FILE))
         self._slide_animation: QPropertyAnimation | None = None
         self._fade_animation: QPropertyAnimation | None = None
         self._drag_offset: QPoint | None = None
@@ -148,9 +157,11 @@ class DemoWindow(QMainWindow):
 
     def _reload_theme_if_needed(self) -> None:
         current_mtime = palette_mtime()
-        if current_mtime == self._theme_mtime:
+        current_appearance_mtime = _safe_mtime(str(NOTIFICATION_CENTER_SETTINGS_FILE))
+        if current_mtime == self._theme_mtime and current_appearance_mtime == self._appearance_mtime:
             return
         self._theme_mtime = current_mtime
+        self._appearance_mtime = current_appearance_mtime
         apply_theme_globals()
         self._build_panel()
 

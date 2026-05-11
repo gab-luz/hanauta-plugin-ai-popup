@@ -148,12 +148,13 @@ POCKETTTS_PRESET_VOICES: list[tuple[str, str]] = [
     ("azelma", "vctk/p303_023.wav"),
 ]
 POCKETTTS_LANGUAGES: list[tuple[str, str]] = [
-    ("Auto", "auto"),
+    ("Auto (match user's language)", "auto"),
     ("English", "english"),
-    ("Français", "french"),
-    ("Deutsch", "german"),
-    ("Português", "portuguese"),
-    ("Italiano", "italian"),
-    ("Español", "spanish"),
+    ("French", "french"),
+    ("German", "german"),
+    ("Italian", "italian"),
+    ("Spanish", "spanish"),
+    ("Portuguese (Brazil - pt-BR)", "portuguese"),
+    ("Portuguese (Portugal - 24L)", "portuguese_24l"),
 ]
 POCKETTTS_LANGUAGE_CODES = {code for _label, code in POCKETTTS_LANGUAGES}

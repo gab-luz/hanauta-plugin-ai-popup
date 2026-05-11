@@ -112,7 +112,8 @@ def _extract_tavern_png_payload(path: Path) -> dict:
     while offset + 8 <= len(data):
         length = int.from_bytes(data[offset:offset + 4], "big")
         chunk_type = data[offset + 4:offset + 8]
-        start, end = offset + 8, start + length
+        start = offset + 8
+        end = start + length
         if end + 4 > len(data):
             break
         chunk = data[start:end]

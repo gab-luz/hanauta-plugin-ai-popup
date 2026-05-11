@@ -1884,15 +1884,38 @@ def _system_language_code() -> str:
 def _default_pocket_language(payload: dict[str, object]) -> str:
     configured = str(payload.get("tts_language", "")).strip().lower()
     legacy = {
+        "auto": "auto",
         "en": "english",
         "fr": "french",
         "de": "german",
         "pt": "portuguese",
         "it": "italian",
         "es": "spanish",
+        "pt-br": "portuguese",
+        "pt_pt": "portuguese_24l",
+        "pt-pt": "portuguese_24l",
+        "portuguese_portugal": "portuguese_24l",
+        "english_2026-04": "english",
+        "french_24l": "french",
+        "german_24l": "german",
+        "italian_24l": "italian",
+        "spanish_24l": "spanish",
     }
     if configured in legacy:
         configured = legacy[configured]
+    if configured == "auto":
+        # Keep auto behavior for most locales, but make Portuguese explicit and user-configurable.
+        # By default we prefer pt-BR ("portuguese"); users can opt into pt-PT 24L.
+        system_code = _system_language_code()
+        if system_code == "pt":
+            preferred_pt = str(payload.get("tts_auto_portuguese_variant", "ptbr")).strip().lower()
+            if preferred_pt in {"ptpt", "pt-pt", "portugal"} and "portuguese_24l" in POCKETTTS_LANGUAGE_CODES:
+                return "portuguese_24l"
+            if "portuguese" in POCKETTTS_LANGUAGE_CODES:
+                return "portuguese"
+            if "portuguese_24l" in POCKETTTS_LANGUAGE_CODES:
+                return "portuguese_24l"
+        return "auto"
     if configured in POCKETTTS_LANGUAGE_CODES:
         return configured
     system_code = _system_language_code()
