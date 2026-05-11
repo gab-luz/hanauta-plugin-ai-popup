@@ -3,8 +3,15 @@ from __future__ import annotations
 import html
 import json
 import logging
+import os
+import re
+import shutil
+import tempfile
 import time
+import zipfile
 from pathlib import Path
+from urllib.parse import urljoin
+from urllib.request import Request, urlopen
 
 from PyQt6.QtCore import Qt, QRectF, QTimer, pyqtSignal, QThread, QSize
 from PyQt6.QtGui import QIcon, QColor, QBrush, QLinearGradient, QCursor, QFont, QGuiApplication, QPixmap, QPainter, QPen
@@ -44,17 +51,19 @@ from .style import (
     HOVER_BG, INPUT_BG, PANEL_BG, TEXT, TEXT_DIM, TEXT_MID, THEME,
     mix, rgba, ACCENT_ALT, PANEL_BG_FLOAT, UI_TEXT_STRONG,)
 from .storage import secure_load_secret, secure_store_secret
-from .http import send_desktop_notification
+from .http import send_desktop_notification, save_backend_settings
 from .characters import (
     load_character_library as _load_character_library,
     save_character_library as _save_character_library,
     import_character_from_file,
 )
 from .ui_widgets import SurfaceFrame, _apply_antialias_font, _button_css_weight, _button_qfont_weight
+from .voice import _write_privacy_codebook
 from .tts import (
     _default_tts_model_dir, _list_pocket_voice_references,
     _ensure_pocket_preset_voice, _default_pocket_language,
     _waveform_from_hanauta_service,
+    _voice_mode_defaults, _voice_mode_settings,
 )
 
 LOGGER = logging.getLogger("hanauta.ai_popup")
@@ -727,7 +736,25 @@ class VoiceModeDialog(QDialog):
         if configured_model and self.stt_model_combo.findData(configured_model) < 0:
             self.stt_model_combo.addItem(configured_model, configured_model)
         self._set_combo_selected(self.stt_model_combo, configured_model or "small")
-        form.addWidget(self._labeled("Whisper model", self.stt_model_combo))
+        form.addWidget(self._labeled("Faster Whisper model", self.stt_model_combo))
+
+        self.stt_vosk_model_combo = QComboBox()
+        self.stt_vosk_model_combo.setEditable(False)
+        self.stt_vosk_model_combo.addItem("Select a Vosk model from alphacephei.com", "")
+        form.addWidget(self._labeled("Vosk model catalog", self.stt_vosk_model_combo))
+
+        vosk_actions = QWidget()
+        vosk_actions_layout = QHBoxLayout(vosk_actions)
+        vosk_actions_layout.setContentsMargins(0, 0, 0, 0)
+        vosk_actions_layout.setSpacing(8)
+        self.stt_vosk_refresh_button = QPushButton("Refresh Vosk list")
+        self.stt_vosk_refresh_button.clicked.connect(self._refresh_vosk_model_catalog)
+        self.stt_vosk_download_button = QPushButton("Download selected Vosk model")
+        self.stt_vosk_download_button.clicked.connect(self._download_selected_vosk_model)
+        vosk_actions_layout.addWidget(self.stt_vosk_refresh_button)
+        vosk_actions_layout.addWidget(self.stt_vosk_download_button)
+        vosk_actions_layout.addStretch(1)
+        form.addWidget(self._labeled("Vosk model actions", vosk_actions))
         self.stt_device_combo = self._device_combo(str(self.config.get("stt_device", "cpu")))
         form.addWidget(self._labeled("STT device", self.stt_device_combo))
         self.whisperlive_host_input = QLineEdit(str(self.config.get("stt_whisperlive_host", "127.0.0.1:9090")))
@@ -737,7 +764,7 @@ class VoiceModeDialog(QDialog):
         self.whisperlive_model_input.setPlaceholderText("small / medium / … or HF repo id")
         form.addWidget(self._labeled("WhisperLive model", self.whisperlive_model_input))
         self.stt_vosk_model_input = QLineEdit(str(self.config.get("stt_vosk_model_path", "")))
-        self.stt_vosk_model_input.setPlaceholderText("VOSK English model folder")
+        self.stt_vosk_model_input.setPlaceholderText("Local VOSK model folder (auto-filled after download)")
         form.addWidget(self._labeled("VOSK model folder", self.stt_vosk_model_input))
         self.stt_host_input = QLineEdit(str(self.config.get("stt_host", "api.openai.com")))
         self.stt_host_input.setPlaceholderText("STT API host")
@@ -892,6 +919,7 @@ class VoiceModeDialog(QDialog):
         close_button.clicked.connect(self.reject)
         actions.addWidget(close_button)
         root.addLayout(actions)
+        self._refresh_vosk_model_catalog(initial=True)
         self._refresh_visibility()
 
     def _section_label(self, text: str) -> QLabel:
@@ -936,6 +964,9 @@ class VoiceModeDialog(QDialog):
             self.whisperlive_host_input,
             self.whisperlive_model_input,
             self.stt_vosk_model_input,
+            self.stt_vosk_model_combo,
+            self.stt_vosk_refresh_button,
+            self.stt_vosk_download_button,
         ):
             wrapper = widget.parentWidget()
             if wrapper is not None:
@@ -976,6 +1007,89 @@ class VoiceModeDialog(QDialog):
             wrapper = widget.parentWidget()
             if wrapper is not None:
                 wrapper.setVisible(memory_enabled)
+
+    def _vosk_models_dir(self) -> Path:
+        path = AI_STATE_DIR / "voice-models" / "vosk"
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    def _fetch_vosk_models(self) -> list[tuple[str, str]]:
+        url = "https://alphacephei.com/vosk/models"
+        req = Request(url, headers={"User-Agent": "hanauta-ai-popup/1.0"})
+        with urlopen(req, timeout=20) as response:
+            raw = response.read().decode("utf-8", errors="replace")
+        models: list[tuple[str, str]] = []
+        seen: set[str] = set()
+        for href, label in re.findall(r'<a\s+[^>]*href=["\']([^"\']+\.zip)["\'][^>]*>([^<]+)</a>', raw, flags=re.IGNORECASE):
+            full = urljoin(url, href.strip())
+            if "/vosk/models/" not in full:
+                continue
+            name = label.strip()
+            if not name:
+                name = Path(full).name
+            if full in seen:
+                continue
+            seen.add(full)
+            models.append((name, full))
+        models.sort(key=lambda item: item[0].lower())
+        return models
+
+    def _refresh_vosk_model_catalog(self, initial: bool = False) -> None:
+        current = str(self.stt_vosk_model_combo.currentData() or "")
+        self.stt_vosk_model_combo.blockSignals(True)
+        self.stt_vosk_model_combo.clear()
+        self.stt_vosk_model_combo.addItem("Select a Vosk model from alphacephei.com", "")
+        try:
+            for name, url in self._fetch_vosk_models():
+                self.stt_vosk_model_combo.addItem(name, url)
+        except Exception as exc:
+            if not initial:
+                QMessageBox.warning(self, "Vosk catalog", f"Could not load Vosk models list:\n{exc}")
+            self.stt_vosk_model_combo.blockSignals(False)
+            return
+        if current:
+            idx = self.stt_vosk_model_combo.findData(current)
+            if idx >= 0:
+                self.stt_vosk_model_combo.setCurrentIndex(idx)
+        self.stt_vosk_model_combo.blockSignals(False)
+
+    def _download_selected_vosk_model(self) -> None:
+        model_url = str(self.stt_vosk_model_combo.currentData() or "").strip()
+        if not model_url:
+            QMessageBox.information(self, "Vosk model", "Select a Vosk model first.")
+            return
+        model_name = Path(model_url).name
+        target_root = self._vosk_models_dir()
+        self.stt_vosk_download_button.setEnabled(False)
+        self.stt_vosk_refresh_button.setEnabled(False)
+        self.stt_vosk_download_button.setText("Downloading...")
+        try:
+            with tempfile.TemporaryDirectory(prefix="vosk-dl-") as tmpdir:
+                zip_path = Path(tmpdir) / model_name
+                req = Request(model_url, headers={"User-Agent": "hanauta-ai-popup/1.0"})
+                with urlopen(req, timeout=60) as response, open(zip_path, "wb") as out:
+                    shutil.copyfileobj(response, out)
+                extract_dir = Path(tmpdir) / "extract"
+                extract_dir.mkdir(parents=True, exist_ok=True)
+                with zipfile.ZipFile(zip_path, "r") as archive:
+                    archive.extractall(extract_dir)
+                candidates = [p for p in extract_dir.iterdir() if p.is_dir()]
+                if len(candidates) == 1:
+                    source_dir = candidates[0]
+                else:
+                    source_dir = extract_dir
+                final_dir = target_root / source_dir.name
+                if final_dir.exists():
+                    shutil.rmtree(final_dir)
+                shutil.move(str(source_dir), str(final_dir))
+                self.stt_vosk_model_input.setText(str(final_dir))
+                QMessageBox.information(self, "Vosk model", f"Downloaded and extracted:\n{final_dir}")
+        except Exception as exc:
+            QMessageBox.warning(self, "Vosk model", f"Download failed:\n{exc}")
+        finally:
+            self.stt_vosk_download_button.setText("Download selected Vosk model")
+            self.stt_vosk_download_button.setEnabled(True)
+            self.stt_vosk_refresh_button.setEnabled(True)
 
     def _save(self) -> None:
         stt_model = str(self.stt_model_combo.currentData() or "").strip()

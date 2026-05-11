@@ -1798,16 +1798,34 @@ def _kokoro_required_files(voice_name: str) -> list[str]:
     ]
 
 
-def _pocket_required_files() -> list[str]:
+def _pocket_bundle_code(payload: dict[str, object]) -> str:
+    lang = _default_pocket_language(payload)
+    mapping = {
+        "english": "english_2026-04",
+        "french": "french_24l",
+        "german": "german",
+        "italian": "italian",
+        "spanish": "spanish",
+        "portuguese": "portuguese",
+        "portuguese_24l": "portuguese_24l",
+    }
+    return mapping.get(lang, "english_2026-04")
+
+
+def _pocket_required_files(payload: dict[str, object]) -> list[str]:
+    bundle = _pocket_bundle_code(payload)
     return [
         "pocket_tts_onnx.py",
         "tokenizer.model",
         "reference_sample.wav",
-        "onnx/mimi_encoder.onnx",
-        "onnx/text_conditioner.onnx",
-        "onnx/flow_lm_main_int8.onnx",
-        "onnx/flow_lm_flow_int8.onnx",
-        "onnx/mimi_decoder_int8.onnx",
+        f"onnx/{bundle}/bundle.json",
+        f"onnx/{bundle}/bos_before_voice.npy",
+        f"onnx/{bundle}/tokenizer.model",
+        f"onnx/{bundle}/mimi_encoder.onnx",
+        f"onnx/{bundle}/text_conditioner.onnx",
+        f"onnx/{bundle}/flow_lm_main_int8.onnx",
+        f"onnx/{bundle}/flow_lm_flow_int8.onnx",
+        f"onnx/{bundle}/mimi_decoder_int8.onnx",
     ]
 
 
@@ -1869,7 +1887,7 @@ def _tts_engine_requirements(profile_key: str) -> list[str]:
     if profile_key == "kokorotts":
         return ["onnxruntime", "kokoro-onnx", "numpy"]
     if profile_key == "pockettts":
-        return ["onnxruntime", "numpy", "sentencepiece", "soundfile", "scipy"]
+        return ["onnxruntime", "numpy", "sentencepiece", "soundfile", "scipy", "huggingface-hub", "safetensors"]
     return []
 
 
@@ -2143,7 +2161,7 @@ def _ensure_tts_assets(
     repo_id = _default_tts_repo(profile, payload)
     voice = str(payload.get("model", profile.model)).strip() or profile.model
     if profile.key == "pockettts":
-        required = _pocket_required_files()
+        required = _pocket_required_files(payload)
     else:
         required = _kokoro_required_files(voice)
     missing = [rel for rel in required if not (model_dir / rel).exists()]
@@ -2468,6 +2486,7 @@ def _generate_pocket_audio(
     language: str,
     voice_mode: str = "reference",
 ) -> None:
+    _ensure_tts_runtime_venv("pockettts")
     script_path = _ensure_pocket_synth_script()
     python_bin = _tts_venv_python("pockettts")
     python_exec = str(python_bin) if python_bin.exists() else sys.executable
@@ -2491,12 +2510,19 @@ def _generate_pocket_audio(
         )
         reference = _ensure_wav_reference(reference)
         command.extend(["--voice-reference", str(reference)])
+    env = os.environ.copy()
+    hf_token = secure_load_secret("pockettts:hf_token").strip()
+    if hf_token:
+        env["HF_TOKEN"] = hf_token
+        env["HUGGINGFACEHUB_API_TOKEN"] = hf_token
+        env["HUGGINGFACE_HUB_TOKEN"] = hf_token
     completed = subprocess.run(
         command,
         capture_output=True,
         text=True,
         check=False,
         timeout=600,
+        env=env,
     )
     if completed.returncode != 0:
         stderr = (completed.stderr or "").strip()
@@ -2524,10 +2550,67 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
+import shutil
 from pathlib import Path
 import wave
 
 import numpy as np
+
+
+_LEGACY_LANG_ALIASES = {
+    "english_2026-04": "english",
+    "french_24l": "french",
+    "german_24l": "german",
+    "italian_24l": "italian",
+    "spanish_24l": "spanish",
+    "pt-br": "portuguese",
+    "pt_pt": "portuguese_24l",
+    "pt-pt": "portuguese_24l",
+}
+
+
+def _normalize_language_code(value: str) -> str:
+    key = str(value or "").strip().lower()
+    if not key:
+        return "auto"
+    return _LEGACY_LANG_ALIASES.get(key, key)
+
+
+def _pick_installed_language(models_root: Path, requested: str) -> str:
+    req = _normalize_language_code(requested)
+    if req == "auto":
+        req = "english"
+    available = sorted([p.name.strip().lower() for p in models_root.iterdir() if p.is_dir()]) if models_root.exists() else []
+    if req in available:
+        return req
+    for candidate in ("english", "english_2026-04"):
+        if candidate in available:
+            return candidate
+    return req
+
+
+def _ensure_bundle_alias(models_root: Path, alias: str, target: str) -> None:
+    alias_dir = models_root / alias
+    target_dir = models_root / target
+    if alias_dir.exists() or (not target_dir.is_dir()):
+        return
+    try:
+        alias_dir.symlink_to(target_dir, target_is_directory=True)
+        return
+    except Exception:
+        pass
+    try:
+        shutil.copytree(target_dir, alias_dir)
+    except Exception:
+        pass
+
+
+def _ensure_legacy_bundle_aliases(models_root: Path) -> None:
+    _ensure_bundle_alias(models_root, "english_2026-04", "english")
+    _ensure_bundle_alias(models_root, "french_24l", "french")
+    _ensure_bundle_alias(models_root, "german_24l", "german")
+    _ensure_bundle_alias(models_root, "italian_24l", "italian")
+    _ensure_bundle_alias(models_root, "spanish_24l", "spanish")
 
 
 def _write_wav(path: Path, samples: np.ndarray, sample_rate: int = 24000) -> None:
@@ -2562,23 +2645,46 @@ def main() -> int:
         raise RuntimeError("Unable to load PocketTTS ONNX module.")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    engine = module.PocketTTSOnnx(
-        models_dir=str(model_dir / "onnx"),
-        tokenizer_path=str(model_dir / "tokenizer.model"),
-        precision="int8",
-        device="auto",
-    )
-    lang = str(args.language or "").strip() or "auto"
+    models_root = model_dir / "onnx"
+    _ensure_legacy_bundle_aliases(models_root)
+    lang = _pick_installed_language(models_root, str(args.language or "").strip() or "auto")
+    engine_kwargs = {
+        "models_dir": str(models_root),
+        "tokenizer_path": str(model_dir / "tokenizer.model"),
+        "precision": "int8",
+        "device": "auto",
+        "language": lang,
+    }
+    try:
+        engine = module.PocketTTSOnnx(**engine_kwargs)
+    except TypeError:
+        engine_kwargs.pop("language", None)
+        engine = module.PocketTTSOnnx(**engine_kwargs)
+    except FileNotFoundError as exc:
+        # Handle older default bundle names in upstream wrapper.
+        msg = str(exc)
+        if "english_2026-04" in msg and lang != "english":
+            engine_kwargs["language"] = "english"
+            engine = module.PocketTTSOnnx(**engine_kwargs)
+        else:
+            raise
     if reference is None:
+        fallback_ref = model_dir / "reference_sample.wav"
+        if fallback_ref.exists():
+            reference = fallback_ref
+    if reference is not None:
+        try:
+            audio = engine.generate(args.text, voice=str(reference), language=lang)
+        except TypeError:
+            try:
+                audio = engine.generate(args.text, voice=str(reference))
+            except TypeError:
+                audio = engine.generate(args.text)
+    else:
         try:
             audio = engine.generate(args.text, language=lang)
         except TypeError:
             audio = engine.generate(args.text)
-    else:
-        try:
-            audio = engine.generate(args.text, voice=str(reference), language=lang)
-        except TypeError:
-            audio = engine.generate(args.text, voice=str(reference))
     if not isinstance(audio, np.ndarray) or audio.size == 0:
         raise RuntimeError("PocketTTS returned empty audio.")
     _write_wav(output_path, audio.astype(np.float32), 24000)
@@ -2988,7 +3094,7 @@ def validate_backend(profile: BackendProfile, payload: dict[str, object]) -> tup
             return True, "External TTS endpoint saved."
         model_dir = _default_tts_model_dir(profile, payload)
         if profile.key == "pockettts":
-            required = _pocket_required_files()
+            required = _pocket_required_files(payload)
         else:
             voice = str(payload.get("model", profile.model)).strip() or profile.model
             required = _kokoro_required_files(voice)
