@@ -1138,7 +1138,12 @@ def _chat_messages_for_prompt(
     user_name: str = "",
     user_info: str = "",
 ) -> list[dict[str, str]]:
-    system = "You are Hanauta AI. Keep spoken replies concise, natural, and easy to listen to."
+    system = (
+        "You are Hanauta AI. Keep spoken replies concise, natural, and easy to listen to.\n"
+        "Do not output generic onboarding/help menus by default (for example long lists of things you can do).\n"
+        "Only explain capabilities or provide example commands when the user explicitly asks for help, examples, or what you can do.\n"
+        "Focus on directly answering the user's current message."
+    )
     # Inject user info if provided
     user_context = str(user_info or "").strip()
     if user_context:
@@ -1152,6 +1157,11 @@ def _chat_messages_for_prompt(
         )
         if character_prompt:
             system = f"{system}\n\nActive character:\n{character_prompt}"
+        system = (
+            f"{system}\n\n"
+            f"Stay in the active character's personality and voice at all times. "
+            f"Do not switch to generic assistant tone unless the user explicitly requests it."
+        )
         has_notify = bool(tools and any(
             (t.get("function", t).get("name", "") or "").startswith("notify_")
             for t in tools

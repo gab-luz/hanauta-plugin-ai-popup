@@ -13,7 +13,7 @@ import threading
 import traceback
 
 from PyQt6.QtCore import QObject, QPoint, QPropertyAnimation, Qt, QTimer, pyqtSignal
-from PyQt6.QtGui import QFont, QGuiApplication
+from PyQt6.QtGui import QCursor, QFont, QGuiApplication
 from PyQt6.QtNetwork import QHostAddress, QTcpServer, QTcpSocket
 from PyQt6.QtWidgets import QApplication, QMainWindow, QVBoxLayout, QWidget
 
@@ -48,6 +48,7 @@ def _setup_diagnostics() -> None:
     AI_STATE_DIR.mkdir(parents=True, exist_ok=True)
     if not LOGGER.handlers:
         LOGGER.setLevel(logging.DEBUG)
+        LOGGER.propagate = False
         formatter = logging.Formatter(
             "%(asctime)s | %(levelname)s | %(threadName)s | %(message)s",
             datefmt="%Y-%m-%d %H:%M:%S",
@@ -55,9 +56,30 @@ def _setup_diagnostics() -> None:
         file_handler = logging.FileHandler(AI_POPUP_ERROR_LOG_FILE, encoding="utf-8")
         file_handler.setLevel(logging.WARNING)
         file_handler.setFormatter(formatter)
-        stream_handler = logging.StreamHandler(sys.stderr)
-        stream_handler.setLevel(logging.INFO)
-        stream_handler.setFormatter(formatter)
+        stream_handler: logging.Handler
+        use_rich = str(os.environ.get("HANAUTA_AI_POPUP_RICH_LOG", "1")).strip().lower() not in {"0", "false", "no"}
+        if use_rich:
+            try:
+                from rich.console import Console  # type: ignore
+                from rich.logging import RichHandler  # type: ignore
+                force_color = str(os.environ.get("HANAUTA_AI_POPUP_RICH_FORCE_COLOR", "1")).strip().lower() not in {"0", "false", "no"}
+                console = Console(stderr=True, force_terminal=force_color)
+                stream_handler = RichHandler(
+                    console=console,
+                    show_time=True,
+                    show_level=True,
+                    show_path=False,
+                    markup=False,
+                    rich_tracebacks=True,
+                    log_time_format="%H:%M:%S",
+                )
+            except Exception:
+                stream_handler = logging.StreamHandler(sys.stderr)
+                stream_handler.setFormatter(formatter)
+        else:
+            stream_handler = logging.StreamHandler(sys.stderr)
+            stream_handler.setFormatter(formatter)
+        stream_handler.setLevel(logging.DEBUG)
         LOGGER.addHandler(file_handler)
         LOGGER.addHandler(stream_handler)
     try:
@@ -165,22 +187,75 @@ class DemoWindow(QMainWindow):
         apply_theme_globals()
         self._build_panel()
 
+    def _pick_target_screen(self):
+        mode = str(os.environ.get("HANAUTA_AI_POPUP_SCREEN_MODE", "workspace")).strip().lower()
+        if mode == "workspace":
+            workspace = focused_workspace()
+            if isinstance(workspace, dict):
+                rect = workspace.get("rect")
+                if isinstance(rect, dict):
+                    try:
+                        probe = QPoint(int(rect.get("x", 0)) + 48, int(rect.get("y", 0)) + 48)
+                        return QGuiApplication.screenAt(probe) or QApplication.primaryScreen()
+                    except Exception:
+                        pass
+        if mode == "primary":
+            return QApplication.primaryScreen()
+        if mode == "cursor":
+            return QGuiApplication.screenAt(QCursor.pos()) or QApplication.primaryScreen()
+        screens = QGuiApplication.screens() or []
+        if screens:
+            try:
+                return min(screens, key=lambda s: s.availableGeometry().x())
+            except Exception:
+                return screens[0]
+        return QApplication.primaryScreen()
+
     def _place_window(self) -> None:
-        workspace = focused_workspace()
-        if isinstance(workspace, dict):
-            rect = workspace.get("rect")
-            if isinstance(rect, dict):
-                try:
-                    self.move(int(rect.get("x", 0)) + 16, int(rect.get("y", 0)) + 32)
-                    return
-                except Exception:
-                    pass
-        screen = QApplication.primaryScreen()
+        screen = self._pick_target_screen()
+        if screen is None:
+            workspace = focused_workspace()
+            if isinstance(workspace, dict):
+                rect = workspace.get("rect")
+                if isinstance(rect, dict):
+                    try:
+                        self.move(int(rect.get("x", 0)) + 16, int(rect.get("y", 0)) + 32)
+                        return
+                    except Exception:
+                        pass
+        if screen is None:
+            screen = QApplication.primaryScreen()
         if screen is None:
             self.move(16, 32)
             return
         geo = screen.availableGeometry()
         self.move(geo.x() + 16, geo.y() + 32)
+
+    def _ensure_visible_on_active_screen(self) -> None:
+        """Keep the popup on-screen, preferring primary screen by default."""
+        screen = self._pick_target_screen()
+        if screen is None:
+            return
+
+        geo = screen.availableGeometry()
+        x = self.x()
+        y = self.y()
+        w = max(1, self.width())
+        h = max(1, self.height())
+
+        min_x = geo.x()
+        min_y = geo.y()
+        max_x = geo.x() + max(0, geo.width() - w)
+        max_y = geo.y() + max(0, geo.height() - h)
+
+        if x < min_x or x > max_x:
+            x = min_x + 16
+        if y < min_y or y > max_y:
+            y = min_y + 32
+
+        x = min(max(x, min_x), max_x)
+        y = min(max(y, min_y), max_y)
+        self.move(x, y)
 
     def showEvent(self, event) -> None:  # type: ignore[override]
         super().showEvent(event)
@@ -235,6 +310,7 @@ class DemoWindow(QMainWindow):
     def present(self) -> None:
         if self.isMinimized():
             self.showNormal()
+        self._ensure_visible_on_active_screen()
         if not self.isVisible():
             self.show()
         self.raise_()
@@ -384,6 +460,7 @@ def main() -> int:
         return 0 if ok else 1
 
     app = QApplication(sys.argv)
+    app.setQuitOnLastWindowClosed(False)
     app.setStyle("Fusion")
     ui_font = load_ui_font()
     app.setFont(QFont(ui_font, 10))
@@ -405,9 +482,19 @@ def main() -> int:
             LOGGER.info("Popup command server started: %s", detail)
         else:
             LOGGER.warning("Popup command server unavailable: %s", detail)
+            sent, msg = _send_server_command("show", host, port)
+            if sent:
+                LOGGER.info("Existing popup instance detected; requested show (%s).", msg)
+                QTimer.singleShot(0, app.quit)
+                return app.exec()
         window._popup_command_server = command_server  # type: ignore[attr-defined]
     if not args.start_hidden:
         window.show()
+        window.present()
+        QTimer.singleShot(150, window.present)
+        QTimer.singleShot(500, window.present)
+        QTimer.singleShot(1200, window.present)
+        LOGGER.info("Popup show requested (visible=%s minimized=%s)", window.isVisible(), window.isMinimized())
     return app.exec()
 
 
