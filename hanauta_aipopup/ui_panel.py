@@ -210,6 +210,8 @@ class SidebarPanel(QFrame):
         self._voice_llm_loaded_probe_at: float = 0.0
         self._voice_llm_loaded_probe_host: str = ""
         self._voice_llm_loaded_probe_result: tuple[bool, str] = (False, "")
+        self._kobold_loaded_notified_host: str = ""
+        self._kobold_loaded_notified_model: str = ""
         self._stt_once_worker: OneShotSttWorker | None = None
         self._pending_kobold_launch_profile: str = ""
         self._pending_kobold_launch_payload: dict | None = None
@@ -224,6 +226,10 @@ class SidebarPanel(QFrame):
         self._kobold_ready_timer = QTimer(self)
         self._kobold_ready_timer.setInterval(1800)
         self._kobold_ready_timer.timeout.connect(self._poll_pending_kobold_ready)
+        self._kobold_state_timer = QTimer(self)
+        self._kobold_state_timer.setInterval(3500)
+        self._kobold_state_timer.timeout.connect(self._poll_configured_kobold_state)
+        self._kobold_state_timer.start()
 
         self.setObjectName("sidebarPanel")
         self.setFixedWidth(452)
@@ -273,6 +279,7 @@ class SidebarPanel(QFrame):
         self._refresh_available_backends()
         self._update_voice_mode_view()
         self._sync_web_ui()
+        QTimer.singleShot(800, self._poll_configured_kobold_state)
         QTimer.singleShot(2200, maybe_notify_koboldcpp_release)
         self.monitor_timer = QTimer(self)
         self.monitor_timer.timeout.connect(self._poll_sd_output_monitors)
@@ -772,6 +779,60 @@ class SidebarPanel(QFrame):
                 unique.append(clean)
         return unique
 
+    def _configured_kobold_loaded_state(self) -> tuple[bool, str, str, BackendProfile | None]:
+        profile = self.profile_by_key.get("koboldcpp")
+        if profile is None:
+            return False, "", "", None
+        payload = dict(self.backend_settings.get(profile.key, {}))
+        host = str(payload.get("host", profile.host)).strip()
+        if not host:
+            return False, "", "", profile
+        from .backends import _koboldcpp_model_loaded
+        now = time.time()
+        if host == self._voice_llm_loaded_probe_host and (now - self._voice_llm_loaded_probe_at) < 4.0:
+            loaded, model_name = self._voice_llm_loaded_probe_result
+        else:
+            loaded, model_name = _koboldcpp_model_loaded(host)
+            self._voice_llm_loaded_probe_at = now
+            self._voice_llm_loaded_probe_host = host
+            self._voice_llm_loaded_probe_result = (bool(loaded), str(model_name or ""))
+        return bool(loaded), str(model_name or ""), host, profile
+
+    def _poll_configured_kobold_state(self) -> None:
+        loaded, model_name, host, profile = self._configured_kobold_loaded_state()
+        if not loaded or profile is None:
+            return
+        self._voice_models_loaded["llm"] = True
+        self._voice_llm_loaded_probe_at = time.time()
+        self._voice_llm_loaded_probe_host = host
+        self._voice_llm_loaded_probe_result = (True, model_name)
+        self._sync_web_ui()
+        if host == self._kobold_loaded_notified_host and model_name == self._kobold_loaded_notified_model:
+            return
+        self._kobold_loaded_notified_host = host
+        self._kobold_loaded_notified_model = model_name
+        display_model = model_name or profile.label
+        self.add_card(
+            ChatItemData(
+                role="assistant",
+                title="Runtime",
+                meta="koboldcpp ready",
+                body=(
+                    f"<p><b>{html.escape(profile.label)}</b> is loaded.</p>"
+                    f"<p>Model: <b>{html.escape(display_model)}</b></p>"
+                ),
+                chips=[SourceChipData("KoboldCpp"), SourceChipData("loaded")],
+            )
+        )
+        if not self._popup_open():
+            send_desktop_notification_with_action(
+                "KoboldCpp loaded",
+                f"{profile.label} loaded {display_model}. Reopen chat?",
+                "show",
+                "Reopen chat",
+                callback=self._reopen_popup_from_notification,
+            )
+
     def _voice_character_image_url(self) -> str:
         config = _voice_mode_settings(self.backend_settings)
         active = self._active_character() if bool(config.get("enable_character", True)) else None
@@ -1056,10 +1117,11 @@ class SidebarPanel(QFrame):
         header_status = self.header_status.text().strip() if hasattr(self, "header_status") else ""
         provider_label = self.composer.provider_label.text().strip() if hasattr(self, "composer") else ""
         available_backends = []
+        kobold_loaded, _kobold_model, _kobold_host, _kobold_profile = self._configured_kobold_loaded_state()
         for profile in self.profiles:
             payload = self.backend_settings.get(profile.key, {})
             ready = bool(payload.get("enabled", True) and payload.get("tested", False))
-            if ready:
+            if ready or (profile.key == "koboldcpp" and kobold_loaded):
                 available_backends.append(
                     {
                         "key": profile.key,

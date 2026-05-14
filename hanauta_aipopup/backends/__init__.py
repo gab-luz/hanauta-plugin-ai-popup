@@ -54,8 +54,10 @@ def _koboldcpp_model_loaded(host: str) -> tuple[bool, str]:
             import json as _json
             data = _json.loads(resp.read().decode("utf-8", errors="ignore"))
             model = str(data.get("result", "")).strip()
-            # KoboldCpp returns "koboldcpp" (no slash) when no model is loaded yet
-            if model and "/" in model:
+            # KoboldCpp returns "koboldcpp" when no model is loaded yet. Depending on
+            # version/config, a loaded model may be returned as either a repo-like
+            # name or a plain GGUF filename.
+            if model and model.lower() not in {"koboldcpp", "none", "null", "unknown"}:
                 return True, model.split("/", 1)[-1]
             return False, model
     except Exception:
