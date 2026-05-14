@@ -61,6 +61,20 @@
     "chat.voice.models_sub_default": "Preload models for hands-free voice mode.",
     "chat.voice.models_sub_opening_voice": "Select which backends to warm up. Voice mode opens automatically when ready.",
     "chat.review_attachments": "Please review the attached content.",
-    "chat.now": "now"
+    "chat.now": "now",
+    "chat.tts_only.say_hint": "Use /say your text to synthesize speech, or switch to a text backend for chat replies.",
+    "chat.voice.warmup.title": "Model Warmup",
+    "chat.voice.warmup.starting": "Starting selected voice backends. This may take a moment on first run.",
+    "chat.voice.warmup.complete": "Model Warmup Complete",
+    "chat.voice.warmup.failed": "Model Warmup Failed",
+    "chat.voice.warmup.starting_stt": "Starting STT",
+    "chat.voice.warmup.preparing_stt": "Preparing speech-to-text backend.",
+    "chat.voice.warmup.starting_llm": "Starting LLM",
+    "chat.voice.warmup.preparing_llm": "Preparing the chat backend for voice mode.",
+    "chat.voice.warmup.starting_tts": "Starting TTS",
+    "chat.voice.warmup.preparing_tts": "Preparing speech synthesis backend.",
+    "chat.voice.chip.voice": "voice",
+    "chat.voice.chip.models": "models",
+    "chat.voice.chip.error": "error"
   }
 }

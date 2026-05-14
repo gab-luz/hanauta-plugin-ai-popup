@@ -81,6 +81,7 @@ from .tts import (
     _default_tts_mode,
     _host_reachable,
 )
+from .i18n import tr
 from .ui_widgets import (
     SurfaceFrame, FadeCard, AvatarBadge, ActionIcon,
     _audio_chip_href, _audio_chip_path, _audio_duration_label,
@@ -1109,7 +1110,13 @@ class VoiceModelsWarmupWorker(QThread):
             if self.selection.get("stt", False):
                 print("[VoiceModels] === STT warmup start ===")
                 logging.info("[VoiceModels] === STT warmup start ===")
-                self._emit("Starting STT", "Preparing speech-to-text backend.")
+                self._emit(
+                    tr("chat.voice.warmup.starting_stt", "Starting STT"),
+                    tr(
+                        "chat.voice.warmup.preparing_stt",
+                        "Preparing speech-to-text backend.",
+                    ),
+                )
                 stt_updates = self._warm_stt()
                 print("[VoiceModels] === STT warmup done ===")
                 logging.info(f"[VoiceModels] === STT warmup done updates={stt_updates} ===")
@@ -1120,7 +1127,13 @@ class VoiceModelsWarmupWorker(QThread):
             if self.selection.get("llm", False):
                 print("[VoiceModels] === LLM warmup start ===")
                 logging.info("[VoiceModels] === LLM warmup start ===")
-                self._emit("Starting LLM", "Preparing the chat backend for voice mode.")
+                self._emit(
+                    tr("chat.voice.warmup.starting_llm", "Starting LLM"),
+                    tr(
+                        "chat.voice.warmup.preparing_llm",
+                        "Preparing the chat backend for voice mode.",
+                    ),
+                )
                 llm_updates = self._warm_llm()
                 print("[VoiceModels] === LLM warmup done ===")
                 logging.info(f"[VoiceModels] === LLM warmup done updates={llm_updates} ===")
@@ -1130,7 +1143,13 @@ class VoiceModelsWarmupWorker(QThread):
 
             if self.selection.get("tts", False):
                 logging.info("[VoiceModels] === TTS warmup start ===")
-                self._emit("Starting TTS", "Preparing speech synthesis backend.")
+                self._emit(
+                    tr("chat.voice.warmup.starting_tts", "Starting TTS"),
+                    tr(
+                        "chat.voice.warmup.preparing_tts",
+                        "Preparing speech synthesis backend.",
+                    ),
+                )
                 self._warm_tts()
                 logging.info("[VoiceModels] === TTS warmup done ===")
                 loaded["tts"] = True
@@ -1215,7 +1234,18 @@ class VoiceModelsWarmupWorker(QThread):
             wav.setframerate(sample_rate)
             wav.writeframes(struct.pack("<" + "h" * frames, *([0] * frames)))
         logging.info("[VoiceModels] _warm_stt: running whisper transcribe on warmup wav")
-        _transcribe_with_whisper(warmup_wav, self.config)
+        try:
+            _transcribe_with_whisper(warmup_wav, self.config)
+        except RuntimeError as exc:
+            msg = str(exc).strip().lower()
+            # Warmup audio is intentionally near-silent. Some Whisper builds return
+            # empty text for silence even when the backend is healthy.
+            if "returned no text" in msg:
+                logging.info(
+                    "[VoiceModels] _warm_stt: whisper warmup returned no text on silence; treating as ready"
+                )
+            else:
+                raise
         logging.info("[VoiceModels] _warm_stt: whisper transcribe done")
         return updates
 

@@ -1277,9 +1277,15 @@ class SidebarPanel(QFrame):
         self._sync_web_ui()
 
         self._add_runtime_status_card(
-            "Model Warmup",
-            "Starting selected voice backends. This may take a moment on first run.",
-            chips=["voice", "models"],
+            tr("chat.voice.warmup.title", "Model Warmup"),
+            tr(
+                "chat.voice.warmup.starting",
+                "Starting selected voice backends. This may take a moment on first run.",
+            ),
+            chips=[
+                tr("chat.voice.chip.voice", "voice"),
+                tr("chat.voice.chip.models", "models"),
+            ],
         )
         LOGGER.debug("[VoiceModels] creating worker thread")
         worker = VoiceModelsWarmupWorker(config, self.profile_by_key, self.backend_settings, selection)
@@ -1288,7 +1294,14 @@ class SidebarPanel(QFrame):
 
         def _on_progress(title: str, detail: str) -> None:
             LOGGER.info("[VoiceModels] progress: %s - %s", title, detail)
-            self._add_runtime_status_card(str(title), str(detail), chips=["voice", "models"])
+            self._add_runtime_status_card(
+                str(title),
+                str(detail),
+                chips=[
+                    tr("chat.voice.chip.voice", "voice"),
+                    tr("chat.voice.chip.models", "models"),
+                ],
+            )
 
         def _on_ok(raw_payload: str) -> None:
             LOGGER.info("[VoiceModels] finished_ok: %s", raw_payload[:200] if raw_payload else "empty")
@@ -1337,10 +1350,13 @@ class SidebarPanel(QFrame):
             body = "<p>" + "</p><p>".join(status_lines) + "</p>" if status_lines else "<p>Warmup complete.</p>"
             tone = "success" if status_lines and "loading" not in body and "not respond" not in body else "warn"
             self._add_runtime_status_card(
-                "Model Warmup Complete",
+                tr("chat.voice.warmup.complete", "Model Warmup Complete"),
                 body,
                 tone=tone,
-                chips=["voice", "models"],
+                chips=[
+                    tr("chat.voice.chip.voice", "voice"),
+                    tr("chat.voice.chip.models", "models"),
+                ],
             )
 
         def _on_fail(message: str) -> None:
@@ -1351,10 +1367,14 @@ class SidebarPanel(QFrame):
             self._voice_models_warning = clean
             self._sync_web_ui()
             self._add_runtime_status_card(
-                "Model Warmup Failed",
+                tr("chat.voice.warmup.failed", "Model Warmup Failed"),
                 clean,
                 tone="warn",
-                chips=["voice", "models", "error"],
+                chips=[
+                    tr("chat.voice.chip.voice", "voice"),
+                    tr("chat.voice.chip.models", "models"),
+                    tr("chat.voice.chip.error", "error"),
+                ],
             )
 
         worker.progress.connect(_on_progress)
@@ -2557,7 +2577,7 @@ class SidebarPanel(QFrame):
                     title="Hanauta AI",
                     body=(
                         "<p>This backend is TTS-only.</p>"
-                        "<p>Use <code>/say your text</code> to synthesize speech, or switch to a text backend for chat replies.</p>"
+                        f"<p>{html.escape(tr('chat.tts_only.say_hint', 'Use /say your text to synthesize speech, or switch to a text backend for chat replies.'))}</p>"
                     ),
                     meta="tts command",
                 )

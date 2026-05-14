@@ -729,6 +729,16 @@ POPUP_CSS = r"""
       line-height: 1;
       transform: translateY(-0.5px);
     }
+    .send-btn .icon-svg {
+      width: 18px;
+      height: 18px;
+      display: inline-block;
+      object-fit: contain;
+      filter: var(--icon-filter, brightness(0) saturate(100%) invert(100%));
+      opacity: 0.94;
+      pointer-events: none;
+      user-select: none;
+    }
     .send-btn:hover { transform: translateY(-1px); background: rgba(198,180,255,.22); }
     .send-btn.secondary:hover { background: rgba(255,255,255,.05); }
     .send-btn:active { transform: translateY(0px); }

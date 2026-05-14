@@ -61,6 +61,20 @@
     "chat.voice.models_sub_default": "Предзагрузите модели для голосового режима hands-free.",
     "chat.voice.models_sub_opening_voice": "Выберите, какие бэкенды прогреть. Голосовой режим откроется автоматически, когда все будет готово.",
     "chat.review_attachments": "Пожалуйста, проверьте вложенный контент.",
-    "chat.now": "сейчас"
+    "chat.now": "сейчас",
+    "chat.tts_only.say_hint": "Используйте /say ваш текст для синтеза речи или переключитесь на текстовый бэкенд для ответов в чате.",
+    "chat.voice.warmup.title": "Прогрев моделей",
+    "chat.voice.warmup.starting": "Запускаются выбранные голосовые бэкенды. При первом запуске это может занять немного времени.",
+    "chat.voice.warmup.complete": "Прогрев моделей завершен",
+    "chat.voice.warmup.failed": "Сбой прогрева моделей",
+    "chat.voice.warmup.starting_stt": "Запуск STT",
+    "chat.voice.warmup.preparing_stt": "Подготовка бэкенда распознавания речи.",
+    "chat.voice.warmup.starting_llm": "Запуск LLM",
+    "chat.voice.warmup.preparing_llm": "Подготовка чат-бэкенда для голосового режима.",
+    "chat.voice.warmup.starting_tts": "Запуск TTS",
+    "chat.voice.warmup.preparing_tts": "Подготовка бэкенда синтеза речи.",
+    "chat.voice.chip.voice": "голос",
+    "chat.voice.chip.models": "модели",
+    "chat.voice.chip.error": "ошибка"
   }
 }

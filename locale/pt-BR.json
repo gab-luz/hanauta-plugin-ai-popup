@@ -61,6 +61,20 @@
     "chat.voice.models_sub_default": "Pré-carregue modelos para o modo de voz mãos livres.",
     "chat.voice.models_sub_opening_voice": "Selecione quais backends aquecer. O modo de voz abre automaticamente quando estiver pronto.",
     "chat.review_attachments": "Revise o conteúdo anexado, por favor.",
-    "chat.now": "agora"
+    "chat.now": "agora",
+    "chat.tts_only.say_hint": "Use /say seu texto para sintetizar fala, ou troque para um backend de texto para respostas de chat.",
+    "chat.voice.warmup.title": "Aquecimento de modelos",
+    "chat.voice.warmup.starting": "Iniciando os backends de voz selecionados. Isso pode levar um momento na primeira execução.",
+    "chat.voice.warmup.complete": "Aquecimento de modelos concluído",
+    "chat.voice.warmup.failed": "Falha no aquecimento de modelos",
+    "chat.voice.warmup.starting_stt": "Iniciando STT",
+    "chat.voice.warmup.preparing_stt": "Preparando backend de fala para texto.",
+    "chat.voice.warmup.starting_llm": "Iniciando LLM",
+    "chat.voice.warmup.preparing_llm": "Preparando o backend de chat para modo de voz.",
+    "chat.voice.warmup.starting_tts": "Iniciando TTS",
+    "chat.voice.warmup.preparing_tts": "Preparando backend de síntese de fala.",
+    "chat.voice.chip.voice": "voz",
+    "chat.voice.chip.models": "modelos",
+    "chat.voice.chip.error": "erro"
   }
 }
