@@ -10,6 +10,9 @@ from typing import Any
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 LOCALE_DIR = PLUGIN_ROOT / "locale"
 DEFAULT_LOCALE = "en-US"
+HANAUTA_SETTINGS_FILE = (
+    Path.home() / ".local" / "state" / "hanauta" / "notification-center" / "settings.json"
+)
 
 _LOCALE_ALIASES = {
     "pt": "pt-BR",
@@ -90,6 +93,17 @@ def available_locales() -> list[str]:
 
 
 def detect_locale() -> str:
+    # Hanauta "System locale" setting should be honored first so UI follows user selection
+    # even before shell/session env vars are refreshed.
+    try:
+        payload = _safe_json(HANAUTA_SETTINGS_FILE)
+        region = payload.get("region", {}) if isinstance(payload, dict) else {}
+        if isinstance(region, dict):
+            saved = str(region.get("locale_code", "")).strip()
+            if saved:
+                return _normalize_locale_code(saved.split(".")[0].split(":")[0])
+    except Exception:
+        pass
     for key in ("HANAUTA_AI_POPUP_LOCALE", "LC_ALL", "LANG", "LANGUAGE"):
         value = str(os.environ.get(key, "")).strip()
         if value:
