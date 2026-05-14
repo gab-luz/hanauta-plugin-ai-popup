@@ -114,6 +114,7 @@ from .tts import (
     synthesize_tts, _waveform_from_hanauta_service,
     transcribe_voice_audio, generate_voice_chat_reply,
     _voice_mode_settings, _with_voice_device,
+    _canonical_whisper_model,
     _voice_token_saver_enabled, _compress_voice_prompt,
     _voice_memory_recall, _voice_memory_store_pair,
     _chat_messages_for_prompt, _chat_messages_with_memory,
@@ -1247,9 +1248,7 @@ class VoiceModelsWarmupWorker(QThread):
             return updates
 
         # Whisper (faster-whisper): ensure venv and do one short transcribe to warm model cache.
-        raw_model = str(self.config.get("stt_model", "small")).strip()
-        lowered = raw_model.lower()
-        model_name = lowered if lowered in {"tiny", "small", "medium", "large"} else (raw_model or "small")
+        model_name = _canonical_whisper_model(self.config.get("stt_model", "small"))
         device = "gpu" if str(self.config.get("stt_device", "cpu")).lower() == "gpu" else "cpu"
         logging.info(f"[VoiceModels] _warm_stt: whisper model={model_name} device={device}")
         _ensure_voice_venv("whisper", model_name, device, ["faster-whisper", "huggingface-hub"], "faster_whisper")
@@ -1452,9 +1451,7 @@ class VoiceConversationWorker(QThread):
         backend = str(self.config.get("stt_backend", "whisper")).strip().lower()
         if backend != "whisper":
             return None
-        raw_model = str(self.config.get("stt_model", "small")).strip()
-        lowered = raw_model.lower()
-        model_name = lowered if lowered in {"tiny", "small", "medium", "large"} else (raw_model or "small")
+        model_name = _canonical_whisper_model(self.config.get("stt_model", "small"))
         device = "gpu" if str(self.config.get("stt_device", "cpu")).lower() == "gpu" else "cpu"
         python_bin = _ensure_voice_venv("whisper", model_name, device, ["faster-whisper", "huggingface-hub"], "faster_whisper")
         script_path = _ensure_voice_whisper_stream_script()

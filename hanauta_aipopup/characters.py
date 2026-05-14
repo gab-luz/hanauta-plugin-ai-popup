@@ -191,10 +191,19 @@ def import_character_from_file(path: Path) -> CharacterCard:
 
 
 def _character_compose_prompt(card: CharacterCard) -> str:
-    parts = []
-    for field in [card.system_prompt, card.description, card.personality, card.scenario, card.first_message]:
-        if field:
-            parts.append(field)
+    parts = [f"Name: {card.name}"]
+    fields = [
+        ("System prompt", card.system_prompt),
+        ("Description", card.description),
+        ("Personality", card.personality),
+        ("Scenario", card.scenario),
+        ("First message", card.first_message),
+        ("Message examples", card.message_example),
+    ]
+    for label, value in fields:
+        clean = str(value or "").strip()
+        if clean:
+            parts.append(f"{label}:\n{clean}")
     return "\n".join(parts)
 
 

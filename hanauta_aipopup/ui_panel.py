@@ -99,7 +99,7 @@ from .tts import (
     _compress_voice_prompt, _voice_token_saver_enabled,
     _voice_memory_recall, _voice_memory_store_pair,
     _chat_messages_for_prompt, _chat_messages_with_memory,
-    _default_tts_mode, _default_tts_model_dir,
+    _default_tts_mode, _default_tts_model_dir, _canonical_whisper_model,
 )
 from .ui_backend_settings import BackendSettingsDialog, get_tts_download_manager
 from .storage import _chat_timestamp_label, _chat_export_payload, archive_chat_history
@@ -292,6 +292,23 @@ class SidebarPanel(QFrame):
     def _notify_if_popup_closed(self, title: str, body: str, icon_path: str = "") -> None:
         if not self._popup_open():
             send_desktop_notification(title, body, icon_path=icon_path)
+
+    def _ai_reply_notification_payload(
+        self,
+        reply: str,
+        fallback_title: str,
+        active_character: CharacterCard | None,
+    ) -> tuple[str, str, str]:
+        config = _voice_mode_settings(self.backend_settings)
+        privacy_mode = bool(config.get("hide_answer_text", False))
+        if privacy_mode:
+            return "New AI Answer", "New message", str(AI_ASSETS_DIR / "auto_awesome.svg")
+        title = active_character.name if active_character is not None else (str(fallback_title).strip() or "Hanauta AI")
+        body = str(reply or "").strip()[:120] or "New message"
+        icon_path = ""
+        if active_character is not None and not bool(config.get("hide_character_photo", False)):
+            icon_path = self._active_character_avatar_icon()
+        return title, body, icon_path
 
     def _active_character_avatar_icon(self) -> str:
         active = self._active_character()
@@ -694,7 +711,7 @@ class SidebarPanel(QFrame):
         if backend == "whisperlive":
             model = str(config.get("stt_whisperlive_model", "small")).strip() or "small"
             return "WhisperLive", model
-        model = str(config.get("stt_model", "small")).strip() or "small"
+        model = _canonical_whisper_model(config.get("stt_model", "small"))
         lowered = model.lower()
         return "Whisper", lowered.title() if lowered in {"tiny", "small", "medium", "large"} else model
 
@@ -1320,7 +1337,7 @@ class SidebarPanel(QFrame):
         if selection.get("stt", False) and not bool(config.get("stt_external_api", False)):
             backend = str(config.get("stt_backend", "whisper")).strip().lower()
             if backend == "whisper":
-                model = str(config.get("stt_model", "small")).strip().lower() or "small"
+                model = _canonical_whisper_model(config.get("stt_model", "small")).lower() or "small"
                 stt_est = {
                     "tiny": 180 * 1024 * 1024,
                     "small": 640 * 1024 * 1024,
@@ -2041,13 +2058,8 @@ class SidebarPanel(QFrame):
                 self._voice_tts_in_progress = True
             except Exception:
                 LOGGER.exception("voice mode autoplay failed for %s", resolved_audio)
-        body = str(config.get("generic_notification_text", "Notification received")).strip() or "Notification received"
-        if not bool(config.get("hide_answer_text", False)):
-            body = answer.strip() or body
-        icon_path = ""
-        if active_character is not None and not bool(config.get("hide_character_photo", False)):
-            icon_path = self._active_character_avatar_icon()
-        self._notify_if_popup_closed(title, body, icon_path=icon_path)
+        notify_title, notify_body, notify_icon = self._ai_reply_notification_payload(answer, title, active_character)
+        self._notify_if_popup_closed(notify_title, notify_body, icon_path=notify_icon)
 
     def _handle_voice_barge_in(self) -> None:
         self._voice_last_status = "Listening"
@@ -2584,7 +2596,8 @@ class SidebarPanel(QFrame):
         if hasattr(self, "_text_worker") and self._text_worker is not None and self._text_worker.isRunning():
             return
         self._set_pending_state(profile.label, "Generating response…", "text generation")
-        character = self._active_character()
+        config = _voice_mode_settings(self.backend_settings)
+        character = self._active_character() if bool(config.get("enable_character", True)) else None
         worker = TextReplyWorker(
             profile=profile,
             payload=payload,
@@ -2610,10 +2623,8 @@ class SidebarPanel(QFrame):
             body=_render_llm_text_html(reply),
             chips=[SourceChipData(profile_label)],
         ))
-        send_desktop_notification(
-            "New AI answer", reply[:120],
-            icon_path=self._active_character_avatar_icon(),
-        )
+        notify_title, notify_body, notify_icon = self._ai_reply_notification_payload(reply, display_title, character)
+        send_desktop_notification(notify_title, notify_body, icon_path=notify_icon)
 
     def _handle_text_reply_failed(self, message: str) -> None:
         self._clear_pending_state()

@@ -63,7 +63,7 @@ from .tts import (
     _default_tts_model_dir, _list_pocket_voice_references,
     _ensure_pocket_preset_voice, _default_pocket_language,
     _waveform_from_hanauta_service,
-    _voice_mode_defaults, _voice_mode_settings,
+    _voice_mode_defaults, _voice_mode_settings, _canonical_whisper_model,
 )
 
 LOGGER = logging.getLogger("hanauta.ai_popup")
@@ -732,7 +732,7 @@ class VoiceModeDialog(QDialog):
         # Distil-Whisper family (may require a CTranslate2-converted repo to work with faster-whisper).
         self.stt_model_combo.addItem("distil-whisper/distil-small.en", "distil-whisper/distil-small.en")
         self.stt_model_combo.addItem("distil-whisper/distil-medium.en", "distil-whisper/distil-medium.en")
-        configured_model = str(self.config.get("stt_model", "small")).strip()
+        configured_model = _canonical_whisper_model(self.config.get("stt_model", "small"))
         if configured_model and self.stt_model_combo.findData(configured_model) < 0:
             self.stt_model_combo.addItem(configured_model, configured_model)
         self._set_combo_selected(self.stt_model_combo, configured_model or "small")
@@ -887,7 +887,10 @@ class VoiceModeDialog(QDialog):
         self.hide_photo_check = QCheckBox("Hide character photo in closed-popup notifications")
         self.hide_photo_check.setChecked(bool(self.config.get("hide_character_photo", False)))
         form.addWidget(self.hide_photo_check)
-        self.hide_answer_check = QCheckBox("Hide answer text in closed-popup notifications")
+        self.hide_answer_check = QCheckBox("Privacy mode for AI popup notifications")
+        self.hide_answer_check.setToolTip(
+            "When enabled, notifications use a generic title, generic body, and the AI icon."
+        )
         self.hide_answer_check.setChecked(bool(self.config.get("hide_answer_text", False)))
         form.addWidget(self.hide_answer_check)
         self.generic_text_input = QLineEdit(str(self.config.get("generic_notification_text", "Notification received")))
@@ -1092,10 +1095,10 @@ class VoiceModeDialog(QDialog):
             self.stt_vosk_refresh_button.setEnabled(True)
 
     def _save(self) -> None:
-        stt_model = str(self.stt_model_combo.currentData() or "").strip()
+        stt_model = _canonical_whisper_model(self.stt_model_combo.currentData())
         typed_model = str(self.stt_model_combo.currentText() or "").strip()
-        if typed_model:
-            stt_model = typed_model
+        if typed_model and typed_model != self.stt_model_combo.itemText(self.stt_model_combo.currentIndex()):
+            stt_model = _canonical_whisper_model(typed_model)
         if not stt_model:
             stt_model = "small"
         config = dict(_voice_mode_defaults())
@@ -1162,5 +1165,3 @@ class VoiceModeDialog(QDialog):
         _write_privacy_codebook(config)
         self.config = config
         self.accept()
-
-

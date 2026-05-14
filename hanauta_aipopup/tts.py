@@ -261,6 +261,31 @@ def _voice_mode_settings(settings: dict[str, dict[str, object]]) -> dict[str, ob
     return payload
 
 
+def _canonical_whisper_model(value: object) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return "small"
+    lowered = " ".join(raw.lower().replace("_", " ").replace("-", " ").split())
+    aliases = {
+        "whisper tiny": "tiny",
+        "faster whisper tiny": "tiny",
+        "tiny": "tiny",
+        "whisper small": "small",
+        "faster whisper small": "small",
+        "small": "small",
+        "whisper medium": "medium",
+        "faster whisper medium": "medium",
+        "medium": "medium",
+        "whisper large": "large",
+        "whisper large v3": "large",
+        "faster whisper large": "large",
+        "faster whisper large v3": "large",
+        "large": "large",
+        "large v3": "large",
+    }
+    return aliases.get(lowered, raw)
+
+
 def _with_voice_device(payload: dict[str, object], device: str) -> dict[str, object]:
     updated = dict(payload)
     clean = device.strip().lower()
@@ -920,10 +945,7 @@ if __name__ == "__main__":
 
 
 def _transcribe_with_whisper(audio_path: Path, config: dict[str, object]) -> str:
-    raw_model = str(config.get("stt_model", "small")).strip()
-    lowered = raw_model.lower()
-    # Allow Hugging Face repo IDs or local paths in addition to built-in size aliases.
-    model_name = lowered if lowered in {"tiny", "small", "medium", "large"} else (raw_model or "small")
+    model_name = _canonical_whisper_model(config.get("stt_model", "small"))
     device = "gpu" if str(config.get("stt_device", "cpu")).lower() == "gpu" else "cpu"
     python_bin = _ensure_voice_venv("whisper", model_name, device, ["faster-whisper", "huggingface-hub"], "faster_whisper")
     script_path = _ensure_voice_whisper_script()
@@ -1157,6 +1179,12 @@ def _chat_messages_for_prompt(
         )
         if character_prompt:
             system = f"{system}\n\nActive character:\n{character_prompt}"
+            LOGGER.debug(
+                "Using active character prompt: name=%s chars=%d has_examples=%s",
+                char_name,
+                len(character_prompt),
+                bool(str(getattr(character, "message_example", "") or "").strip()),
+            )
         system = (
             f"{system}\n\n"
             f"Stay in the active character's personality and voice at all times. "
