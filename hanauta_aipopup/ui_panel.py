@@ -1944,6 +1944,12 @@ class SidebarPanel(QFrame):
         self._voice_llm_started = True
         self._voice_llm_log_last_ts = 0.0
         self._voice_llm_log_last_len = 0
+        try:
+            self.chat_view.clear_audio_queue()
+            if self._voice_tts_in_progress:
+                self.chat_view.fade_out_current_audio(180)
+        except Exception:
+            LOGGER.exception("voice mode audio reset failed")
         # Surface this immediately so it doesn't look like the TTS is "ahead" of the UI/logs.
         _voice_log("llm", str(llm_label).strip() or "LLM", str(llm_model).strip() or "model", "started generating…")
 

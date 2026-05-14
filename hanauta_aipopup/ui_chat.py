@@ -1828,6 +1828,11 @@ class VoiceConversationWorker(QThread):
                     tts_payload = self._tts_payload(tts_profile)
                     min_chars = max(12, self._tts_streaming_min_chars())
                     max_chars = max(min_chars + 10, self._tts_streaming_max_chars())
+                    if tts_profile.key == "pockettts" and str(tts_payload.get("_character_voice_sample", "") or "").strip():
+                        # PocketTTS voice cloning is much more stable with phrase-sized chunks.
+                        # Very short chunks can drift into odd filler words or lose the reference voice.
+                        min_chars = max(min_chars, 80)
+                        max_chars = max(max_chars, 220)
                     interrupted = False
                     last_barge_check = 0.0
 

@@ -2658,14 +2658,16 @@ def _normalize_language_code(value: str) -> str:
 
 def _pick_installed_language(models_root: Path, requested: str) -> str:
     req = _normalize_language_code(requested)
+    allow_english_fallback = req == "auto"
     if req == "auto":
         req = "english"
     available = sorted([p.name.strip().lower() for p in models_root.iterdir() if p.is_dir()]) if models_root.exists() else []
     if req in available:
         return req
-    for candidate in ("english", "english_2026-04"):
-        if candidate in available:
-            return candidate
+    if allow_english_fallback:
+        for candidate in ("english", "english_2026-04"):
+            if candidate in available:
+                return candidate
     return req
 
 
@@ -2744,7 +2746,7 @@ def main() -> int:
     except FileNotFoundError as exc:
         # Handle older default bundle names in upstream wrapper.
         msg = str(exc)
-        if "english_2026-04" in msg and lang != "english":
+        if "english_2026-04" in msg and lang not in {"english", "portuguese", "portuguese_24l"}:
             engine_kwargs["language"] = "english"
             engine = module.PocketTTSOnnx(**engine_kwargs)
         else:
@@ -3143,12 +3145,30 @@ def synthesize_tts(
                 voice_reference = str(_ensure_pocket_preset_voice(model_dir, preset))
             except Exception as exc:
                 raise RuntimeError(f"Failed to fetch PocketTTS preset voice '{preset}': {exc}")
+        resolved_language = _pocket_language_for_text(payload, text)
+        if voice_reference:
+            ref_path = Path(voice_reference).expanduser()
+            LOGGER.info(
+                "[PocketTTS] synthesizing language=%s voice_mode=%s reference=%s exists=%s text=%r",
+                resolved_language,
+                voice_mode,
+                ref_path,
+                ref_path.exists(),
+                text[:160],
+            )
+        else:
+            LOGGER.info(
+                "[PocketTTS] synthesizing language=%s voice_mode=%s reference=none text=%r",
+                resolved_language,
+                voice_mode,
+                text[:160],
+            )
         _generate_pocket_audio(
             model_dir,
             text,
             output_path,
             voice_reference,
-            _pocket_language_for_text(payload, text),
+            resolved_language,
             voice_mode=voice_mode,
         )
     elif profile.key == "kokoclone":
