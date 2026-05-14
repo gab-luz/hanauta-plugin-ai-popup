@@ -60,6 +60,8 @@
     "chat.voice.backends": "Backends de voz",
     "chat.voice.models_sub_default": "Precarga modelos para el modo de voz manos libres.",
     "chat.voice.models_sub_opening_voice": "Selecciona qué backends precalentar. El modo de voz se abre automáticamente cuando esté listo.",
+    "chat.voice.warning.disabled": "El modo de voz está desactivado. Actívalo primero en Configuración.",
+    "chat.voice.warning.confirm_start_selected": "Haz clic en Iniciar seleccionados otra vez para continuar.",
     "chat.review_attachments": "Por favor revisa el contenido adjunto.",
     "chat.now": "ahora",
     "chat.tts_only.say_hint": "Usa /say tu texto para sintetizar voz, o cambia a un backend de texto para respuestas de chat.",

@@ -60,6 +60,8 @@
     "chat.voice.backends": "Voice Backends",
     "chat.voice.models_sub_default": "Preload models for hands-free voice mode.",
     "chat.voice.models_sub_opening_voice": "Select which backends to warm up. Voice mode opens automatically when ready.",
+    "chat.voice.warning.disabled": "Voice mode is disabled. Enable it in Settings first.",
+    "chat.voice.warning.confirm_start_selected": "Click Start Selected again to continue.",
     "chat.review_attachments": "Please review the attached content.",
     "chat.now": "now",
     "chat.tts_only.say_hint": "Use /say your text to synthesize speech, or switch to a text backend for chat replies.",

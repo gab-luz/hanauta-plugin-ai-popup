@@ -1167,7 +1167,12 @@ class SidebarPanel(QFrame):
         config = _voice_mode_settings(self.backend_settings)
         warnings: list[str] = []
         if not bool(config.get("enabled", False)):
-            warnings.append("Voice mode is disabled. Enable it in Settings first.")
+            warnings.append(
+                tr(
+                    "chat.voice.warning.disabled",
+                    "Voice mode is disabled. Enable it in Settings first.",
+                )
+            )
 
         # Heuristic memory warning: compare model weight/file sizes to available memory.
         ram_avail = 0
@@ -1289,7 +1294,13 @@ class SidebarPanel(QFrame):
         warning = self._voice_models_preflight_warning(selection)
         if warning and not (self._voice_models_needs_confirm and self._voice_models_last_selection == selection):
             LOGGER.info("[VoiceModels] preflight warning (needs_confirm): %s selection=%s", warning, selection)
-            self._voice_models_warning = f"{warning} Click Start Selected again to continue."
+            self._voice_models_warning = "{} {}".format(
+                warning,
+                tr(
+                    "chat.voice.warning.confirm_start_selected",
+                    "Click Start Selected again to continue.",
+                ),
+            )
             self._voice_models_needs_confirm = True
             self._voice_models_last_selection = selection
             self._sync_web_ui()
