@@ -1561,6 +1561,12 @@ class VoiceConversationWorker(QThread):
     def _tts_payload(self, profile: BackendProfile) -> dict[str, object]:
         payload = dict(self.backend_settings.get(profile.key, {}))
         payload = _with_voice_device(payload, str(self.config.get("tts_device", payload.get("device", "cpu"))))
+        if profile.key in {"pockettts", "kokoclone"} and self.character is not None:
+            voice_sample = str(getattr(self.character, "voice_sample_path", "") or "").strip()
+            if voice_sample:
+                payload["_character_voice_sample"] = voice_sample
+        if profile.key == "pockettts":
+            payload["_voice_mode_language"] = str(self.config.get("stop_phrases_language", "") or "")
         if bool(self.config.get("tts_external_api", False)):
             payload["tts_mode"] = "external_api"
         return payload

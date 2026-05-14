@@ -2004,6 +2004,35 @@ def _default_pocket_language(payload: dict[str, object]) -> str:
     return "auto"
 
 
+def _looks_like_portuguese_text(text: str) -> bool:
+    clean = f" {str(text or '').strip().lower()} "
+    if any(ch in clean for ch in "ãõçáéíóúâêôà"):
+        return True
+    markers = (
+        " que ", " você ", " voce ", " não ", " nao ", " sim ", " pra ", " para ",
+        " com ", " uma ", " estou ", " está ", " esta ", " tudo ", " obrigado ",
+        " obrigada ", " porque ", " então ", " entao ", " agora ", " aqui ",
+    )
+    return sum(1 for marker in markers if marker in clean) >= 2
+
+
+def _pocket_language_for_text(payload: dict[str, object], text: str = "") -> str:
+    configured = str(payload.get("tts_language", "")).strip().lower()
+    if configured and configured != "auto":
+        return _default_pocket_language(payload)
+    voice_lang = str(payload.get("_voice_mode_language", "")).strip().lower()
+    if voice_lang in {"pt", "ptbr", "pt-br", "pt_br"}:
+        return "portuguese"
+    if voice_lang in {"ptpt", "pt-pt", "pt_pt"}:
+        return "portuguese_24l"
+    if _looks_like_portuguese_text(text):
+        preferred_pt = str(payload.get("tts_auto_portuguese_variant", "ptbr")).strip().lower()
+        if preferred_pt in {"ptpt", "pt-pt", "portugal"}:
+            return "portuguese_24l"
+        return "portuguese"
+    return _default_pocket_language(payload)
+
+
 def _ensure_tts_runtime_venv(
     profile_key: str,
     *,
@@ -2662,6 +2691,7 @@ def _ensure_legacy_bundle_aliases(models_root: Path) -> None:
     _ensure_bundle_alias(models_root, "german_24l", "german")
     _ensure_bundle_alias(models_root, "italian_24l", "italian")
     _ensure_bundle_alias(models_root, "spanish_24l", "spanish")
+    _ensure_bundle_alias(models_root, "portuguese_24l", "portuguese")
 
 
 def _write_wav(path: Path, samples: np.ndarray, sample_rate: int = 24000) -> None:
@@ -3029,6 +3059,15 @@ def synthesize_tts(
     payload: dict[str, object],
     text: str,
 ) -> tuple[Path, str]:
+    payload = dict(payload or {})
+    character_voice_sample = str(payload.get("_character_voice_sample", "")).strip()
+    if profile.key == "pockettts" and character_voice_sample:
+        payload["tts_voice_reference"] = character_voice_sample
+        payload["tts_voice_mode"] = "reference"
+        payload["tts_voice_preset"] = ""
+    if profile.key == "pockettts":
+        payload["tts_language"] = _pocket_language_for_text(payload, text)
+
     voice = str(payload.get("model", profile.model)).strip() or profile.model
     stamp = int(time.time() * 1000)
     out_name = f"{profile.key}_{stamp}_{_safe_slug(voice)}.wav"
@@ -3062,9 +3101,12 @@ def synthesize_tts(
             "voice": voice,
         }
         if profile.key == "pockettts":
-            lang = _default_pocket_language(payload)
+            lang = _pocket_language_for_text(payload, text)
             if lang and lang != "auto":
                 body_payload["language"] = lang
+            voice_reference = str(payload.get("tts_voice_reference", "")).strip()
+            if voice_reference:
+                body_payload["voice_reference"] = voice_reference
         body, content_type = _http_post_bytes(
             url,
             body_payload,
@@ -3091,6 +3133,11 @@ def synthesize_tts(
         voice_mode = str(payload.get("tts_voice_mode", "reference")).strip().lower()
         preset = str(payload.get("tts_voice_preset", "")).strip().lower()
         voice_reference = str(payload.get("tts_voice_reference", "")).strip()
+        char_ref = str(payload.get("_character_voice_sample", "")).strip()
+        if char_ref:
+            voice_reference = char_ref
+            voice_mode = "reference"
+            preset = ""
         if voice_mode != "none" and preset:
             try:
                 voice_reference = str(_ensure_pocket_preset_voice(model_dir, preset))

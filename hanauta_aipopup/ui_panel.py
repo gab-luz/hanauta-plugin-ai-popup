@@ -2476,8 +2476,8 @@ class SidebarPanel(QFrame):
             return
         self._set_pending_state(profile.label, "Synthesizing speech", "tts")
         payload = dict(self.backend_settings.get(profile.key, {}))
-        # Inject active character's voice sample for KokoClone
-        if profile.key == "kokoclone":
+        # Inject active character's voice sample for local voice cloning backends.
+        if profile.key in {"kokoclone", "pockettts"}:
             active_char = self._active_character()
             if active_char is not None and active_char.voice_sample_path:
                 payload["_character_voice_sample"] = active_char.voice_sample_path
