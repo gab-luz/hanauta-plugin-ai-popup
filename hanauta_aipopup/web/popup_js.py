@@ -9,7 +9,7 @@ POPUP_JS = r"""
     let slashMenuOpen = false;
     let slashActiveIndex = 0;
     let pendingVoiceOpen = false;
-    const MODEL_MODAL_SUB_DEFAULT = 'Preload models for hands-free voice mode.';
+    const MODEL_MODAL_SUB_DEFAULT = '__I18N_MODELS_SUB_DEFAULT__';
 
     function esc(s) {
       const map = {"&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#39;"};
@@ -48,15 +48,15 @@ POPUP_JS = r"""
       if (!convo) return;
       convo.innerHTML = '';
       const assistant = (state && state.assistant) ? state.assistant : {};
-      const assistantName = assistant && assistant.name ? String(assistant.name) : 'Hanauta AI';
+      const assistantName = assistant && assistant.name ? String(assistant.name) : '__I18N_ASSISTANT_NAME__';
       const assistantPhoto = assistant && assistant.avatar_url ? String(assistant.avatar_url) : '';
       const list = (messages || []);
       if (!list.length) {
         const empty = document.createElement('div');
         empty.className = 'empty-state';
         empty.innerHTML =
-          `<div class="empty-title">Start a conversation</div>` +
-          `<div class="empty-copy">Type a message below. <span class="kbd">Enter</span> sends • <span class="kbd">Shift+Enter</span> newline.</div>` +
+          `<div class="empty-title">__I18N_EMPTY_TITLE__</div>` +
+          `<div class="empty-copy">__I18N_EMPTY_COPY__</div>` +
           `<div class="empty-row"><span class="pill">/voice</span><span class="pill">/image</span><span class="pill">/say</span></div>`;
         convo.appendChild(empty);
         return;
@@ -69,14 +69,14 @@ POPUP_JS = r"""
         const avatar = document.createElement('div');
         avatar.className = 'avatar';
         if (isUser) {
-          avatar.textContent = 'Y';
+          avatar.textContent = '__I18N_YOU_SHORT__';
         } else if (eligibleAssistant && assistantPhoto) {
           avatar.classList.add('has-photo');
           avatar.style.backgroundImage = `url("${esc(assistantPhoto)}")`;
           avatar.textContent = '';
         } else {
-          const fallback = eligibleAssistant ? assistantName : (m.title || 'AI');
-          avatar.textContent = String(fallback || 'AI').trim().slice(0, 2).toUpperCase();
+          const fallback = eligibleAssistant ? assistantName : (m.title || '__I18N_AI_SHORT__');
+          avatar.textContent = String(fallback || '__I18N_AI_SHORT__').trim().slice(0, 2).toUpperCase();
         }
         const bubble = document.createElement('div');
         bubble.className = 'bubble ' + (isUser ? 'you' : 'ai');
@@ -84,7 +84,7 @@ POPUP_JS = r"""
         meta.className = 'meta';
         const name = document.createElement('div');
         name.className = 'name';
-        name.textContent = isUser ? 'You' : (eligibleAssistant ? assistantName : (m.title || 'Hanauta AI'));
+        name.textContent = isUser ? '__I18N_YOU__' : (eligibleAssistant ? assistantName : (m.title || '__I18N_ASSISTANT_NAME__'));
         const time = document.createElement('div');
         time.className = 'time';
         time.textContent = m.timestamp_label || m.time || '';
@@ -167,7 +167,7 @@ POPUP_JS = r"""
           dur.textContent = m.audio_duration || '';
           const lab = document.createElement('div');
           lab.className = 'audio-label';
-          lab.textContent = 'Voice';
+          lab.textContent = '__I18N_VOICE__';
           meta.appendChild(dur);
           meta.appendChild(lab);
 
@@ -279,11 +279,11 @@ POPUP_JS = r"""
         icon.textContent = attachment.kind === 'text' ? 'description' : 'attach_file';
         const name = document.createElement('span');
         name.className = 'attachment-name';
-        name.textContent = attachment.name || 'Attachment';
+        name.textContent = attachment.name || '__I18N_ATTACHMENT__';
         const remove = document.createElement('button');
         remove.className = 'attachment-remove';
         remove.type = 'button';
-        remove.title = 'Remove attachment';
+        remove.title = '__I18N_REMOVE_ATTACHMENT__';
         remove.textContent = '×';
         remove.addEventListener('click', () => {
           attachments.splice(index, 1);
@@ -303,7 +303,7 @@ POPUP_JS = r"""
         if (attachment.kind === 'text' && attachment.text) {
           return `File: ${name}\n${attachment.text}`;
         }
-        return `File: ${name}\n${attachment.note || 'Binary or unsupported file selected.'}`;
+          return `File: ${name}\n${attachment.note || '__I18N_BINARY_ATTACHMENT_NOTE__'}`;
       });
       return `\n\n[Attachments]\n${parts.join('\n\n---\n')}`;
     }
@@ -346,7 +346,7 @@ POPUP_JS = r"""
       const photo = document.getElementById('orbPhoto');
       const aiName = document.getElementById('voiceAiName');
       const assistant = (state && state.assistant) ? state.assistant : {};
-      const assistantName = assistant && assistant.name ? String(assistant.name) : 'Hanauta AI';
+      const assistantName = assistant && assistant.name ? String(assistant.name) : '__I18N_ASSISTANT_NAME__';
       const assistantPhoto = assistant && assistant.avatar_url ? String(assistant.avatar_url) : '';
       const charName = voice && voice.character_name ? String(voice.character_name) : '';
       if (name) name.textContent = charName;
@@ -388,21 +388,21 @@ POPUP_JS = r"""
     }
 
     function _fmtModelLine(info) {
-      if (!info) return 'Not configured';
+      if (!info) return '__I18N_NOT_CONFIGURED__';
       const bits = [];
       if (info.backend) bits.push(String(info.backend));
       if (info.model) bits.push(String(info.model));
       if (info.device) bits.push(String(info.device));
-      return bits.join(' • ') || 'Not configured';
+      return bits.join(' • ') || '__I18N_NOT_CONFIGURED__';
     }
 
     function renderInfoTip(info) {
       const tip = document.getElementById('infoTip');
       if (!tip) return;
       const lines = (info && Array.isArray(info.lines)) ? info.lines : [];
-      const title = (info && info.title) ? String(info.title) : 'Loaded Backends';
+      const title = (info && info.title) ? String(info.title) : '__I18N_LOADED_BACKENDS__';
       const body = lines.length ? lines.map((l) => `<div class="tip-line">${esc(String(l))}</div>`).join('') :
-        '<div class="tip-line">No info yet.</div>';
+        '<div class="tip-line">__I18N_NO_INFO__</div>';
       tip.innerHTML = `<div class="tip-title">${esc(title)}</div>${body}`;
     }
 
@@ -459,16 +459,16 @@ POPUP_JS = r"""
       const stopBtn = document.getElementById('modelsStopBtn');
       if (startBtn) {
         startBtn.disabled = busy;
-        startBtn.textContent = (models && models.needs_confirm) ? 'Start Anyway' : 'Start Selected';
+        startBtn.textContent = (models && models.needs_confirm) ? '__I18N_START_ANYWAY__' : '__I18N_START_SELECTED__';
       }
       if (stopBtn) stopBtn.disabled = busy || !active;
 
       const noteStt = document.getElementById('modelNoteStt');
       const noteLlm = document.getElementById('modelNoteLlm');
       const noteTts = document.getElementById('modelNoteTts');
-      if (noteStt) noteStt.innerHTML = `Configured: <b>${esc(_fmtModelLine(models && models.stt))}</b>` + ((models && models.stt && models.stt.loaded) ? ' <span style="color:rgba(57,255,136,.92); font-weight:950">loaded</span>' : '');
-      if (noteLlm) noteLlm.innerHTML = `Configured: <b>${esc(_fmtModelLine(models && models.llm))}</b>` + ((models && models.llm && models.llm.loaded) ? ' <span style="color:rgba(57,255,136,.92); font-weight:950">loaded</span>' : '');
-      if (noteTts) noteTts.innerHTML = `Configured: <b>${esc(_fmtModelLine(models && models.tts))}</b>` + ((models && models.tts && models.tts.loaded) ? ' <span style="color:rgba(57,255,136,.92); font-weight:950">loaded</span>' : '');
+      if (noteStt) noteStt.innerHTML = `__I18N_CONFIGURED__: <b>${esc(_fmtModelLine(models && models.stt))}</b>` + ((models && models.stt && models.stt.loaded) ? ' <span style="color:rgba(57,255,136,.92); font-weight:950">__I18N_LOADED__</span>' : '');
+      if (noteLlm) noteLlm.innerHTML = `__I18N_CONFIGURED__: <b>${esc(_fmtModelLine(models && models.llm))}</b>` + ((models && models.llm && models.llm.loaded) ? ' <span style="color:rgba(57,255,136,.92); font-weight:950">__I18N_LOADED__</span>' : '');
+      if (noteTts) noteTts.innerHTML = `__I18N_CONFIGURED__: <b>${esc(_fmtModelLine(models && models.tts))}</b>` + ((models && models.tts && models.tts.loaded) ? ' <span style="color:rgba(57,255,136,.92); font-weight:950">__I18N_LOADED__</span>' : '');
 
       if (models && models.selection) {
         const sel = models.selection;
@@ -492,7 +492,7 @@ POPUP_JS = r"""
       if (!active) {
         pendingVoiceOpen = true;
         const sub = document.getElementById('modelModalSub');
-        if (sub) sub.textContent = 'Select which backends to warm up. Voice mode opens automatically when ready.';
+        if (sub) sub.textContent = '__I18N_MODELS_SUB_OPENING_VOICE__';
         openModelModal(true);
         return;
       }
@@ -577,11 +577,11 @@ POPUP_JS = r"""
       const text = (el.value || '').trim();
       const extra = attachmentPromptBlock();
       if ((!text && !extra) || !bridge || !bridge.sendPrompt) return;
-      const outgoing = (text || 'Please review the attached content.') + extra;
+      const outgoing = (text || '__I18N_REVIEW_ATTACHMENTS__') + extra;
       optimisticMessages.push({
         role: 'user',
-        title: 'You',
-        timestamp_label: 'now',
+        title: '__I18N_YOU__',
+        timestamp_label: '__I18N_NOW__',
         body_html: '<p>' + esc(outgoing).replace(/\n/g, '<br>') + '</p>',
       });
       renderMessages((state.messages || []).concat(optimisticMessages));

@@ -86,6 +86,7 @@ from .ui_widgets import (
     _button_css_weight, _button_qfont_weight,
 )
 from .fonts import button_css_weight
+from .i18n import tr
 
 try:
     from PyQt6.QtMultimedia import QAudioOutput, QMediaPlayer
@@ -433,7 +434,9 @@ class BackendSettingsDialog(QDialog):
         self.settings = json.loads(json.dumps(settings))
         self.ui_font = ui_font
 
-        self.setWindowTitle("AI Backend Settings")
+        self.setWindowTitle(
+            tr("backend_settings.window.title", "AI Backend Settings")
+        )
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, False)
         self.resize(720, 760)
         self.setModal(True)

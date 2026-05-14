@@ -73,7 +73,8 @@ class SurfaceFrame(QFrame):
                 color: {TEXT};
             }}
             """
-        )
+)
+from .i18n import tr
 
 
 class FadeCard(QFrame):
@@ -99,7 +100,12 @@ class ChatInputEdit(QPlainTextEdit):
         self._min_height = 48
         self._max_height = 122
         self.setFont(QFont(ui_font, 12))
-        self.setPlaceholderText('Message the model...  Enter to send • Shift+Enter for newline')
+        self.setPlaceholderText(
+            tr(
+                "chat.composer.placeholder_full",
+                "Message the model...  Enter to send • Shift+Enter for newline",
+            )
+        )
         self.setTabChangesFocus(True)
         self.document().documentLayout().documentSizeChanged.connect(self._sync_height)
         self._sync_height()

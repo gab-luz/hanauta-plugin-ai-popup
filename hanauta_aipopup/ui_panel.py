@@ -117,6 +117,7 @@ from .ui_chat import (
 )
 from .ui_chat_cards import MessageCard, ComposerBar
 from .ui_dialogs import CharacterLibraryDialog, VoiceModeDialog
+from .i18n import tr
 from .html_sanitize import sanitize_message_html
 
 LOGGER = logging.getLogger("hanauta.ai_popup")
@@ -603,11 +604,21 @@ class SidebarPanel(QFrame):
                 active.setChecked(True)
             self.composer.set_profile(self.current_profile)
             self.composer.entry.setEnabled(True)
-            self.composer.entry.setPlaceholderText('Message the model...  Enter to send • Shift+Enter for newline')
+            self.composer.entry.setPlaceholderText(
+                tr(
+                    "chat.composer.placeholder_full",
+                    "Message the model...  Enter to send • Shift+Enter for newline",
+                )
+            )
         else:
             self.composer.provider_label.setText("No tested backend configured")
             self.composer.entry.setEnabled(False)
-            self.composer.entry.setPlaceholderText("Open backend settings to configure a provider")
+            self.composer.entry.setPlaceholderText(
+                tr(
+                    "chat.composer.configure_provider",
+                    "Open backend settings to configure a provider",
+                )
+            )
         self._refresh_backend_hint()
         self._apply_voice_button_state()
         self._sync_web_ui()

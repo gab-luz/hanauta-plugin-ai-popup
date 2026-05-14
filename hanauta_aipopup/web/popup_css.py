@@ -285,7 +285,7 @@ POPUP_CSS = r"""
 
     .conversation:empty::before,
     .conversation.empty::before {
-      content: "Start a conversation";
+      content: "";
       display: block;
       text-align: center;
       padding: 40px 20px;

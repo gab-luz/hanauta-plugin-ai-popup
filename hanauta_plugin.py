@@ -7,6 +7,7 @@ from pathlib import Path
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QCursor
 from PyQt6.QtWidgets import QHBoxLayout, QLabel, QLineEdit, QPushButton, QVBoxLayout, QWidget
+from hanauta_aipopup.i18n import tr
 
 PLUGIN_ROOT = Path(__file__).resolve().parent
 AI_POPUP_APP = PLUGIN_ROOT / "ai_popup.py"
@@ -81,14 +82,26 @@ def _save_popup_size(window, width_input: QLineEdit, height_input: QLineEdit) ->
     _save_settings(window)
     status = getattr(window, "ai_popup_status", None)
     if isinstance(status, QLabel):
-        status.setText(f"AI popup size saved: {width}x{height}.")
+        status.setText(
+            tr(
+                "plugin.ai_popup.settings.popup_size.saved_status",
+                "AI popup size saved: {width}x{height}.",
+                width=width,
+                height=height,
+            )
+        )
 
 
 def _launch_popup(window, api: dict[str, object]) -> None:
     if not AI_POPUP_APP.exists():
         status = getattr(window, "ai_popup_status", None)
         if isinstance(status, QLabel):
-            status.setText("ai_popup.py not found in plugin folder.")
+            status.setText(
+                tr(
+                    "plugin.ai_popup.status.missing",
+                    "ai_popup.py not found in plugin folder.",
+                )
+            )
         return
 
     entry_command = api.get("entry_command")
@@ -110,7 +123,7 @@ def _launch_popup(window, api: dict[str, object]) -> None:
 
     status = getattr(window, "ai_popup_status", None)
     if isinstance(status, QLabel):
-        status.setText("AI popup launched.")
+        status.setText(tr("plugin.ai_popup.status.launched", "AI popup launched."))
 
 
 def build_ai_popup_service_section(window, api: dict[str, object]) -> QWidget:
@@ -136,8 +149,14 @@ def build_ai_popup_service_section(window, api: dict[str, object]) -> QWidget:
     layout.addWidget(
         SettingsRow(
             material_icon("widgets"),
-            "Show in notification center",
-            "Expose AI popup controls in the notification center service list.",
+            tr(
+                "plugin.ai_popup.settings.show_notification_center.title",
+                "Show in notification center",
+            ),
+            tr(
+                "plugin.ai_popup.settings.show_notification_center.description",
+                "Expose AI popup controls in the notification center service list.",
+            ),
             window.icon_font,
             window.ui_font,
             display_switch,
@@ -152,8 +171,11 @@ def build_ai_popup_service_section(window, api: dict[str, object]) -> QWidget:
     layout.addWidget(
         SettingsRow(
             material_icon("auto_awesome"),
-            "Show on bar",
-            "Keep AI popup available from the bar button when supported by the bar.",
+            tr("plugin.ai_popup.settings.show_bar.title", "Show on bar"),
+            tr(
+                "plugin.ai_popup.settings.show_bar.description",
+                "Keep AI popup available from the bar button when supported by the bar.",
+            ),
             window.icon_font,
             window.ui_font,
             bar_switch,
@@ -171,7 +193,9 @@ def build_ai_popup_service_section(window, api: dict[str, object]) -> QWidget:
     height_input = QLineEdit(str(popup.get("window_height", 930)))
     height_input.setPlaceholderText("930")
     height_input.setFixedWidth(90)
-    save_size_button = QPushButton("Save size")
+    save_size_button = QPushButton(
+        tr("plugin.ai_popup.settings.popup_size.save", "Save size")
+    )
     save_size_button.setObjectName("secondaryButton")
     save_size_button.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
     save_size_button.clicked.connect(
@@ -184,8 +208,14 @@ def build_ai_popup_service_section(window, api: dict[str, object]) -> QWidget:
     layout.addWidget(
         SettingsRow(
             material_icon("crop_square"),
-            "Popup size (width x height)",
-            "Controls the AI popup window size on launch.",
+            tr(
+                "plugin.ai_popup.settings.popup_size.title",
+                "Popup size (width x height)",
+            ),
+            tr(
+                "plugin.ai_popup.settings.popup_size.description",
+                "Controls the AI popup window size on launch.",
+            ),
             window.icon_font,
             window.ui_font,
             size_wrap,
@@ -193,15 +223,20 @@ def build_ai_popup_service_section(window, api: dict[str, object]) -> QWidget:
         )
     )
 
-    open_button = QPushButton("Open AI popup")
+    open_button = QPushButton(
+        tr("plugin.ai_popup.settings.open.button", "Open AI popup")
+    )
     open_button.setObjectName("secondaryButton")
     open_button.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
     open_button.clicked.connect(lambda: _launch_popup(window, api))
     layout.addWidget(
         SettingsRow(
             material_icon("open_in_new"),
-            "Open popup",
-            "Launch the AI popup window immediately.",
+            tr("plugin.ai_popup.settings.open.title", "Open popup"),
+            tr(
+                "plugin.ai_popup.settings.open.description",
+                "Launch the AI popup window immediately.",
+            ),
             window.icon_font,
             window.ui_font,
             open_button,
@@ -209,7 +244,9 @@ def build_ai_popup_service_section(window, api: dict[str, object]) -> QWidget:
         )
     )
 
-    status_label = QLabel("AI popup plugin ready.")
+    status_label = QLabel(
+        tr("plugin.ai_popup.status.ready", "AI popup plugin ready.")
+    )
     status_label.setWordWrap(True)
     status_label.setStyleSheet("color: rgba(246,235,247,0.72);")
     layout.addWidget(status_label)
@@ -217,8 +254,11 @@ def build_ai_popup_service_section(window, api: dict[str, object]) -> QWidget:
 
     section = ExpandableServiceSection(
         SERVICE_KEY,
-        "AI Popup",
-        "Local AI chat popup integration for Hanauta.",
+        tr("plugin.ai_popup.name", "AI Popup"),
+        tr(
+            "plugin.ai_popup.description",
+            "Local AI chat popup integration for Hanauta.",
+        ),
         "?",
         window.icon_font,
         window.ui_font,
@@ -234,7 +274,7 @@ def build_ai_popup_service_section(window, api: dict[str, object]) -> QWidget:
 def register_hanauta_plugin() -> dict[str, object]:
     return {
         "id": SERVICE_KEY,
-        "name": "AI Popup",
+        "name": tr("plugin.ai_popup.name", "AI Popup"),
         "api_min_version": 1,
         "service_sections": [
             {
