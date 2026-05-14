@@ -1818,7 +1818,8 @@ class VoiceConversationWorker(QThread):
                     clean_accum = ""
                     tag_parsed = False
                     llm_started_emitted = False
-                    speak_cursor = 0
+                    spoken_chars = 0
+                    speech_accum = ""
                     total_audio = 0.0
                     tts_profile = self._tts_profile()
                     if tts_profile is None:
@@ -1831,13 +1832,13 @@ class VoiceConversationWorker(QThread):
                     last_barge_check = 0.0
 
                     def _flush_tts(force: bool = False) -> None:
-                        nonlocal speak_cursor, total_audio
+                        nonlocal spoken_chars, total_audio
                         if not self._tts_streaming_enabled():
                             return
-                        text = clean_accum
-                        if speak_cursor >= len(text):
+                        text = speech_accum
+                        if spoken_chars >= len(text):
                             return
-                        remaining = text[speak_cursor:]
+                        remaining = text[spoken_chars:]
                         candidate = remaining[:max_chars]
                         split_at = -1
                         if not force:
@@ -1858,19 +1859,26 @@ class VoiceConversationWorker(QThread):
                             return
                         chunk_text = remaining[:split_at].strip()
                         if not chunk_text:
-                            speak_cursor += split_at
+                            spoken_chars += split_at
                             return
                         spoken_chunk = _strip_simple_markdown(chunk_text).strip()
                         if not spoken_chunk:
-                            speak_cursor += split_at
+                            spoken_chars += split_at
                             return
                         try:
+                            LOGGER.info(
+                                "[VoiceMode] streaming TTS chunk backend=%s chars=%d ref=%s text=%r",
+                                tts_profile.key,
+                                len(spoken_chunk),
+                                bool(str(tts_payload.get("_character_voice_sample", "") or "").strip()),
+                                spoken_chunk[:160],
+                            )
                             audio_out, source = synthesize_tts(tts_profile, tts_payload, spoken_chunk)
                             self.tts_chunk_ready.emit(str(audio_out), spoken_chunk)
                             total_audio += float(_wav_duration_seconds(audio_out) or 0.0)
                         except Exception:
-                            source = "tts"
-                        speak_cursor += split_at
+                            LOGGER.exception("[VoiceMode] streaming TTS chunk failed")
+                        spoken_chars += split_at
 
                     for delta in _stream_openai_style_reply(host, model, messages, api_key):
                         if not self._running:
@@ -1889,15 +1897,20 @@ class VoiceConversationWorker(QThread):
                                 emotion = tag if tag in VOICE_EMOTIONS else "neutral"
                                 tag_parsed = True
                                 raw_accum = raw_accum[m.end():]
-                        clean_accum = raw_accum.strip()
-                        restored = _restore_sensitive_words(clean_accum, privacy_mapping)
+                        waiting_for_emotion_tag = (
+                            not tag_parsed
+                            and raw_accum.lstrip().startswith("[")
+                            and "]" not in raw_accum.lstrip()[:32]
+                        )
+                        restored = _restore_sensitive_words(raw_accum.strip(), privacy_mapping)
                         clean_accum = restored
+                        speech_accum = "" if waiting_for_emotion_tag else _strip_simple_markdown(clean_accum).strip()
                         self.response_partial.emit(clean_accum, emotion, llm_label, llm_model)
                         # Try to speak progressively.
                         _flush_tts(force=False)
                         # Barge-in: if the user starts talking while TTS is speaking, interrupt the reply.
                         if (
-                            speak_cursor > 0
+                            spoken_chars > 0
                             and self._tts_barge_in_enabled(tts_profile, tts_payload)
                             and (time.time() - last_barge_check) >= 0.85
                         ):

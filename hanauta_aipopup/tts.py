@@ -3148,7 +3148,7 @@ def synthesize_tts(
             text,
             output_path,
             voice_reference,
-            _default_pocket_language(payload),
+            _pocket_language_for_text(payload, text),
             voice_mode=voice_mode,
         )
     elif profile.key == "kokoclone":
