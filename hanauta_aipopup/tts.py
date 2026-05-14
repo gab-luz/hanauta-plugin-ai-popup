@@ -1698,6 +1698,14 @@ def _hf_resolve_url(repo_id: str, rel_path: str) -> str:
     return f"https://huggingface.co/{clean_repo}/resolve/main/{clean_file}?download=true"
 
 
+def _hf_auth_token() -> str:
+    token = secure_load_secret("tts:hf_token").strip()
+    if token:
+        return token
+    # Legacy key kept for backward compatibility.
+    return secure_load_secret("pockettts:hf_token").strip()
+
+
 def _download_file(
     url: str,
     destination: Path,
@@ -1708,7 +1716,12 @@ def _download_file(
     attempts = 4
     for attempt in range(1, attempts + 1):
         try:
-            req = request.Request(url, headers={"User-Agent": "Hanauta AI/1.0"})
+            headers = {"User-Agent": "Hanauta AI/1.0"}
+            if "huggingface.co/" in str(url):
+                hf_token = _hf_auth_token()
+                if hf_token:
+                    headers["Authorization"] = f"Bearer {hf_token}"
+            req = request.Request(url, headers=headers)
             with request.urlopen(req, timeout=timeout) as response, destination.open("wb") as handle:
                 total = int(response.headers.get("Content-Length", "0") or 0)
                 written = 0
@@ -2511,7 +2524,7 @@ def _generate_pocket_audio(
         reference = _ensure_wav_reference(reference)
         command.extend(["--voice-reference", str(reference)])
     env = os.environ.copy()
-    hf_token = secure_load_secret("pockettts:hf_token").strip()
+    hf_token = _hf_auth_token()
     if hf_token:
         env["HF_TOKEN"] = hf_token
         env["HUGGINGFACEHUB_API_TOKEN"] = hf_token

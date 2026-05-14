@@ -75,6 +75,8 @@
     "chat.voice.warmup.preparing_tts": "Подготовка бэкенда синтеза речи.",
     "chat.voice.chip.voice": "голос",
     "chat.voice.chip.models": "модели",
-    "chat.voice.chip.error": "ошибка"
+    "chat.voice.chip.error": "ошибка",
+    "chat.voice.warmup.tts_skipped": "Прогрев TTS пропущен",
+    "chat.voice.warmup.tts_skipped_404": "Не удалось скачать файлы модели TTS (HTTP 404). Проверьте репозиторий/модель TTS в настройках бэкенда."
   }
 }

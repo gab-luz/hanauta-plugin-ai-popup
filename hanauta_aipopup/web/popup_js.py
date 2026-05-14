@@ -9,6 +9,7 @@ POPUP_JS = r"""
     let slashMenuOpen = false;
     let slashActiveIndex = 0;
     let pendingVoiceOpen = false;
+    let modelsStartPending = false;
     const MODEL_MODAL_SUB_DEFAULT = '__I18N_MODELS_SUB_DEFAULT__';
 
     function esc(s) {
@@ -454,7 +455,7 @@ POPUP_JS = r"""
         warnBox.hidden = !warn;
         warnBox.textContent = warn;
       }
-      const busy = !!(models && models.busy);
+      const busy = !!(models && models.busy) || !!modelsStartPending;
       const startBtn = document.getElementById('modelsStartBtn');
       const stopBtn = document.getElementById('modelsStopBtn');
       if (startBtn) {
@@ -536,6 +537,9 @@ POPUP_JS = r"""
       renderVoice(state.voice || {});
       renderInfoTip(state.info || {});
       renderModelLauncher(state.models || {}, state.voice || {});
+      if (!(state && state.models && state.models.busy)) {
+        modelsStartPending = false;
+      }
       document.getElementById('chatPage').hidden = inVoice;
       document.getElementById('voicePage').hidden = !inVoice;
       const voiceIcon = document.getElementById('voiceIcon');
@@ -615,8 +619,12 @@ POPUP_JS = r"""
     document.getElementById('modelModalCloseBtn').addEventListener('click', () => openModelModal(false));
     document.getElementById('modelsRefreshBtn').addEventListener('click', () => bridge && bridge.refreshState && bridge.refreshState());
     document.getElementById('modelsStartBtn').addEventListener('click', () => {
+      if (modelsStartPending) return;
       const sel = _modelModalSelection();
       if (!bridge || !bridge.startVoiceModels) return;
+      modelsStartPending = true;
+      const startBtn = document.getElementById('modelsStartBtn');
+      if (startBtn) startBtn.disabled = true;
       bridge.startVoiceModels(JSON.stringify(sel));
     });
     document.getElementById('modelsStopBtn').addEventListener('click', () => bridge && bridge.stopVoiceModels && bridge.stopVoiceModels());

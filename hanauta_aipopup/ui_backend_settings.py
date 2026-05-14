@@ -857,10 +857,10 @@ class BackendSettingsDialog(QDialog):
         pocket_lang_layout.addWidget(self.pocket_preset_combo, 2)
         shell_layout.addWidget(self.pocket_lang_preset_row)
 
-        self.pocket_hf_token_input = QLineEdit()
-        self.pocket_hf_token_input.setPlaceholderText("Hugging Face token (optional, for gated/rate-limited downloads)")
-        self.pocket_hf_token_input.setEchoMode(QLineEdit.EchoMode.Password)
-        shell_layout.addWidget(self.pocket_hf_token_input)
+        self.hf_token_input = QLineEdit()
+        self.hf_token_input.setPlaceholderText("Hugging Face token (optional, for gated/rate-limited downloads)")
+        self.hf_token_input.setEchoMode(QLineEdit.EchoMode.Password)
+        shell_layout.addWidget(self.hf_token_input)
 
         self.pocket_voice_combo = QComboBox()
         self.pocket_voice_combo.setToolTip("PocketTTS voice reference presets found in the model folder")
@@ -1968,7 +1968,10 @@ class BackendSettingsDialog(QDialog):
         )
         preset = str(payload.get("tts_voice_preset", "")).strip().lower()
         self._set_combo_selected(self.pocket_preset_combo, preset)
-        self.pocket_hf_token_input.setText(secure_load_secret("pockettts:hf_token"))
+        self.hf_token_input.setText(
+            secure_load_secret("tts:hf_token")
+            or secure_load_secret("pockettts:hf_token")
+        )
         voice_mode = str(payload.get("tts_voice_mode", "reference")).strip().lower()
         effective_voice_mode = "preset" if profile.key == "pockettts" and preset else voice_mode
         self.tts_voice_ref_input.setText(
@@ -2029,7 +2032,7 @@ class BackendSettingsDialog(QDialog):
         self.kokoro_autostart_check.setVisible(show_tts_server_controls)
         self.kobold_server_row.setVisible(show_kobold_controls)
         self.pocket_lang_preset_row.setVisible(is_tts and profile.key == "pockettts")
-        self.pocket_hf_token_input.setVisible(is_tts and profile.key == "pockettts")
+        self.hf_token_input.setVisible(is_tts and mode == "local_onnx")
         self.pocket_voice_ref_row.setVisible(is_tts and profile.key == "pockettts" and mode == "local_onnx")
         self.tts_voice_ref_input.setVisible(is_tts and profile.key == "pockettts" and mode == "local_onnx")
         self.tts_auto_download_check.setVisible(is_tts and mode == "local_onnx")
@@ -2150,8 +2153,12 @@ class BackendSettingsDialog(QDialog):
         existing = self.settings.get(profile.key, {})
         secure_store_secret(f"{profile.key}:api_key", self.api_key_input.text().strip())
         secure_store_secret(f"{profile.key}:sd_auth_pass", self.sd_auth_pass_input.text().strip())
-        if profile.key == "pockettts":
-            secure_store_secret("pockettts:hf_token", self.pocket_hf_token_input.text().strip())
+        if profile.provider == "tts_local":
+            token = self.hf_token_input.text().strip()
+            secure_store_secret("tts:hf_token", token)
+            # Keep legacy key in sync for backward compatibility with older builds.
+            if profile.key == "pockettts":
+                secure_store_secret("pockettts:hf_token", token)
         payload["tested"] = bool(existing.get("tested", False))
         payload["last_status"] = existing.get("last_status", "Saved.")
         self.settings[profile.key] = payload

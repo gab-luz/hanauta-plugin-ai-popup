@@ -17,7 +17,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from urllib import error, request
-from urllib.parse import quote
+from urllib.parse import urlencode
 
 _SETTINGS_FILE = (
     Path.home() / ".local" / "state" / "hanauta" / "ai-popup" / "skills_settings.json"
@@ -235,12 +235,13 @@ def _api(cfg: dict, path: str, method: str = "GET",
         raise RuntimeError(
             "Jellyfin API key not configured. Set it in Backend Settings → Skills → Jellyfin."
         )
-    query = f"api_key={api_key}"
-    if params:
-        for k, v in params.items():
-            query += f"&{k}={quote(str(v))}"
-    full_url = f"{url}{path}?{query}"
-    headers = {"Content-Type": "application/json", "Accept": "application/json"}
+    query = urlencode({k: str(v) for k, v in (params or {}).items()}, doseq=True)
+    full_url = f"{url}{path}" + (f"?{query}" if query else "")
+    headers = {
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+        "X-Emby-Token": api_key,
+    }
     data = json.dumps(body).encode() if body is not None else None
     req = request.Request(full_url, data=data, headers=headers, method=method)
     try:
@@ -257,8 +258,11 @@ def _post(cfg: dict, path: str, body: dict | None = None) -> None:
     """Fire-and-forget POST (playback commands return 204)."""
     url = str(cfg.get("url", "")).rstrip("/")
     api_key = str(cfg.get("api_key", "")).strip()
-    full_url = f"{url}{path}?api_key={api_key}"
-    headers = {"Content-Type": "application/json"}
+    full_url = f"{url}{path}"
+    headers = {
+        "Content-Type": "application/json",
+        "X-Emby-Token": api_key,
+    }
     data = json.dumps(body or {}).encode()
     req = request.Request(full_url, data=data, headers=headers, method="POST")
     try:

@@ -623,6 +623,32 @@ class SidebarPanel(QFrame):
         self._apply_voice_button_state()
         self._sync_web_ui()
 
+    def _auto_switch_to_text_backend_for_chat(self) -> bool:
+        config = _voice_mode_settings(self.backend_settings)
+        preferred_key = str(config.get("llm_profile", "koboldcpp")).strip()
+        preferred = self.profile_by_key.get(preferred_key)
+        if preferred is None:
+            return False
+        if preferred.provider not in {"openai", "openai_compat", "ollama"}:
+            return False
+        payload = dict(self.backend_settings.get(preferred.key, {}))
+        if not bool(payload.get("enabled", True)):
+            return False
+        self.current_profile = preferred
+        for key, button in self.backend_buttons.items():
+            button.setChecked(key == preferred.key)
+        self.composer.set_profile(preferred)
+        self.composer.entry.setEnabled(True)
+        self.composer.entry.setPlaceholderText(
+            tr(
+                "chat.composer.placeholder_full",
+                "Message the model...  Enter to send • Shift+Enter for newline",
+            )
+        )
+        self._refresh_backend_hint()
+        self._sync_web_ui()
+        return True
+
     def _open_backend_settings(self) -> None:
         dialog = BackendSettingsDialog(self.profiles, self.backend_settings, self.ui_font, self)
         dialog.exec()
@@ -1226,6 +1252,12 @@ class SidebarPanel(QFrame):
         return " ".join(warnings).strip()
 
     def _web_request_start_voice_models(self, selection_json: str) -> None:
+        if bool(getattr(self, "_voice_models_busy", False)) or (
+            self._voice_models_worker is not None and self._voice_models_worker.isRunning()
+        ):
+            self._voice_models_warning = "Models are already starting. Wait for the current start to finish."
+            self._sync_web_ui()
+            return
         try:
             raw = json.loads(selection_json or "{}")
         except Exception:
@@ -2570,19 +2602,25 @@ class SidebarPanel(QFrame):
             return
 
         if self.current_profile.provider == "tts_local":
-            LOGGER.debug("plain text with tts_local backend; showing guidance card")
-            self.add_card(
-                ChatItemData(
-                    role="assistant",
-                    title="Hanauta AI",
-                    body=(
-                        "<p>This backend is TTS-only.</p>"
-                        f"<p>{html.escape(tr('chat.tts_only.say_hint', 'Use /say your text to synthesize speech, or switch to a text backend for chat replies.'))}</p>"
-                    ),
-                    meta="tts command",
+            if self._auto_switch_to_text_backend_for_chat():
+                LOGGER.info(
+                    "plain text with tts_local backend; auto-switched to text backend=%s",
+                    self.current_profile.key if self.current_profile else "none",
                 )
-            )
-            return
+            else:
+                LOGGER.debug("plain text with tts_local backend; showing guidance card")
+                self.add_card(
+                    ChatItemData(
+                        role="assistant",
+                        title="Hanauta AI",
+                        body=(
+                            "<p>This backend is TTS-only.</p>"
+                            f"<p>{html.escape(tr('chat.tts_only.say_hint', 'Use /say your text to synthesize speech, or switch to a text backend for chat replies.'))}</p>"
+                        ),
+                        meta="tts command",
+                    )
+                )
+                return
 
         LOGGER.debug("starting real LLM dispatch (backend check + send)")
         self._pending_user_message = text

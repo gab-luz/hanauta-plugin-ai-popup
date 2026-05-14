@@ -1100,6 +1100,21 @@ class VoiceModelsWarmupWorker(QThread):
         logging.info(f"[VoiceModels] {title}: {detail}")
         self.progress.emit(str(title).strip() or "Models", str(detail).strip())
 
+    @staticmethod
+    def _is_http_404(exc: Exception) -> bool:
+        current: BaseException | None = exc
+        seen: set[int] = set()
+        while current is not None and id(current) not in seen:
+            seen.add(id(current))
+            code = getattr(current, "code", None)
+            if code == 404:
+                return True
+            text = str(current)
+            if "HTTP Error 404" in text or "404: Not Found" in text:
+                return True
+            current = getattr(current, "__cause__", None) or getattr(current, "__context__", None)
+        return False
+
     def run(self) -> None:
         print(f"[VoiceModels] START selection={self.selection}")
         logging.info(f"[VoiceModels] START selection={self.selection} config keys={list(self.config.keys())}")
@@ -1150,7 +1165,24 @@ class VoiceModelsWarmupWorker(QThread):
                         "Preparing speech synthesis backend.",
                     ),
                 )
-                self._warm_tts()
+                try:
+                    loaded["tts"] = bool(self._warm_tts())
+                except Exception as exc:
+                    if self._is_http_404(exc):
+                        self._emit(
+                            tr("chat.voice.warmup.tts_skipped", "TTS warmup skipped"),
+                            tr(
+                                "chat.voice.warmup.tts_skipped_404",
+                                "Could not download TTS model files (HTTP 404). Check TTS repo/model in Backend Settings.",
+                            ),
+                        )
+                        logging.warning(
+                            "[VoiceModels] _warm_tts: skipped after runner-level 404 guard: %s",
+                            exc,
+                        )
+                        loaded["tts"] = False
+                    else:
+                        raise
                 logging.info("[VoiceModels] === TTS warmup done ===")
                 loaded["tts"] = True
 
@@ -1281,7 +1313,7 @@ class VoiceModelsWarmupWorker(QThread):
             raise RuntimeError(f"Unable to reach {profile.label}: {_normalize_host_url(host)}")
         return updates
 
-    def _warm_tts(self) -> None:
+    def _warm_tts(self) -> bool:
         logging.info("[VoiceModels] _warm_tts: enter")
         profile_key = str(self.config.get("tts_profile", "kokorotts")).strip()
         profile = self.profiles.get(profile_key)
@@ -1298,15 +1330,32 @@ class VoiceModelsWarmupWorker(QThread):
                 raise RuntimeError("TTS external API host is not configured.")
             if not _host_reachable(host):
                 raise RuntimeError(f"Unable to reach TTS host: {_normalize_host_url(host)}")
-            return
+            return True
         # Local ONNX warmup: run a tiny synth and delete the output file.
         logging.info("[VoiceModels] _warm_tts: calling synthesize_tts")
-        audio, _src = synthesize_tts(profile, payload, "Warmup.")
+        try:
+            audio, _src = synthesize_tts(profile, payload, "Warmup.")
+        except Exception as exc:
+            message = str(exc).strip()
+            # Some repos/files may temporarily move or be missing; do not fail the
+            # entire voice warmup when STT/LLM are already ready.
+            if "HTTP Error 404" in message or "404: Not Found" in message:
+                self._emit(
+                    tr("chat.voice.warmup.tts_skipped", "TTS warmup skipped"),
+                    tr(
+                        "chat.voice.warmup.tts_skipped_404",
+                        "Could not download TTS model files (HTTP 404). Check TTS repo/model in Backend Settings.",
+                    ),
+                )
+                logging.warning("[VoiceModels] _warm_tts: skipped due to missing remote asset: %s", message)
+                return False
+            raise
         logging.info("[VoiceModels] _warm_tts: synthesize_tts done, audio=%s", audio)
         try:
             audio.unlink(missing_ok=True)
         except Exception:
             pass
+        return True
 
 
 class VoiceConversationWorker(QThread):

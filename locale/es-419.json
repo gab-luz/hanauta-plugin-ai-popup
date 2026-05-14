@@ -75,6 +75,8 @@
     "chat.voice.warmup.preparing_tts": "Preparando backend de síntesis de voz.",
     "chat.voice.chip.voice": "voz",
     "chat.voice.chip.models": "modelos",
-    "chat.voice.chip.error": "error"
+    "chat.voice.chip.error": "error",
+    "chat.voice.warmup.tts_skipped": "Calentamiento de TTS omitido",
+    "chat.voice.warmup.tts_skipped_404": "No se pudieron descargar los archivos del modelo TTS (HTTP 404). Revisa repositorio/modelo de TTS en Configuración de Backend."
   }
 }
