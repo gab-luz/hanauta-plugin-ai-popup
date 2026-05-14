@@ -70,7 +70,11 @@ from .http import (
     _sd_auth_headers,
     send_desktop_notification,
 )
-from .backends import _existing_path, start_koboldcpp as _start_koboldcpp
+from .backends import (
+    _existing_path,
+    _koboldcpp_model_loaded,
+    start_koboldcpp as _start_koboldcpp,
+)
 from .tts import (
     synthesize_tts, _waveform_from_hanauta_service,
     _iter_openai_sse_deltas,
@@ -1300,6 +1304,14 @@ class VoiceModelsWarmupWorker(QThread):
         payload = dict(self.backend_settings.get(profile.key, {}))
         logging.info(f"[VoiceModels] _warm_llm: profile.key={profile.key} payload keys={list(payload.keys())}")
         if profile.key == "koboldcpp":
+            host = str(payload.get("host", profile.host)).strip()
+            loaded, model_name = _koboldcpp_model_loaded(host) if host else (False, "")
+            if loaded:
+                logging.info(
+                    "[VoiceModels] _warm_llm: koboldcpp already loaded model=%s",
+                    model_name,
+                )
+                return updates
             ok, message = _start_koboldcpp(payload)
             logging.info(f"[VoiceModels] _warm_llm: koboldcpp start ok={ok} msg={message}")
             if not ok:

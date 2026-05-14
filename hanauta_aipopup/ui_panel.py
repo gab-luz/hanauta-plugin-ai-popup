@@ -207,6 +207,9 @@ class SidebarPanel(QFrame):
         self._voice_models_needs_confirm: bool = False
         self._voice_models_last_selection: dict[str, bool] = {"stt": True, "llm": True, "tts": True}
         self._voice_models_worker: VoiceModelsWarmupWorker | None = None
+        self._voice_llm_loaded_probe_at: float = 0.0
+        self._voice_llm_loaded_probe_host: str = ""
+        self._voice_llm_loaded_probe_result: tuple[bool, str] = (False, "")
         self._stt_once_worker: OneShotSttWorker | None = None
         self._pending_kobold_launch_profile: str = ""
         self._pending_kobold_launch_payload: dict | None = None
@@ -720,6 +723,55 @@ class SidebarPanel(QFrame):
         model = str(payload.get("model", profile.model)).strip() or profile.model
         return profile.label, model, device, "local"
 
+    def _voice_llm_loaded_state(self) -> tuple[bool, str]:
+        config = _voice_mode_settings(self.backend_settings)
+        if bool(config.get("llm_external_api", False)):
+            return bool(self._voice_models_loaded.get("llm", False)), ""
+        profile = self.profile_by_key.get(str(config.get("llm_profile", "koboldcpp")).strip())
+        if profile is None or profile.key != "koboldcpp":
+            return bool(self._voice_models_loaded.get("llm", False)), ""
+        payload = dict(self.backend_settings.get(profile.key, {}))
+        host = str(payload.get("host", profile.host)).strip()
+        if not host:
+            return bool(self._voice_models_loaded.get("llm", False)), ""
+        now = time.time()
+        if host == self._voice_llm_loaded_probe_host and (now - self._voice_llm_loaded_probe_at) < 4.0:
+            loaded, model_name = self._voice_llm_loaded_probe_result
+        else:
+            from .backends import _koboldcpp_model_loaded
+            loaded, model_name = _koboldcpp_model_loaded(host)
+            self._voice_llm_loaded_probe_at = now
+            self._voice_llm_loaded_probe_host = host
+            self._voice_llm_loaded_probe_result = (bool(loaded), str(model_name or ""))
+        if loaded:
+            self._voice_models_loaded["llm"] = True
+        return bool(loaded or self._voice_models_loaded.get("llm", False)), str(model_name or "")
+
+    def _voice_loaded_backend_chips(self) -> list[str]:
+        chips: list[str] = [
+            tr("chat.voice.chip.voice", "voice"),
+            tr("chat.voice.chip.models", "models"),
+        ]
+        if self._voice_models_loaded.get("stt", False):
+            stt_backend, _stt_model = self._voice_stt_backend_model()
+            chips.append(stt_backend)
+        llm_loaded, _llm_runtime_model = self._voice_llm_loaded_state()
+        if llm_loaded:
+            llm_backend, _llm_model = self._voice_llm_backend_model()
+            chips.append(llm_backend)
+        if self._voice_models_loaded.get("tts", False):
+            tts_backend, _tts_model, _tts_device, _tts_mode = self._voice_tts_backend_model()
+            chips.append(tts_backend)
+        seen: set[str] = set()
+        unique: list[str] = []
+        for chip in chips:
+            clean = str(chip).strip()
+            key = clean.lower()
+            if clean and key not in seen:
+                seen.add(key)
+                unique.append(clean)
+        return unique
+
     def _voice_character_image_url(self) -> str:
         config = _voice_mode_settings(self.backend_settings)
         active = self._active_character() if bool(config.get("enable_character", True)) else None
@@ -803,6 +855,9 @@ class SidebarPanel(QFrame):
         llm_device = "gpu" if str(config.get("llm_device", "cpu")).strip().lower() == "gpu" else "cpu"
         if str(config.get("stt_backend", "whisper")).strip().lower() == "llm_audio":
             stt_device = llm_device
+        llm_loaded, llm_runtime_model = self._voice_llm_loaded_state()
+        if llm_runtime_model and llm_backend == "KoboldCpp":
+            llm_model = llm_runtime_model
         selection = dict(self._voice_models_last_selection or {})
         return {
             "active": bool(any(self._voice_models_loaded.values())),
@@ -811,7 +866,7 @@ class SidebarPanel(QFrame):
             "needs_confirm": bool(self._voice_models_needs_confirm),
             "selection": selection,
             "stt": {"backend": stt_backend, "model": stt_model, "device": stt_device, "mode": "external" if bool(config.get("stt_external_api", False)) else "local", "loaded": bool(self._voice_models_loaded.get("stt", False))},
-            "llm": {"backend": llm_backend, "model": llm_model, "device": llm_device, "mode": "external" if bool(config.get("llm_external_api", False)) else "local", "loaded": bool(self._voice_models_loaded.get("llm", False))},
+            "llm": {"backend": llm_backend, "model": llm_model, "device": llm_device, "mode": "external" if bool(config.get("llm_external_api", False)) else "local", "loaded": bool(llm_loaded)},
             "tts": {"backend": tts_backend, "model": tts_model, "device": tts_device, "mode": tts_mode, "loaded": bool(self._voice_models_loaded.get("tts", False))},
         }
 
@@ -837,7 +892,8 @@ class SidebarPanel(QFrame):
         loaded_bits = []
         if self._voice_models_loaded.get("stt", False):
             loaded_bits.append("STT")
-        if self._voice_models_loaded.get("llm", False):
+        llm_loaded, _llm_runtime_model = self._voice_llm_loaded_state()
+        if llm_loaded:
             loaded_bits.append("LLM")
         if self._voice_models_loaded.get("tts", False):
             loaded_bits.append("TTS")
@@ -883,6 +939,10 @@ class SidebarPanel(QFrame):
         self._pending_kobold_ready_host = ""
         self._kobold_ready_timer.stop()
         display_model = model_name or label
+        self._voice_models_loaded["llm"] = True
+        self._voice_llm_loaded_probe_at = time.time()
+        self._voice_llm_loaded_probe_host = host
+        self._voice_llm_loaded_probe_result = (True, display_model)
         self.add_card(
             ChatItemData(
                 role="assistant",
@@ -905,6 +965,7 @@ class SidebarPanel(QFrame):
                 callback=self._reopen_popup_from_notification,
             )
         self._apply_voice_button_state()
+        self._sync_web_ui()
 
     def _wait_for_voice_llm_backend(self, config: dict[str, object]) -> tuple[bool, str]:
         if bool(config.get("llm_external_api", False)):
@@ -1396,10 +1457,7 @@ class SidebarPanel(QFrame):
                 tr("chat.voice.warmup.complete", "Model Warmup Complete"),
                 body,
                 tone=tone,
-                chips=[
-                    tr("chat.voice.chip.voice", "voice"),
-                    tr("chat.voice.chip.models", "models"),
-                ],
+                chips=self._voice_loaded_backend_chips(),
             )
 
         def _on_fail(message: str) -> None:
