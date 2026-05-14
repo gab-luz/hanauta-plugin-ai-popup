@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import time
 from pathlib import Path
 from urllib import error
@@ -1117,6 +1118,10 @@ class BackendSettingsDialog(QDialog):
         self.install_pocket_button.clicked.connect(self._install_pockettts)
         actions.addWidget(self.install_pocket_button)
 
+        self.reinstall_pocket_lang_button = QPushButton("Reinstall current Pocket language bundle")
+        self.reinstall_pocket_lang_button.clicked.connect(self._reinstall_current_pocket_language_bundle)
+        actions.addWidget(self.reinstall_pocket_lang_button)
+
         self.install_kokoclone_button = QPushButton("Install KokoClone + Seed-VC (voice cloning TTS)")
         self.install_kokoclone_button.clicked.connect(self._install_kokoclone)
         actions.addWidget(self.install_kokoclone_button)
@@ -2027,6 +2032,7 @@ class BackendSettingsDialog(QDialog):
         self.tts_auto_download_check.setVisible(is_tts and mode == "local_onnx")
         self.download_tts_button.setVisible(is_tts and mode == "local_onnx")
         self.install_pocket_button.setVisible(is_tts and profile.key == "pockettts" and mode == "local_onnx")
+        self.reinstall_pocket_lang_button.setVisible(is_tts and profile.key == "pockettts" and mode == "local_onnx")
         supports_tts_preview = is_tts and profile.key in {"kokorotts", "pockettts"}
         self.tts_test_label.setVisible(supports_tts_preview)
         self.tts_test_row.setVisible(supports_tts_preview)
@@ -2238,6 +2244,43 @@ class BackendSettingsDialog(QDialog):
             self._refresh_download_progress(profile.key)
             return
         self.status_label.setText("PocketTTS install started in background (server + model files + runtime + voices).")
+        self.status_label.setStyleSheet(f"color: {UI_TEXT_MUTED};")
+        self._refresh_download_progress(profile.key)
+
+    def _reinstall_current_pocket_language_bundle(self) -> None:
+        profile = self._selected_profile()
+        if profile.key != "pockettts":
+            return
+        payload = self._current_payload()
+        model_dir = _default_tts_model_dir(profile, payload)
+        lang = str(self.pocket_language_combo.currentData() or "").strip().lower()
+        if lang == "auto":
+            lang = _default_pocket_language(payload)
+        bundle_map = {
+            "english": "english_2026-04",
+            "french": "french_24l",
+            "german": "german",
+            "italian": "italian",
+            "spanish": "spanish",
+            "portuguese": "portuguese",
+            "portuguese_24l": "portuguese_24l",
+        }
+        bundle = bundle_map.get(lang, "english_2026-04")
+        bundle_dir = model_dir / "onnx" / bundle
+        try:
+            if bundle_dir.exists():
+                shutil.rmtree(bundle_dir)
+        except Exception as exc:
+            self.status_label.setText(f"Could not remove bundle {bundle}: {exc}")
+            self.status_label.setStyleSheet(f"color: {ACCENT_ALT};")
+            return
+        started = self._download_manager.start(profile, payload)
+        if not started:
+            self.status_label.setText("PocketTTS download is already running.")
+            self.status_label.setStyleSheet(f"color: {UI_TEXT_MUTED};")
+            self._refresh_download_progress(profile.key)
+            return
+        self.status_label.setText(f"Reinstalling PocketTTS language bundle: {bundle}")
         self.status_label.setStyleSheet(f"color: {UI_TEXT_MUTED};")
         self._refresh_download_progress(profile.key)
 
@@ -2610,6 +2653,7 @@ class BackendSettingsDialog(QDialog):
         self.pocket_voice_ref_row.setVisible(show_pocket_reference)
         self.tts_voice_ref_input.setVisible(show_pocket_reference_file)
         self.install_pocket_button.setVisible(show_pocket_voice)
+        self.reinstall_pocket_lang_button.setVisible(show_pocket_voice)
         if show_pocket_voice:
             self._reload_pocket_voice_list(payload)
 
