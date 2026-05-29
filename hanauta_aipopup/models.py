@@ -48,4 +48,4 @@ class CharacterCard:
     source_path: str = ""
     source_type: str = ""
     voice_sample_path: str = ""  # path to a WAV/MP3 for KokoClone voice cloning
-
+    supertonic_voice_json_path: str = ""  # Supertonic 3 voice-style JSON path (custom/builder)

@@ -71,6 +71,7 @@ from .tts import (
     synthesize_tts, validate_backend,
     _start_kokoro_server, _stop_kokoro_server, _kokoro_server_status,
     _start_pocket_server, _stop_pocket_server, _pocket_server_status,
+    _start_supertonic_server, _stop_supertonic_server, _supertonic_server_status,
     _set_kokoro_autostart, _set_pocket_autostart,
     _install_pockettts_server,
     _ensure_all_pocket_preset_voices,
@@ -2025,7 +2026,7 @@ class BackendSettingsDialog(QDialog):
         self.pocket_mode_row.setVisible(is_tts and profile.key == "pockettts")
         self.tts_repo_input.setVisible(is_tts and mode == "local_onnx")
         self.tts_bundle_url_input.setVisible(is_tts and mode == "local_onnx")
-        show_tts_server_controls = is_tts and profile.key in {"kokorotts", "pockettts"} and mode == "local_onnx"
+        show_tts_server_controls = is_tts and profile.key in {"kokorotts", "pockettts", "supertonic3"} and mode == "local_onnx"
         show_kobold_controls = is_kobold
         self.tts_server_command_input.setVisible(show_tts_server_controls)
         self.tts_server_row.setVisible(show_tts_server_controls)
@@ -2039,7 +2040,7 @@ class BackendSettingsDialog(QDialog):
         self.download_tts_button.setVisible(is_tts and mode == "local_onnx")
         self.install_pocket_button.setVisible(is_tts and profile.key == "pockettts" and mode == "local_onnx")
         self.reinstall_pocket_lang_button.setVisible(is_tts and profile.key == "pockettts" and mode == "local_onnx")
-        supports_tts_preview = is_tts and profile.key in {"kokorotts", "pockettts"}
+        supports_tts_preview = is_tts and profile.key in {"kokorotts", "pockettts", "supertonic3"}
         self.tts_test_label.setVisible(supports_tts_preview)
         self.tts_test_row.setVisible(supports_tts_preview)
         self.gguf_path_input.setVisible(is_kobold)
@@ -2647,7 +2648,7 @@ class BackendSettingsDialog(QDialog):
         self.tts_auto_download_check.setVisible(local_visible)
         self.download_tts_button.setVisible(local_visible)
 
-        show_server_controls = local_visible and profile.key in {"kokorotts", "pockettts"}
+        show_server_controls = local_visible and profile.key in {"kokorotts", "pockettts", "supertonic3"}
         self.tts_server_command_input.setVisible(show_server_controls)
         self.tts_server_row.setVisible(show_server_controls)
         self.kokoro_autostart_check.setVisible(show_server_controls)
@@ -3148,6 +3149,8 @@ class BackendSettingsDialog(QDialog):
         selected = self._selected_profile()
         if selected.key == "pockettts":
             active, detail = _pocket_server_status(effective)
+        elif selected.key == "supertonic3":
+            active, detail = _supertonic_server_status(effective)
         else:
             active, detail = _kokoro_server_status(effective)
         prefix = "● Active" if active else "○ Inactive"
@@ -3161,6 +3164,8 @@ class BackendSettingsDialog(QDialog):
         selected = self._selected_profile()
         if selected.key == "pockettts":
             ok, message = _start_pocket_server(payload)
+        elif selected.key == "supertonic3":
+            ok, message = _start_supertonic_server(payload)
         else:
             ok, message = _start_kokoro_server(payload)
         self.settings[selected.key] = payload
@@ -3174,6 +3179,8 @@ class BackendSettingsDialog(QDialog):
         selected = self._selected_profile()
         if selected.key == "pockettts":
             ok, message = _stop_pocket_server(payload)
+        elif selected.key == "supertonic3":
+            ok, message = _stop_supertonic_server(payload)
         else:
             ok, message = _stop_kokoro_server(payload)
         self.settings[selected.key] = payload
@@ -3188,6 +3195,9 @@ class BackendSettingsDialog(QDialog):
         if selected.key == "pockettts":
             _stop_pocket_server(payload)
             ok, message = _start_pocket_server(payload)
+        elif selected.key == "supertonic3":
+            _stop_supertonic_server(payload)
+            ok, message = _start_supertonic_server(payload)
         else:
             _stop_kokoro_server(payload)
             ok, message = _start_kokoro_server(payload)
@@ -3218,7 +3228,7 @@ class BackendSettingsDialog(QDialog):
 
     def _test_tts_synthesis(self) -> None:
         profile = self._selected_profile()
-        if profile.key not in {"kokorotts", "pockettts"}:
+        if profile.key not in {"kokorotts", "pockettts", "supertonic3"}:
             return
         text = self.tts_test_input.text().strip()
         if not text:

@@ -169,6 +169,7 @@ class SidebarPanel(QFrame):
             BackendProfile("kokorotts", "KokoroTTS", "tts_local", "kokoro", "127.0.0.1:8880", "kokorotts", False, True),
             BackendProfile("kokoclone", "KokoClone", "tts_local", "en", "", "kokorotts", False, False),
             BackendProfile("pockettts", "PocketTTS", "tts_local", "pocket", "127.0.0.1:8890", "pockettts", False, True),
+            BackendProfile("supertonic3", "Supertonic 3", "tts_local", "M1", "127.0.0.1:7788", "supertonic3", False, True),
         ]
         self.profile_by_key = {profile.key: profile for profile in self.profiles}
         self.backend_settings = load_backend_settings()

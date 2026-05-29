@@ -38,6 +38,7 @@ from .runtime import (
     KOKORO_TTS_RELEASE_URL,
     MODEL_CATALOG_FILE,
     POCKET_ONNX_REPO,
+    SUPERTONIC_ONNX_REPO,
     POCKETTTS_LANGUAGE_CODES,
     POCKETTTS_LANGUAGES,
     POCKETTTS_PRESET_VOICES,
@@ -1939,6 +1940,8 @@ def _tts_engine_requirements(profile_key: str) -> list[str]:
         return ["onnxruntime", "kokoro-onnx", "numpy"]
     if profile_key == "pockettts":
         return ["onnxruntime", "numpy", "sentencepiece", "soundfile", "scipy", "huggingface-hub", "safetensors"]
+    if profile_key == "supertonic3":
+        return ["supertonic[serve]", "numpy", "soundfile"]
     return []
 
 
@@ -2201,8 +2204,8 @@ def _default_tts_mode(payload: dict[str, object]) -> str:
     mode = str(payload.get("tts_mode", "")).strip().lower()
     if mode in {"local_onnx", "external_api"}:
         return mode
-    host = str(payload.get("host", "")).strip()
-    return "external_api" if host else "local_onnx"
+    # Default to local mode for all local TTS backends unless user explicitly selected external.
+    return "local_onnx"
 
 
 def _default_tts_repo(profile: BackendProfile, payload: dict[str, object]) -> str:
@@ -2211,6 +2214,8 @@ def _default_tts_repo(profile: BackendProfile, payload: dict[str, object]) -> st
         return configured
     if profile.key == "pockettts":
         return POCKET_ONNX_REPO
+    if profile.key == "supertonic3":
+        return SUPERTONIC_ONNX_REPO
     return KOKORO_ONNX_REPO
 
 
@@ -2240,7 +2245,9 @@ def _ensure_tts_assets(
     model_dir = _default_tts_model_dir(profile, payload)
     repo_id = _default_tts_repo(profile, payload)
     voice = str(payload.get("model", profile.model)).strip() or profile.model
-    if profile.key == "pockettts":
+    if profile.key == "supertonic3":
+        required: list[str] = []
+    elif profile.key == "pockettts":
         required = _pocket_required_files(payload)
     else:
         required = _kokoro_required_files(voice)
@@ -2254,6 +2261,122 @@ def _ensure_tts_assets(
     if missing:
         _download_hf_files(repo_id, required, model_dir, progress_cb=progress_cb)
     return model_dir, voice
+
+
+def _default_supertonic_lang(payload: dict[str, object]) -> str:
+    lang = str(payload.get("tts_language", "")).strip().lower()
+    if not lang or lang == "auto":
+        return "na"
+    mapping = {
+        "pt-br": "pt",
+        "pt_pt": "pt",
+        "pt-pt": "pt",
+        "english": "en",
+        "french": "fr",
+        "german": "de",
+        "italian": "it",
+        "spanish": "es",
+        "portuguese": "pt",
+        "portuguese_24l": "pt",
+    }
+    return mapping.get(lang, lang)
+
+
+def _default_supertonic_steps(payload: dict[str, object]) -> int:
+    try:
+        value = int(float(str(payload.get("supertonic_steps", "6"))))
+    except Exception:
+        value = 6
+    return max(5, min(12, value))
+
+
+def _default_supertonic_speed(payload: dict[str, object]) -> float:
+    try:
+        value = float(str(payload.get("supertonic_speed", "1.05")))
+    except Exception:
+        value = 1.05
+    return max(0.7, min(2.0, value))
+
+
+def ensure_supertonic_voice_json_for_character(character_id: str, sample_path: Path) -> Path:
+    safe_id = _safe_slug(character_id) or "character"
+    output_dir = AI_STATE_DIR / "supertonic3-voices"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    output_path = output_dir / f"{safe_id}.json"
+    source = sample_path.expanduser()
+    clone_cmd = str(os.environ.get("HANAUTA_SUPERTONIC3_CLONE_CMD", "")).strip()
+    if clone_cmd:
+        try:
+            rendered = (
+                clone_cmd.replace("{input}", str(source))
+                .replace("{output}", str(output_path))
+                .replace("{character_id}", safe_id)
+            )
+            cmd = shlex.split(rendered)
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=240, check=False)
+            if result.returncode == 0 and output_path.exists() and output_path.stat().st_size > 0:
+                return output_path
+        except Exception:
+            pass
+    payload = {
+        "name": safe_id,
+        "engine": "supertonic3",
+        "sample_audio_path": str(source),
+        "created_at_ms": int(time.time() * 1000),
+        "notes": "Fallback style descriptor. Set HANAUTA_SUPERTONIC3_CLONE_CMD to integrate supertonic3-voice-clone generation automatically.",
+    }
+    output_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+    return output_path
+
+
+def _generate_supertonic_audio(payload: dict[str, object], text: str, output_path: Path) -> None:
+    _ensure_tts_runtime_venv("supertonic3")
+    python_bin = _tts_venv_python("supertonic3")
+    if not python_bin.exists():
+        raise RuntimeError("Supertonic runtime is not installed.")
+    voice = str(payload.get("model", "M1")).strip() or "M1"
+    voice_json = str(payload.get("supertonic_voice_json", "")).strip()
+    reference = str(payload.get("_character_voice_sample", "")).strip()
+    if (not voice_json) and reference:
+        try:
+            inferred_id = _safe_slug(Path(reference).stem)
+            voice_json = str(ensure_supertonic_voice_json_for_character(inferred_id, Path(reference)))
+        except Exception:
+            voice_json = ""
+    steps = str(_default_supertonic_steps(payload))
+    speed = str(_default_supertonic_speed(payload))
+    lang = _default_supertonic_lang(payload)
+    max_chunk_length = str(max(80, min(600, int(float(str(payload.get("supertonic_max_chunk_length", "220")))))))
+    script = (
+        "from supertonic import TTS\n"
+        "from pathlib import Path\n"
+        "import os\n"
+        "tts=TTS(auto_download=True)\n"
+        f"voice_json={voice_json!r}\n"
+        f"voice_name={voice!r}\n"
+        "if voice_json and Path(voice_json).expanduser().exists():\n"
+        "    style=tts.get_voice_style_from_path(str(Path(voice_json).expanduser()))\n"
+        "else:\n"
+        "    style=tts.get_voice_style(voice_name=voice_name)\n"
+        f"wav,_=tts.synthesize(text={text!r}, voice_style=style, total_steps={steps}, speed={speed}, max_chunk_length={max_chunk_length}, lang={lang!r}, verbose=False)\n"
+        f"tts.save_audio(wav, {str(output_path)!r})\n"
+    )
+    env = dict(os.environ)
+    env.setdefault("OMP_NUM_THREADS", "1")
+    env.setdefault("ORT_NUM_THREADS", "1")
+    result = subprocess.run(
+        [str(python_bin), "-c", script],
+        capture_output=True,
+        text=True,
+        timeout=360,
+        check=False,
+        env=env,
+    )
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "unknown error").strip().splitlines()[-10:]
+        raise RuntimeError("Supertonic synthesis failed:\n" + "\n".join(detail))
+    if not output_path.exists() or output_path.stat().st_size <= 0:
+        raise RuntimeError("Supertonic produced no audio output.")
 
 
 def _generate_kokoro_audio(
@@ -3069,6 +3192,8 @@ def synthesize_tts(
         payload["tts_voice_preset"] = ""
     if profile.key == "pockettts":
         payload["tts_language"] = _pocket_language_for_text(payload, text)
+    if profile.key == "supertonic3":
+        payload["tts_language"] = _default_supertonic_lang(payload)
 
     voice = str(payload.get("model", profile.model)).strip() or profile.model
     stamp = int(time.time() * 1000)
@@ -3109,6 +3234,14 @@ def synthesize_tts(
             voice_reference = str(payload.get("tts_voice_reference", "")).strip()
             if voice_reference:
                 body_payload["voice_reference"] = voice_reference
+        if profile.key == "supertonic3":
+            body_payload["lang"] = _default_supertonic_lang(payload)
+            body_payload["steps"] = _default_supertonic_steps(payload)
+            body_payload["speed"] = _default_supertonic_speed(payload)
+            body_payload["stream"] = bool(payload.get("supertonic_stream_api", True))
+            voice_json = str(payload.get("supertonic_voice_json", "")).strip()
+            if voice_json:
+                body_payload["custom_style_path"] = voice_json
         body, content_type = _http_post_bytes(
             url,
             body_payload,
@@ -3131,7 +3264,9 @@ def synthesize_tts(
     model_dir, resolved_voice = _ensure_tts_assets(
         profile, payload, download_if_missing=bool(payload.get("tts_download_if_missing", True))
     )
-    if profile.key == "pockettts":
+    if profile.key == "supertonic3":
+        _generate_supertonic_audio(payload, text, output_path)
+    elif profile.key == "pockettts":
         voice_mode = str(payload.get("tts_voice_mode", "reference")).strip().lower()
         preset = str(payload.get("tts_voice_preset", "")).strip().lower()
         voice_reference = str(payload.get("tts_voice_reference", "")).strip()
@@ -3213,6 +3348,8 @@ def validate_backend(profile: BackendProfile, payload: dict[str, object]) -> tup
         model_dir = _default_tts_model_dir(profile, payload)
         if profile.key == "pockettts":
             required = _pocket_required_files(payload)
+        elif profile.key == "supertonic3":
+            required = []
         else:
             voice = str(payload.get("model", profile.model)).strip() or profile.model
             required = _kokoro_required_files(voice)
@@ -3682,6 +3819,122 @@ def _stop_pocket_server(payload: dict[str, object]) -> tuple[bool, str]:
     payload["tts_server_pid"] = 0
     payload["tts_server_pgid"] = 0
     return True, f"Stopped PocketTTS server process {pid}."
+
+
+def _default_supertonic_server_command(payload: dict[str, object]) -> list[str] | None:
+    def _has_supertonic(pybin: Path) -> bool:
+        if not pybin.exists():
+            return False
+        try:
+            probe = subprocess.run(
+                [str(pybin), "-c", "import supertonic"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+                check=False,
+            )
+            return probe.returncode == 0
+        except Exception:
+            return False
+
+    # Try to ensure the dedicated runtime first (best path).
+    try:
+        _ensure_tts_runtime_venv("supertonic3")
+    except Exception:
+        pass
+
+    python_bin = _tts_venv_python("supertonic3")
+    if not _has_supertonic(python_bin):
+        # Fallback to current interpreter if user installed supertonic globally.
+        fallback = Path(sys.executable).expanduser()
+        if _has_supertonic(fallback):
+            python_bin = fallback
+        else:
+            return None
+    host, port = _parse_host_port_default(str(payload.get("host", "127.0.0.1:7788")), 7788)
+    steps = str(_default_supertonic_steps(payload))
+    return [
+        str(python_bin),
+        "-m",
+        "supertonic",
+        "serve",
+        "--host",
+        host,
+        "--port",
+        str(port),
+        "--steps",
+        steps,
+    ]
+
+
+def _resolve_supertonic_server_command(payload: dict[str, object]) -> tuple[list[str], str]:
+    command_text = str(payload.get("tts_server_command", "")).strip()
+    if command_text:
+        try:
+            return shlex.split(command_text), "custom"
+        except Exception as exc:
+            raise RuntimeError(f"Invalid server command: {exc}")
+    auto = _default_supertonic_server_command(payload)
+    if auto:
+        return auto, "auto"
+    raise RuntimeError(
+        "No valid Supertonic 3 server command was found. Install TTS runtime in Backend Settings or set 'TTS server command'."
+    )
+
+
+def _supertonic_server_status(payload: dict[str, object]) -> tuple[bool, str]:
+    host = str(payload.get("host", "")).strip()
+    if host:
+        if _openai_compat_alive(host) or _host_reachable(host):
+            return True, f"Server active at {host}"
+    pid = int(payload.get("tts_server_pid", 0) or 0)
+    pgid = int(payload.get("tts_server_pgid", 0) or 0)
+    if _is_pid_alive(pid) or _is_pgid_alive(pgid):
+        return True, f"Server process running (pid {pid})"
+    return False, "Server inactive"
+
+
+def _start_supertonic_server(payload: dict[str, object]) -> tuple[bool, str]:
+    try:
+        command, source = _resolve_supertonic_server_command(payload)
+    except Exception as exc:
+        return False, str(exc)
+    if source == "auto":
+        payload["tts_server_command"] = shlex.join(command)
+    try:
+        process = subprocess.Popen(
+            command,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+    except Exception as exc:
+        return False, f"Unable to start Supertonic 3 server: {exc}"
+    payload["tts_server_pid"] = int(process.pid or 0)
+    try:
+        payload["tts_server_pgid"] = int(os.getpgid(int(process.pid or 0))) if int(process.pid or 0) else 0
+    except Exception:
+        payload["tts_server_pgid"] = int(payload.get("tts_server_pgid", 0) or 0)
+    return True, f"Supertonic 3 server started with: {' '.join(command)}"
+
+
+def _stop_supertonic_server(payload: dict[str, object]) -> tuple[bool, str]:
+    pid = int(payload.get("tts_server_pid", 0) or 0)
+    pgid = int(payload.get("tts_server_pgid", 0) or 0)
+    if not _is_pid_alive(pid) and not _is_pgid_alive(pgid):
+        payload["tts_server_pid"] = 0
+        payload["tts_server_pgid"] = 0
+        return False, "No tracked Supertonic 3 server process is running."
+    try:
+        if _is_pgid_alive(pgid):
+            os.killpg(pgid, signal.SIGTERM)
+        elif _is_pid_alive(pid):
+            os.kill(pid, signal.SIGTERM)
+    except OSError as exc:
+        return False, f"Unable to stop Supertonic 3 server: {exc}"
+    payload["tts_server_pid"] = 0
+    payload["tts_server_pgid"] = 0
+    return True, f"Stopped Supertonic 3 server process {pid}."
 
 
 def _pocket_systemd_user_service_path() -> Path:

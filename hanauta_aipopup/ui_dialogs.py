@@ -293,6 +293,10 @@ class CharacterLibraryDialog(QDialog):
             lines.append(f"\nFirst message:\n{card.first_message}")
         if card.system_prompt:
             lines.append(f"\nSystem prompt:\n{card.system_prompt}")
+        if card.voice_sample_path:
+            lines.append(f"\nVoice sample:\n{card.voice_sample_path}")
+        if card.supertonic_voice_json_path:
+            lines.append(f"\nSupertonic style JSON:\n{card.supertonic_voice_json_path}")
         self.preview.setPlainText("\n".join(lines))
 
     def _select_character_files(self) -> list[str]:
@@ -399,6 +403,12 @@ class CharacterLibraryDialog(QDialog):
         if not path:
             return
         card.voice_sample_path = str(Path(path).expanduser())
+        try:
+            from .tts import ensure_supertonic_voice_json_for_character
+            generated = ensure_supertonic_voice_json_for_character(card.id, Path(path))
+            card.supertonic_voice_json_path = str(generated)
+        except Exception as exc:
+            send_desktop_notification("Supertonic voice JSON", f"Could not generate JSON: {exc}")
         from .characters import save_character_library
         save_character_library(self.cards, self.selected_id)
         send_desktop_notification(

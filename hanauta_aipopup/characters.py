@@ -35,6 +35,7 @@ def _character_from_payload(payload: dict) -> CharacterCard:
         source_path=str(payload.get("source_path", "")).strip(),
         source_type=str(payload.get("source_type", "")).strip(),
         voice_sample_path=str(payload.get("voice_sample_path", "")).strip(),
+        supertonic_voice_json_path=str(payload.get("supertonic_voice_json_path", "")).strip(),
     )
 
 
@@ -74,6 +75,7 @@ def save_character_library(cards: list[CharacterCard], active_id: str):
             "source_path": c.source_path,
             "source_type": c.source_type,
             "voice_sample_path": c.voice_sample_path,
+            "supertonic_voice_json_path": c.supertonic_voice_json_path,
         } for c in cards]
     }, indent=2, ensure_ascii=False), encoding="utf-8")
 

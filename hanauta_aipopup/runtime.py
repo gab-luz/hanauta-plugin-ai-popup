@@ -123,6 +123,7 @@ VOICE_TOKEN_COMPRESSOR_SAMPLE_FILE = PLUGIN_ROOT / "voice-token-compressor.sampl
 # Model repo metadata and local runtime paths (used by TTS download/install helpers).
 KOKORO_ONNX_REPO = "onnx-community/Kokoro-82M-ONNX"
 POCKET_ONNX_REPO = "KevinAHM/pocket-tts-onnx"
+SUPERTONIC_ONNX_REPO = "Supertone/supertonic-3"
 KOKORO_TTS_RELEASE_REPO = "gab-luz/hanauta"
 KOKORO_TTS_RELEASE_TAG = "TTS"
 KOKORO_TTS_RELEASE_ASSET = "kokorotts-quantized-bundle.zip"
