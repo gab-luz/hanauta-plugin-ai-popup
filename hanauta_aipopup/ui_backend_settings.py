@@ -102,6 +102,23 @@ import os
 import socket
 LOGGER = logging.getLogger("hanauta.ai_popup")
 
+SUPERTONIC_BUILTIN_VOICES: list[tuple[str, str]] = [
+    ("M1", "M1"),
+    ("F1", "F1"),
+    ("M2", "M2"),
+    ("F2", "F2"),
+]
+
+SUPERTONIC_LANGUAGES: list[tuple[str, str]] = [
+    ("English (en)", "en"),
+    ("Portuguese (pt-BR)", "pt-br"),
+    ("Spanish (es)", "es"),
+    ("French (fr)", "fr"),
+    ("German (de)", "de"),
+    ("Italian (it)", "it"),
+    ("Japanese (ja)", "ja"),
+]
+
 class TtsDownloadFinishedFullscreen(QWidget):
     def __init__(self, title: str, body: str, start_payload: dict[str, object] | None = None) -> None:
         super().__init__()
@@ -776,13 +793,17 @@ class BackendSettingsDialog(QDialog):
         self.binary_info_label.setStyleSheet(f"color: {UI_ICON_DIM}; border: none;")
         shell_layout.addWidget(self.binary_info_label)
 
+        self.tts_repo_bundle_row = QWidget()
+        tts_repo_bundle_layout = QHBoxLayout(self.tts_repo_bundle_row)
+        tts_repo_bundle_layout.setContentsMargins(0, 0, 0, 0)
+        tts_repo_bundle_layout.setSpacing(8)
         self.tts_repo_input = QLineEdit()
         self.tts_repo_input.setPlaceholderText("Model repo (owner/repo)")
-        shell_layout.addWidget(self.tts_repo_input)
-
+        tts_repo_bundle_layout.addWidget(self.tts_repo_input, 1)
         self.tts_bundle_url_input = QLineEdit()
-        self.tts_bundle_url_input.setPlaceholderText("Optional ZIP bundle URL (fallback for CDN errors)")
-        shell_layout.addWidget(self.tts_bundle_url_input)
+        self.tts_bundle_url_input.setPlaceholderText("Optional ZIP bundle URL")
+        tts_repo_bundle_layout.addWidget(self.tts_bundle_url_input, 1)
+        shell_layout.addWidget(self.tts_repo_bundle_row)
 
         self.tts_server_command_input = QLineEdit()
         self.tts_server_command_input.setPlaceholderText("Optional local TTS server command (OpenAI-compatible)")
@@ -831,10 +852,17 @@ class BackendSettingsDialog(QDialog):
         pocket_lang_layout.addWidget(self.pocket_preset_combo, 2)
         shell_layout.addWidget(self.pocket_lang_preset_row)
 
-        self.hf_token_input = QLineEdit()
-        self.hf_token_input.setPlaceholderText("Hugging Face token (optional, for gated/rate-limited downloads)")
-        self.hf_token_input.setEchoMode(QLineEdit.EchoMode.Password)
-        shell_layout.addWidget(self.hf_token_input)
+        self.supertonic_voice_combo = QComboBox()
+        self.supertonic_voice_combo.setToolTip("Supertonic 3 built-in voice")
+        for label, code in SUPERTONIC_BUILTIN_VOICES:
+            self.supertonic_voice_combo.addItem(label, code)
+        shell_layout.addWidget(self.supertonic_voice_combo)
+
+        self.supertonic_language_combo = QComboBox()
+        self.supertonic_language_combo.setToolTip("Supertonic 3 language")
+        for label, code in SUPERTONIC_LANGUAGES:
+            self.supertonic_language_combo.addItem(label, code)
+        shell_layout.addWidget(self.supertonic_language_combo)
 
         self.pocket_voice_combo = QComboBox()
         self.pocket_voice_combo.setToolTip("PocketTTS voice reference presets found in the model folder")
@@ -1153,6 +1181,9 @@ class BackendSettingsDialog(QDialog):
         actions.addWidget(self.close_button)
         shell_layout.addLayout(actions)
 
+        # --- Tokens tab ---
+        self._tabs.addTab(self._build_tokens_tab(), "Tokens")
+
         # --- Skills tab ---
         self._tabs.addTab(self._build_skills_tab(), "Skills")
 
@@ -1203,6 +1234,66 @@ class BackendSettingsDialog(QDialog):
     def _save_skills_settings(self, data: dict) -> None:
         AI_STATE_DIR.mkdir(parents=True, exist_ok=True)
         SKILLS_SETTINGS_FILE.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+
+    def _build_tokens_tab(self) -> QWidget:
+        container = QWidget()
+        outer = QVBoxLayout(container)
+        outer.setContentsMargins(14, 14, 14, 14)
+        outer.setSpacing(14)
+
+        shell = SurfaceFrame(bg=rgba(THEME.background, 0.98), border=BORDER_SOFT, radius=24)
+        layout = QVBoxLayout(shell)
+        layout.setContentsMargins(18, 16, 18, 16)
+        layout.setSpacing(10)
+
+        title = QLabel("Token settings")
+        title.setFont(QFont(self.ui_font, 13, QFont.Weight.DemiBold))
+        title.setStyleSheet(f"color: {UI_TEXT_STRONG}; border: none;")
+        layout.addWidget(title)
+
+        subtitle = QLabel("Shared tokens used by all backends and model downloads.")
+        subtitle.setStyleSheet(f"color: {UI_ICON_DIM}; border: none;")
+        layout.addWidget(subtitle)
+
+        self.hf_token_global_input = QLineEdit()
+        self.hf_token_global_input.setPlaceholderText("Hugging Face token")
+        self.hf_token_global_input.setEchoMode(QLineEdit.EchoMode.Password)
+        self.hf_token_global_input.setText(
+            secure_load_secret("global:hf_token")
+            or secure_load_secret("tts:hf_token")
+            or secure_load_secret("pockettts:hf_token")
+        )
+        layout.addWidget(self.hf_token_global_input)
+
+        save_row = QHBoxLayout()
+        save_row.addStretch()
+        save_btn = QPushButton("Save Tokens")
+        save_btn.setStyleSheet(
+            f"""
+            QPushButton {{
+                min-height: 36px; min-width: 130px;
+                background: {ACCENT}; color: {THEME.active_text};
+                border: 1px solid {ACCENT}; border-radius: 18px;
+                padding: 0 16px; font-weight: 700;
+            }}
+            QPushButton:hover {{ background: {mix(ACCENT, '#ffffff', 0.08)}; }}
+            """
+        )
+        save_row.addWidget(save_btn)
+        layout.addLayout(save_row)
+
+        def _save_tokens() -> None:
+            token = self.hf_token_global_input.text().strip()
+            secure_store_secret("global:hf_token", token)
+            secure_store_secret("tts:hf_token", token)
+            secure_store_secret("pockettts:hf_token", token)
+            save_btn.setText("Saved ✓")
+            QTimer.singleShot(1800, lambda: save_btn.setText("Save Tokens"))
+
+        save_btn.clicked.connect(_save_tokens)
+        outer.addWidget(shell)
+        outer.addStretch()
+        return container
 
     def _build_skills_tab(self) -> QWidget:
         """Build the Skills configuration tab."""
@@ -1862,6 +1953,8 @@ class BackendSettingsDialog(QDialog):
         model_value = (
             str(self.kokoro_voice_combo.currentData() or self.kokoro_voice_combo.currentText()).strip()
             if profile.key == "kokorotts"
+            else str(self.supertonic_voice_combo.currentData() or self.supertonic_voice_combo.currentText()).strip()
+            if profile.key == "supertonic3"
             else str(self.sd_model_combo.currentData() or self.sd_model_combo.currentText()).strip()
             if profile.provider == "sdwebui"
             else self.model_input.text().strip()
@@ -1886,7 +1979,11 @@ class BackendSettingsDialog(QDialog):
                 "tts_bundle_url": self.tts_bundle_url_input.text().strip(),
                 "tts_server_command": self.tts_server_command_input.text().strip(),
                 "tts_voice_reference": self.tts_voice_ref_input.text().strip() if voice_mode == "reference" else "",
-                "tts_language": str(self.pocket_language_combo.currentData() or "").strip(),
+                "tts_language": (
+                    str(self.supertonic_language_combo.currentData() or "").strip()
+                    if profile.key == "supertonic3"
+                    else str(self.pocket_language_combo.currentData() or "").strip()
+                ),
                 "tts_auto_portuguese_variant": str(self.pocket_auto_pt_combo.currentData() or "ptbr").strip().lower(),
                 "tts_voice_preset": pocket_preset if voice_mode == "preset" else "",
                 "tts_voice_mode": voice_mode,
@@ -1955,9 +2052,13 @@ class BackendSettingsDialog(QDialog):
         )
         preset = str(payload.get("tts_voice_preset", "")).strip().lower()
         self._set_combo_selected(self.pocket_preset_combo, preset)
-        self.hf_token_input.setText(
-            secure_load_secret("tts:hf_token")
-            or secure_load_secret("pockettts:hf_token")
+        self._set_combo_selected(
+            self.supertonic_voice_combo,
+            str(payload.get("model", profile.model)).strip() or profile.model,
+        )
+        self._set_combo_selected(
+            self.supertonic_language_combo,
+            str(payload.get("tts_language", "en")).strip().lower() or "en",
         )
         voice_mode = str(payload.get("tts_voice_mode", "reference")).strip().lower()
         effective_voice_mode = "preset" if profile.key == "pockettts" and preset else voice_mode
@@ -2010,14 +2111,12 @@ class BackendSettingsDialog(QDialog):
         self.binary_info_label.setVisible(self.binary_path_input.isVisible())
         self.tts_mode_combo.setVisible(is_tts and profile.key != "pockettts")
         self.pocket_mode_row.setVisible(is_tts and profile.key == "pockettts")
-        self.tts_repo_input.setVisible(is_tts and mode == "local_onnx")
-        self.tts_bundle_url_input.setVisible(is_tts and mode == "local_onnx")
+        self.tts_repo_bundle_row.setVisible(is_tts and mode == "local_onnx")
         self.tts_server_command_input.setVisible(False)
         self.tts_server_row.setVisible(False)
         self.kokoro_autostart_check.setVisible(False)
         self.kobold_server_row.setVisible(False)
         self.pocket_lang_preset_row.setVisible(is_tts and profile.key == "pockettts")
-        self.hf_token_input.setVisible(is_tts and mode == "local_onnx")
         self.pocket_voice_ref_row.setVisible(is_tts and profile.key == "pockettts" and mode == "local_onnx")
         self.tts_voice_ref_input.setVisible(is_tts and profile.key == "pockettts" and mode == "local_onnx")
         self.tts_auto_download_check.setVisible(is_tts and mode == "local_onnx")
@@ -2052,16 +2151,21 @@ class BackendSettingsDialog(QDialog):
             if profile.key == "pockettts":
                 self.binary_path_input.setPlaceholderText("Local model folder (optional)")
                 self.model_input.setPlaceholderText("Voice label (metadata)")
+            elif profile.key == "supertonic3":
+                self.binary_path_input.setPlaceholderText("Local model folder (optional)")
+                self.model_input.setPlaceholderText("Supertonic voice")
             else:
                 self.binary_path_input.setPlaceholderText("Local ONNX model folder (optional)")
                 self.model_input.setPlaceholderText("Kokoro voice")
         else:
             self.model_input.setPlaceholderText("Model")
-        self.model_input.setVisible(not (is_tts and profile.key == "kokorotts") and not is_sd)
+        self.model_input.setVisible(not (is_tts and profile.key in {"kokorotts", "supertonic3"}) and not is_sd)
         self.token_saver_check.setVisible(is_text)
         self.voice_barge_in_check.setVisible(is_tts)
         self.sd_model_combo.setVisible(is_sd)
         self.kokoro_voice_combo.setVisible(is_tts and profile.key == "kokorotts")
+        self.supertonic_voice_combo.setVisible(is_tts and profile.key == "supertonic3")
+        self.supertonic_language_combo.setVisible(is_tts and profile.key == "supertonic3")
         if is_sd:
             self._reload_sd_backend_options(payload, user_initiated=False)
         if is_tts and profile.key == "kokorotts":
@@ -2134,12 +2238,6 @@ class BackendSettingsDialog(QDialog):
         existing = self.settings.get(profile.key, {})
         secure_store_secret(f"{profile.key}:api_key", self.api_key_input.text().strip())
         secure_store_secret(f"{profile.key}:sd_auth_pass", self.sd_auth_pass_input.text().strip())
-        if profile.provider == "tts_local":
-            token = self.hf_token_input.text().strip()
-            secure_store_secret("tts:hf_token", token)
-            # Keep legacy key in sync for backward compatibility with older builds.
-            if profile.key == "pockettts":
-                secure_store_secret("pockettts:hf_token", token)
         payload["tested"] = bool(existing.get("tested", False))
         payload["last_status"] = existing.get("last_status", "Saved.")
         self.settings[profile.key] = payload
@@ -2623,8 +2721,7 @@ class BackendSettingsDialog(QDialog):
 
         local_visible = mode == "local_onnx"
         self.binary_path_input.setVisible(local_visible)
-        self.tts_repo_input.setVisible(local_visible)
-        self.tts_bundle_url_input.setVisible(local_visible)
+        self.tts_repo_bundle_row.setVisible(local_visible)
         self.tts_auto_download_check.setVisible(local_visible)
         self.download_tts_button.setVisible(local_visible)
 

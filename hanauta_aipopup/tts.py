@@ -1738,6 +1738,9 @@ def _hf_resolve_url(repo_id: str, rel_path: str) -> str:
 
 
 def _hf_auth_token() -> str:
+    token = secure_load_secret("global:hf_token").strip()
+    if token:
+        return token
     token = secure_load_secret("tts:hf_token").strip()
     if token:
         return token
