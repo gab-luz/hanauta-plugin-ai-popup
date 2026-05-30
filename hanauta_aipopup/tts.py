@@ -1675,15 +1675,17 @@ def _chat_messages_for_prompt(
     if character is not None:
         char_name = character.name or "Assistant"
         resolved_user = user_name.strip() or "User"
-        character_prompt = _resolve_character_template(
+        raw_character_prompt = _resolve_character_template(
             _character_compose_prompt(character).strip(),
             char_name, resolved_user,
         )
+        character_prompt = _compress_character_card_prompt(raw_character_prompt)
         if character_prompt:
             system = f"{system}\n\nActive character:\n{character_prompt}"
             LOGGER.debug(
-                "Using active character prompt: name=%s chars=%d has_examples=%s",
+                "Using active character prompt (caveman compressed): name=%s raw_chars=%d compressed_chars=%d has_examples=%s",
                 char_name,
+                len(raw_character_prompt),
                 len(character_prompt),
                 bool(str(getattr(character, "message_example", "") or "").strip()),
             )
@@ -1709,12 +1711,27 @@ def _chat_messages_for_prompt(
             _em = _ilu.module_from_spec(_spec)  # type: ignore[arg-type]
             _spec.loader.exec_module(_em)  # type: ignore[union-attr]
             _ctx = _em.emotion_context_line()
-            if _ctx:
-                system = f"{system}\n\n{_ctx}"
+            _ctx_text = str(_ctx or "").strip()
+            # Guard: if the emotion engine surfaces tool-call scaffolding or has no
+            # usable history, ask the model to ask the user directly.
+            _bad_ctx = (
+                (not _ctx_text)
+                or ("<|toolcall>" in _ctx_text.lower())
+                or ("emotiongetstate" in _ctx_text.lower())
+                or ("no emotional history" in _ctx_text.lower())
+            )
+            if _bad_ctx:
+                system = (
+                    f"{system}\n\n"
+                    "Emotion context is currently unavailable. "
+                    "Before inferring mood, ask the user in one short sentence how they are feeling."
+                )
+            elif _ctx_text:
+                system = f"{system}\n\n{_ctx_text}"
     except Exception:
         pass
     if tools:
-        system = f"{system}\n\n{_tools_system_prompt(tools)}"
+        system = f"{system}\n\n{_tools_system_prompt(tools, char_name=(character.name if character else ''))}"
     emotion_suffix = _emotion_prompt_suffix(emotion_tags)
     if emotion_suffix:
         system = f"{system}\n\n{emotion_suffix}"
@@ -1771,6 +1788,20 @@ def _load_voice_token_compressor() -> dict[str, object]:
 def _compress_voice_prompt(text: str, config: dict[str, object]) -> str:
     del config
     return _PROMPT_SMARTNESS.compress_voice_prompt(text)
+
+
+def _compress_character_card_prompt(text: str) -> str:
+    """Apply the same caveman token-compression strategy used in voice mode to character cards."""
+    base = str(text or "").strip()
+    if not base:
+        return ""
+    try:
+        compressed = _PROMPT_SMARTNESS.compress_voice_prompt(base)
+        if compressed.strip():
+            return compressed.strip()
+    except Exception:
+        pass
+    return base
 
 
 def _cosine_similarity(a: list[float], b: list[float]) -> float:
@@ -1989,10 +2020,17 @@ def _stream_openai_style_reply(
     yield from _iter_openai_sse_deltas(url, payload, headers, timeout=240.0)
 
 
-def _tools_system_prompt(tools: list[dict]) -> str:
+def _tools_system_prompt(tools: list[dict], *, char_name: str = "") -> str:
     """Render tool definitions as plain text for models that don't support native tool calling."""
     if not tools:
         return ""
+    persona_line = ""
+    c_name = str(char_name or "").strip()
+    if c_name:
+        persona_line = (
+            f"When describing capabilities or offering what you can do, speak in {c_name}'s personality and voice. "
+            "Do not switch to a generic assistant tone."
+        )
     lines = [
         "You have access to the following tools. To use a tool, output ONLY a JSON block on its own line:",
         '  {"tool": "<tool_name>", "args": {<arguments>}}',
@@ -2009,6 +2047,9 @@ def _tools_system_prompt(tools: list[dict]) -> str:
             for k, v in params.items()
         )
         lines.append(f"- {name}: {desc}" + (f"  Args: {param_str}" if param_str else ""))
+    if persona_line:
+        lines.append("")
+        lines.append(persona_line)
     return "\n".join(lines)
 
 

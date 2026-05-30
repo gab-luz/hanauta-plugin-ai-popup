@@ -34,6 +34,7 @@ from PyQt6.QtWidgets import (
     QScrollArea,
     QSizePolicy,
     QTextBrowser,
+    QTabWidget,
     QToolButton,
     QVBoxLayout,
     QWidget,
@@ -69,13 +70,21 @@ from .tts import (
 LOGGER = logging.getLogger("hanauta.ai_popup")
 
 class CharacterLibraryDialog(QDialog):
-    def __init__(self, cards: list[CharacterCard], active_id: str, ui_font: str, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        cards: list[CharacterCard],
+        active_id: str,
+        ui_font: str,
+        user_profile: dict[str, object] | None = None,
+        parent: QWidget | None = None,
+    ) -> None:
         super().__init__(parent)
         self.ui_font = ui_font
         self.setWindowTitle("Character Library")
         self.cards = [CharacterCard(**card.__dict__) for card in cards]
         self.active_id = active_id
         self.selected_id = active_id
+        self.user_profile = dict(user_profile or {})
         self.setMinimumWidth(560)
         self.setStyleSheet(
             f"""
@@ -135,10 +144,18 @@ class CharacterLibraryDialog(QDialog):
         layout.setContentsMargins(16, 16, 16, 16)
         layout.setSpacing(10)
 
+        self.tabs = QTabWidget()
+        layout.addWidget(self.tabs)
+
+        chars_tab = QWidget()
+        chars_layout = QVBoxLayout(chars_tab)
+        chars_layout.setContentsMargins(0, 0, 0, 0)
+        chars_layout.setSpacing(10)
+
         title = QLabel("Characters")
         title.setFont(QFont(ui_font, 13, QFont.Weight.DemiBold))
         title.setStyleSheet(f"color: {UI_TEXT_STRONG};")
-        layout.addWidget(title)
+        chars_layout.addWidget(title)
 
         self.grid = QListWidget()
         self.grid.setViewMode(QListView.ViewMode.IconMode)
@@ -153,12 +170,12 @@ class CharacterLibraryDialog(QDialog):
         self.grid.setFont(QFont(ui_font, 10, QFont.Weight.DemiBold))
         self.grid.itemSelectionChanged.connect(self._refresh_preview)
         self.grid.itemDoubleClicked.connect(lambda _item: self._accept_selected())
-        layout.addWidget(self.grid)
+        chars_layout.addWidget(self.grid)
 
         self.preview = QPlainTextEdit()
         self.preview.setReadOnly(True)
         self.preview.setFixedHeight(220)
-        layout.addWidget(self.preview)
+        chars_layout.addWidget(self.preview)
 
         row = QHBoxLayout()
         row.setContentsMargins(0, 0, 0, 0)
@@ -194,7 +211,38 @@ class CharacterLibraryDialog(QDialog):
         row.addWidget(edit_button)
 
         row.addStretch(1)
-        layout.addLayout(row)
+        chars_layout.addLayout(row)
+
+        self.tabs.addTab(chars_tab, "Characters")
+
+        you_tab = QWidget()
+        you_layout = QVBoxLayout(you_tab)
+        you_layout.setContentsMargins(0, 0, 0, 0)
+        you_layout.setSpacing(10)
+
+        you_title = QLabel("You")
+        you_title.setFont(QFont(ui_font, 13, QFont.Weight.DemiBold))
+        you_title.setStyleSheet(f"color: {UI_TEXT_STRONG};")
+        you_layout.addWidget(you_title)
+
+        you_name_label = QLabel("What should the AI call you?")
+        self.you_name_input = QLineEdit(str(self.user_profile.get("first_name", "") or ""))
+        self.you_name_input.setPlaceholderText("Your name")
+        you_layout.addWidget(you_name_label)
+        you_layout.addWidget(self.you_name_input)
+
+        you_info_label = QLabel("Tell the AI about yourself:")
+        self.you_info_input = QPlainTextEdit(str(self.user_profile.get("about", "") or ""))
+        self.you_info_input.setPlaceholderText("Your interests, background, preferences...")
+        self.you_info_input.setFixedHeight(140)
+        you_layout.addWidget(you_info_label)
+        you_layout.addWidget(self.you_info_input)
+
+        self.you_enabled_check = QCheckBox("Use this profile in AI system prompts")
+        self.you_enabled_check.setChecked(bool(self.user_profile.get("enabled", False)))
+        you_layout.addWidget(self.you_enabled_check)
+        you_layout.addStretch(1)
+        self.tabs.addTab(you_tab, "You")
 
         actions = QHBoxLayout()
         actions.setContentsMargins(0, 0, 0, 0)
@@ -547,12 +595,24 @@ class CharacterLibraryDialog(QDialog):
 
     def _disable_character(self) -> None:
         self.selected_id = ""
+        self._collect_user_profile()
         self.accept()
 
     def _accept_selected(self) -> None:
         card = self._current_card()
         self.selected_id = card.id if card is not None else ""
+        self._collect_user_profile()
         self.accept()
+
+    def _collect_user_profile(self) -> None:
+        self.user_profile.update(
+            {
+                "first_name": self.you_name_input.text().strip(),
+                "about": self.you_info_input.toPlainText().strip(),
+                "enabled": self.you_enabled_check.isChecked(),
+                "setup_shown": True,
+            }
+        )
 
 
 class VoiceModeDialog(QDialog):

@@ -500,11 +500,19 @@ class SidebarPanel(QFrame):
             self._prompt_user_profile_setup()
             user_profile["setup_shown"] = True
             save_ai_popup_user_profile(user_profile)
-        dialog = CharacterLibraryDialog(self.character_cards, self.active_character_id, self.ui_font, self)
+        dialog = CharacterLibraryDialog(
+            self.character_cards,
+            self.active_character_id,
+            self.ui_font,
+            user_profile=user_profile,
+            parent=self,
+        )
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
         self.character_cards = dialog.cards
         self.active_character_id = dialog.selected_id
+        save_ai_popup_user_profile(dialog.user_profile)
+        self._user_profile = dict(dialog.user_profile)
         save_character_library(self.character_cards, self.active_character_id)
         active = self._active_character()
         if active is None:
@@ -1430,6 +1438,7 @@ class SidebarPanel(QFrame):
     def _dismiss_card(self, card_id: str) -> None:
         """Remove a card from chat history by its id field."""
         self.chat_history = [c for c in self.chat_history if getattr(c, 'id', None) != card_id]
+        self._rewrite_persisted_chat_history()
         self._render_chat_history()
         self._sync_web_ui()
 
@@ -2827,15 +2836,65 @@ class SidebarPanel(QFrame):
             len(data.body or ""),
         )
         self.chat_history.append(data)
-        secure_append_chat(data)
+        if self._is_contextual_chat_item(data):
+            secure_append_chat(data)
         self._render_chat_history()
         self._sync_web_ui()
+
+    def _is_contextual_chat_item(self, data: ChatItemData) -> bool:
+        """Only user + character/assistant dialogue should enter long-term context."""
+        role = str(getattr(data, "role", "") or "").strip().lower()
+        if role == "user":
+            return True
+        if role != "assistant":
+            return False
+        meta = str(getattr(data, "meta", "") or "").strip().lower()
+        title = str(getattr(data, "title", "") or "").strip().lower()
+        blocked_meta_tokens = (
+            "runtime",
+            "model status",
+            "loading",
+            "started",
+            "stopped",
+            "failed",
+            "error",
+            "backend offline",
+            "tts command",
+            "image command",
+            "image generation",
+            "voice mode",
+            "tts busy",
+            "tts failed",
+            "koboldcpp ready",
+            "dictation",
+        )
+        if any(tok in meta for tok in blocked_meta_tokens):
+            return False
+        if title == "runtime":
+            return False
+        # Keep normal assistant/character replies only.
+        return True
+
+    def _rewrite_persisted_chat_history(self) -> None:
+        """Rewrite encrypted chat storage from current in-memory history."""
+        try:
+            secure_clear_chat_history()
+            for item in self.chat_history:
+                if self._is_contextual_chat_item(item):
+                    secure_append_chat(item)
+        except Exception:
+            LOGGER.exception("failed to rewrite persisted chat history")
 
     def _set_pending_state(self, profile_label: str, message: str, meta: str) -> None:
         LOGGER.debug("set_pending_state: profile=%r meta=%r message=%r", profile_label, meta, message)
         character = self._active_character()
-        # Use character name as title when active so the chat shows the char, not the backend
-        display_title = character.name if character is not None else profile_label
+        meta_l = str(meta or "").strip().lower()
+        conversational_meta = {"text generation", "voice reply"}
+        # Runtime/loading/error/system pending messages should not impersonate character.
+        if meta_l in conversational_meta:
+            display_title = character.name if character is not None else profile_label
+        else:
+            display_title = "Hanauta AI"
         has_char = character is not None
         self._pending_item = ChatItemData(
             role="assistant",
