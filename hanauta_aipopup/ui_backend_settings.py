@@ -4,6 +4,7 @@ from html import escape as _html_escape
 import json
 import shutil
 import time
+import subprocess
 from pathlib import Path
 from urllib import error
 
@@ -71,7 +72,7 @@ from .http import (
     save_backend_settings,
     _looks_like_gemma4_audio_variant,
 )
-from .backends import _existing_path, _is_pid_alive, _is_pgid_alive, koboldcpp_status as _koboldcpp_status, start_koboldcpp as _start_koboldcpp, stop_koboldcpp as _stop_koboldcpp
+from .backends import _existing_path, _is_pid_alive, _is_pgid_alive, koboldcpp_status as _koboldcpp_status, start_koboldcpp as _start_koboldcpp, stop_koboldcpp as _stop_koboldcpp, llamacpp_status as _llamacpp_status, start_llamacpp as _start_llamacpp, stop_llamacpp as _stop_llamacpp
 from .catalog import MODEL_CATALOG, _dir_size_bytes, _format_bytes
 from .tts import (
     synthesize_tts, validate_backend, benchmark_whisper_transcription, benchmark_parakeet_transcription,
@@ -124,6 +125,8 @@ SUPERTONIC_BUILTIN_VOICES: list[tuple[str, str]] = [
     ("M2", "M2"),
     ("F2", "F2"),
 ]
+
+LLAMACPP_SPEED_ARGS_DEFAULT = "--spec-type nextn --draft-min 1 --draft-max 2 -ctk turbo3 -ctv turbo3 -fa on"
 
 SUPERTONIC_LANGUAGES: list[tuple[str, str]] = [
     ("English (en)", "en"),
@@ -288,6 +291,131 @@ class PocketPresetVoiceWorker(QThread):
             )
         except Exception as exc:
             self.failed.emit(str(exc))
+
+
+class LlamaRuntimeBuildWorker(QThread):
+    progress = pyqtSignal(int, str)
+    log = pyqtSignal(str)
+    finished_ok = pyqtSignal(str, str)
+    failed = pyqtSignal(str)
+
+    def __init__(self, payload: dict[str, object], install_deps: bool = False) -> None:
+        super().__init__()
+        self.payload = dict(payload)
+        self.install_deps = bool(install_deps)
+
+    def _emit(self, pct: int, msg: str) -> None:
+        self.progress.emit(max(0, min(100, int(pct))), str(msg))
+        self.log.emit(str(msg))
+
+    def _run(self, cmd: list[str], cwd: Path | None = None, allow_fail: bool = False) -> subprocess.CompletedProcess[str]:
+        self.log.emit("$ " + " ".join(cmd))
+        proc = subprocess.run(
+            cmd,
+            cwd=str(cwd) if cwd is not None else None,
+            text=True,
+            capture_output=True,
+        )
+        if proc.stdout.strip():
+            self.log.emit(proc.stdout.strip())
+        if proc.stderr.strip():
+            self.log.emit(proc.stderr.strip())
+        if not allow_fail and proc.returncode != 0:
+            raise RuntimeError(f"Command failed ({proc.returncode}): {' '.join(cmd)}")
+        return proc
+
+    def _install_deps_with_polkit(self) -> None:
+        if shutil.which("pkexec") is None:
+            raise RuntimeError("pkexec is not available; cannot install dependencies via Polkit.")
+        script = r"""
+set -e
+if command -v apt-get >/dev/null 2>&1; then
+  apt-get update
+  apt-get install -y git cmake build-essential pkg-config
+elif command -v dnf >/dev/null 2>&1; then
+  dnf install -y git cmake gcc gcc-c++ make pkgconf-pkg-config
+elif command -v pacman >/dev/null 2>&1; then
+  pacman -Sy --noconfirm --needed git cmake base-devel pkgconf
+elif command -v zypper >/dev/null 2>&1; then
+  zypper --non-interactive install -y git cmake gcc gcc-c++ make pkg-config
+else
+  echo "No supported package manager found."
+  exit 2
+fi
+"""
+        self._run(["pkexec", "sh", "-lc", script])
+
+    def run(self) -> None:
+        try:
+            runtime_dir = Path(str(self.payload.get("runtime_dir", "")).strip() or (Path.home() / ".cache" / "hanauta-ai-popup" / "runtimes"))
+            runtime_dir.mkdir(parents=True, exist_ok=True)
+            flavor = str(self.payload.get("llama_runtime_flavor", "auto")).strip().lower() or "auto"
+            mtp = bool(self.payload.get("llama_mtp_enabled", False))
+            flash = bool(self.payload.get("llama_flash_attn", False))
+            if flavor == "auto":
+                flavor = "atomic" if (mtp or flash) else "upstream"
+            default_repo = (
+                "https://github.com/AtomicBot-ai/atomic-llama-cpp-turboquant.git"
+                if flavor == "atomic"
+                else "https://github.com/ggerganov/llama.cpp.git"
+            )
+            repo_url = str(self.payload.get("llama_git_url", "")).strip() or default_repo
+            git_ref = str(self.payload.get("llama_git_ref", "")).strip() or ("feature/turboquant-kv-cache" if flavor == "atomic" else "master")
+            source_dir = Path(str(self.payload.get("llama_source_dir", "")).strip() or (runtime_dir / ("atomic-llama-cpp" if flavor == "atomic" else "llama-cpp") / "src"))
+            build_dir = Path(str(self.payload.get("llama_build_dir", "")).strip() or (source_dir / "build"))
+
+            self._emit(2, f"Preparing {flavor} runtime.")
+            if self.install_deps:
+                self._emit(5, "Installing build dependencies via Polkit…")
+                self._install_deps_with_polkit()
+                self._emit(18, "Dependencies installed.")
+
+            for tool in ("git", "cmake"):
+                if shutil.which(tool) is None:
+                    raise RuntimeError(f"Missing required tool: {tool}. Use 'Install deps (Polkit)'.")
+
+            if not source_dir.exists():
+                source_dir.parent.mkdir(parents=True, exist_ok=True)
+                self._emit(25, f"Cloning {repo_url}")
+                self._run(["git", "clone", repo_url, str(source_dir)])
+            else:
+                self._emit(25, "Updating existing source tree")
+                self._run(["git", "fetch", "--all", "--tags"], cwd=source_dir)
+
+            self._emit(35, f"Checking out ref: {git_ref}")
+            self._run(["git", "checkout", git_ref], cwd=source_dir)
+            self._run(["git", "pull", "--ff-only"], cwd=source_dir, allow_fail=True)
+
+            self._emit(50, "Configuring build with CMake")
+            cmake_cfg = ["cmake", "-S", str(source_dir), "-B", str(build_dir), "-DCMAKE_BUILD_TYPE=Release"]
+            if str(self.payload.get("device", "cpu")).strip().lower() == "gpu":
+                cmake_cfg.append("-DGGML_CUDA=ON")
+            self._run(cmake_cfg)
+
+            jobs = max(1, (os.cpu_count() or 2) - 1)
+            self._emit(70, f"Building llama-server (jobs={jobs})")
+            proc = self._run(["cmake", "--build", str(build_dir), "--config", "Release", "-j", str(jobs), "--target", "llama-server"], allow_fail=True)
+            if proc.returncode != 0:
+                self._emit(80, "llama-server target not found, trying legacy 'server' target")
+                self._run(["cmake", "--build", str(build_dir), "--config", "Release", "-j", str(jobs), "--target", "server"])
+
+            candidates = [
+                build_dir / "bin" / "llama-server",
+                build_dir / "bin" / "server",
+                source_dir / "llama-server",
+                source_dir / "server",
+            ]
+            binary = next((p for p in candidates if p.exists() and p.is_file() and p.stat().st_size > 0), None)
+            if binary is None:
+                raise RuntimeError("Build finished but llama-server binary was not found.")
+            try:
+                binary.chmod(0o755)
+            except Exception:
+                pass
+            self._emit(100, f"Build complete: {binary}")
+            self.finished_ok.emit(str(binary), f"{flavor} runtime compiled successfully.")
+        except Exception as exc:
+            self.failed.emit(str(exc).strip() or exc.__class__.__name__)
             return
         self.finished_ok.emit(str(voice_path))
 
@@ -837,15 +965,30 @@ class BackendSettingsDialog(QDialog):
         self.tts_server_command_input = QLineEdit()
         self.tts_server_command_input.setPlaceholderText(tr("backend_settings.tts_server_command", "Optional local TTS server command (OpenAI-compatible)"))
         shell_layout.addWidget(self.tts_server_command_input)
-        self.tts_server_row = QWidget()
+        self.tts_server_row = QWidget(shell)
         self.tts_server_row.hide()
         self.tts_server_status_label = QLabel("")
         self.kokoro_autostart_check = QCheckBox(tr("backend_settings.autostart_tts_server", "Auto-start local TTS server when Linux session boots"))
         self.kokoro_autostart_check.hide()
 
-        self.kobold_server_row = QWidget()
+        self.kobold_server_row = QWidget(shell)
         self.kobold_server_row.hide()
         self.kobold_server_status_label = QLabel("")
+        kobold_server_layout = QHBoxLayout(self.kobold_server_row)
+        kobold_server_layout.setContentsMargins(0, 0, 0, 0)
+        kobold_server_layout.setSpacing(8)
+        self.kobold_server_status_label.setStyleSheet(f"color: {UI_ICON_DIM}; border: none;")
+        kobold_server_layout.addWidget(self.kobold_server_status_label, 1)
+        self.start_kobold_button = QPushButton("Start")
+        self.start_kobold_button.clicked.connect(self._start_kobold_clicked)
+        kobold_server_layout.addWidget(self.start_kobold_button)
+        self.restart_kobold_button = QPushButton("Restart")
+        self.restart_kobold_button.clicked.connect(self._restart_kobold_clicked)
+        kobold_server_layout.addWidget(self.restart_kobold_button)
+        self.stop_kobold_button = QPushButton("Stop")
+        self.stop_kobold_button.clicked.connect(self._stop_kobold_clicked)
+        kobold_server_layout.addWidget(self.stop_kobold_button)
+        shell_layout.addWidget(self.kobold_server_row)
 
         self.pocket_language_combo = QComboBox()
         self.pocket_language_combo.setToolTip(
@@ -1012,6 +1155,177 @@ class BackendSettingsDialog(QDialog):
         self.kobold_jinja_check = QCheckBox(tr("backend_settings.kobold_jinja", "Enable Jinja chat template support"))
         self.kobold_jinja_check.setToolTip(tr("backend_settings.kobold_jinja.tooltip", "Useful for Gemma 4 and other chat templates that expect Jinja support in KoboldCpp."))
         shell_layout.addWidget(self.kobold_jinja_check)
+        self.llama_scroll = QScrollArea()
+        self.llama_scroll.setWidgetResizable(True)
+        self.llama_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self.llama_scroll.setStyleSheet(
+            f"""
+            QScrollArea {{
+                background: transparent;
+            }}
+            QScrollBar:vertical {{
+                background: transparent;
+                width: 10px;
+                margin: 0px;
+            }}
+            QScrollBar::handle:vertical {{
+                background: {mix(ACCENT, CARD_BG, 0.35)};
+                border-radius: 5px;
+                min-height: 24px;
+            }}
+            QScrollBar::handle:vertical:hover {{
+                background: {mix(ACCENT, CARD_BG, 0.50)};
+            }}
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
+                height: 0px;
+            }}
+            """
+        )
+        self.llama_scroll_body = QWidget()
+        self.llama_scroll_layout = QVBoxLayout(self.llama_scroll_body)
+        self.llama_scroll_layout.setContentsMargins(0, 0, 0, 0)
+        self.llama_scroll_layout.setSpacing(8)
+        self.llama_scroll.setWidget(self.llama_scroll_body)
+        shell_layout.addWidget(self.llama_scroll)
+
+        self.llama_tuning_label = QLabel("llama.cpp Runtime Tuning")
+        self.llama_tuning_label.setStyleSheet(f"color: {UI_TEXT_MUTED}; border: none; font-weight: 700;")
+        self.llama_scroll_layout.addWidget(self.llama_tuning_label)
+        self.llama_flash_attn_check = QCheckBox("llama.cpp: enable Flash Attention")
+        self.llama_flash_attn_check.setToolTip("Requires llama.cpp build/runtime support. Usually improves prompt processing speed on compatible GPUs.")
+        self.llama_scroll_layout.addWidget(self.llama_flash_attn_check)
+        self.llama_mtp_check = QCheckBox("llama.cpp: enable MTP/speculative decoding")
+        self.llama_mtp_check.setToolTip("Uses draft model speculation when configured. Can increase decode speed.")
+        self.llama_scroll_layout.addWidget(self.llama_mtp_check)
+        self.llama_mtp_draft_input = ClickableLineEdit()
+        self.llama_mtp_draft_input.setPlaceholderText("Draft model GGUF path (for MTP/speculative)")
+        self.llama_mtp_draft_input.setToolTip("Optional draft GGUF model used by speculative decoding.")
+        self.llama_mtp_draft_input.clicked.connect(self._browse_llama_mtp_draft_path)
+        self.llama_scroll_layout.addWidget(self.llama_mtp_draft_input)
+        self.llama_numeric_row = QWidget(shell)
+        llama_numeric_layout = QHBoxLayout(self.llama_numeric_row)
+        llama_numeric_layout.setContentsMargins(0, 0, 0, 0)
+        llama_numeric_layout.setSpacing(8)
+        self.llama_mtp_draft_n_input = QLineEdit()
+        self.llama_mtp_draft_n_input.setPlaceholderText("Draft max, e.g. 16")
+        llama_numeric_layout.addWidget(self.llama_mtp_draft_n_input, 1)
+        self.llama_n_batch_input = QLineEdit()
+        self.llama_n_batch_input.setPlaceholderText("Batch, e.g. 1024")
+        llama_numeric_layout.addWidget(self.llama_n_batch_input, 1)
+        self.llama_gpu_layers_input = QLineEdit()
+        self.llama_gpu_layers_input.setPlaceholderText("GPU layers, e.g. 99")
+        llama_numeric_layout.addWidget(self.llama_gpu_layers_input, 1)
+        self.llama_scroll_layout.addWidget(self.llama_numeric_row)
+        self.llama_extra_args_input = QLineEdit()
+        self.llama_extra_args_input.setPlaceholderText("Extra llama.cpp args (optional)")
+        self.llama_scroll_layout.addWidget(self.llama_extra_args_input)
+        self.llama_models_label = QLabel("llama.cpp Model Sources")
+        self.llama_models_label.setStyleSheet(f"color: {UI_TEXT_MUTED}; border: none; font-weight: 700;")
+        self.llama_scroll_layout.addWidget(self.llama_models_label)
+        self.llama_target_row = QWidget(shell)
+        llama_target_layout = QHBoxLayout(self.llama_target_row)
+        llama_target_layout.setContentsMargins(0, 0, 0, 0)
+        llama_target_layout.setSpacing(8)
+        self.llama_hf_repo_input = QLineEdit()
+        self.llama_hf_repo_input.setPlaceholderText("HF repo for target GGUF")
+        llama_target_layout.addWidget(self.llama_hf_repo_input, 2)
+        self.llama_hf_file_input = ClickableLineEdit()
+        self.llama_hf_file_input.setPlaceholderText("Target GGUF filename")
+        self.llama_hf_file_input.setToolTip("Click to pick a local target GGUF file, or type an HF filename.")
+        self.llama_hf_file_input.clicked.connect(self._browse_llama_target_gguf)
+        llama_target_layout.addWidget(self.llama_hf_file_input, 2)
+        self.llama_scroll_layout.addWidget(self.llama_target_row)
+        self.llama_draft_row = QWidget(shell)
+        llama_draft_layout = QHBoxLayout(self.llama_draft_row)
+        llama_draft_layout.setContentsMargins(0, 0, 0, 0)
+        llama_draft_layout.setSpacing(8)
+        self.llama_hf_draft_repo_input = QLineEdit()
+        self.llama_hf_draft_repo_input.setPlaceholderText("HF repo for draft GGUF")
+        llama_draft_layout.addWidget(self.llama_hf_draft_repo_input, 2)
+        self.llama_hf_draft_file_input = ClickableLineEdit()
+        self.llama_hf_draft_file_input.setPlaceholderText("Draft GGUF filename")
+        self.llama_hf_draft_file_input.setToolTip("Click to pick a local draft GGUF file, or type an HF filename.")
+        self.llama_hf_draft_file_input.clicked.connect(self._browse_llama_draft_gguf)
+        llama_draft_layout.addWidget(self.llama_hf_draft_file_input, 2)
+        self.llama_scroll_layout.addWidget(self.llama_draft_row)
+        self.llama_hf_cache_dir_input = ClickableLineEdit()
+        self.llama_hf_cache_dir_input.setPlaceholderText("Model cache dir, e.g. ~/.cache/hanauta-ai-popup/llm-models")
+        self.llama_hf_cache_dir_input.clicked.connect(self._browse_llama_cache_dir)
+        self.llama_scroll_layout.addWidget(self.llama_hf_cache_dir_input)
+        self.llama_build_card = SurfaceFrame(bg=rgba(CARD_BG, 0.64), border=BORDER_SOFT, radius=14)
+        self.llama_build_card.setStyleSheet(
+            f"""
+            background: {rgba(CARD_BG_SOFT, 0.92)};
+            border: 1px solid {BORDER_SOFT};
+            border-radius: 14px;
+            """
+        )
+        llama_build_layout = QVBoxLayout(self.llama_build_card)
+        llama_build_layout.setContentsMargins(12, 10, 12, 10)
+        llama_build_layout.setSpacing(8)
+        llama_build_title = QLabel("llama.cpp Runtime Build")
+        llama_build_title.setStyleSheet(f"color: {UI_TEXT_STRONG}; font-weight: 700; border: none;")
+        llama_build_layout.addWidget(llama_build_title)
+        self.llama_build_status_label = QLabel("Idle.")
+        self.llama_build_status_label.setWordWrap(True)
+        self.llama_build_status_label.setStyleSheet(f"color: {UI_TEXT_MUTED}; border: none;")
+        llama_build_layout.addWidget(self.llama_build_status_label)
+        self.llama_build_progress = QProgressBar()
+        self.llama_build_progress.setRange(0, 100)
+        self.llama_build_progress.setValue(0)
+        self.llama_build_progress.hide()
+        llama_build_layout.addWidget(self.llama_build_progress)
+        self.llama_runtime_flavor_combo = QComboBox()
+        self.llama_runtime_flavor_combo.addItem("Auto (Atomic if MTP/Flash enabled)", "auto")
+        self.llama_runtime_flavor_combo.addItem("Upstream llama.cpp", "upstream")
+        self.llama_runtime_flavor_combo.addItem("Atomic turboquant fork", "atomic")
+        llama_build_layout.addWidget(self.llama_runtime_flavor_combo)
+        self.llama_git_url_input = QLineEdit()
+        self.llama_git_url_input.setPlaceholderText("Git URL (optional override)")
+        llama_build_layout.addWidget(self.llama_git_url_input)
+        self.llama_git_ref_input = QLineEdit()
+        self.llama_git_ref_input.setPlaceholderText("Git branch/tag/commit (e.g. master or feature/turboquant-kv-cache)")
+        llama_build_layout.addWidget(self.llama_git_ref_input)
+        self.llama_source_dir_input = ClickableLineEdit()
+        self.llama_source_dir_input.setPlaceholderText("Source directory (optional)")
+        self.llama_source_dir_input.clicked.connect(self._browse_llama_source_dir)
+        llama_build_layout.addWidget(self.llama_source_dir_input)
+        self.llama_build_dir_input = ClickableLineEdit()
+        self.llama_build_dir_input.setPlaceholderText("Build directory (optional)")
+        self.llama_build_dir_input.clicked.connect(self._browse_llama_build_dir)
+        llama_build_layout.addWidget(self.llama_build_dir_input)
+        llama_build_actions = QHBoxLayout()
+        llama_build_actions.setContentsMargins(0, 0, 0, 0)
+        llama_build_actions.setSpacing(8)
+        self.llama_install_deps_btn = QPushButton("Install deps (Polkit)")
+        self.llama_install_deps_btn.clicked.connect(self._install_llama_deps_with_polkit)
+        llama_build_actions.addWidget(self.llama_install_deps_btn)
+        self.llama_compile_btn = QPushButton("Compile runtime")
+        self.llama_compile_btn.clicked.connect(self._compile_llama_runtime)
+        llama_build_actions.addWidget(self.llama_compile_btn)
+        self.llama_compile_and_install_btn = QPushButton("Install deps + Compile")
+        self.llama_compile_and_install_btn.clicked.connect(self._compile_llama_runtime_with_deps)
+        llama_build_actions.addWidget(self.llama_compile_and_install_btn)
+        llama_build_actions.addStretch(1)
+        llama_build_layout.addLayout(llama_build_actions)
+        self.llama_build_log = QTextEdit()
+        self.llama_build_log.setReadOnly(True)
+        self.llama_build_log.setMinimumHeight(130)
+        self.llama_build_log.setPlaceholderText("Build logs and errors will appear here.")
+        self.llama_build_log.setStyleSheet(
+            f"""
+            QTextEdit {{
+                background: {rgba(INPUT_BG, 0.94)};
+                color: {TEXT};
+                border: 1px solid {BORDER_SOFT};
+                border-radius: 10px;
+                padding: 8px;
+            }}
+            """
+        )
+        llama_build_layout.addWidget(self.llama_build_log)
+        self.llama_scroll_layout.addWidget(self.llama_build_card)
+        self.llama_scroll_layout.addStretch(1)
         self.kobold_gemma4_audio_stt_check = QCheckBox(tr("backend_settings.kobold_gemma4_audio", "Use Gemma 4 audio for STT (Whisper won't be used)"))
         self.kobold_gemma4_audio_stt_check.setToolTip(
             tr("backend_settings.kobold_gemma4_audio.tooltip", "Voice mode only: when enabled and supported by your KoboldCpp build/model, STT runs through the same Gemma 4 model via audio input. This avoids loading Whisper and can reduce VRAM usage.")
@@ -1225,6 +1539,7 @@ class BackendSettingsDialog(QDialog):
         self._preview_media_player: QMediaPlayer | None = None
         self._runtime_worker: TtsRuntimeInstallWorker | None = None
         self._pocket_voice_worker: PocketPresetVoiceWorker | None = None
+        self._llama_build_worker: LlamaRuntimeBuildWorker | None = None
         self._download_manager.progress_changed.connect(self._on_tts_download_progress)
         self._download_manager.download_finished.connect(self._on_tts_download_finished)
         self._download_manager.download_failed.connect(self._on_tts_download_failed)
@@ -1242,7 +1557,8 @@ class BackendSettingsDialog(QDialog):
         self._storage_refresh_timer.setInterval(1000)
         self._storage_refresh_timer.timeout.connect(self._refresh_storage_sizes_label)
         self._storage_refresh_timer.start()
-        self._populate_gguf_gallery()
+        # Curated GGUF gallery was removed from local LLM backend settings
+        # (koboldcpp/llama.cpp). Keep only manual path/file-picker workflow.
         self._load_selected_backend()
 
     def _refresh_enabled_checkbox_style(self) -> None:
@@ -2134,6 +2450,23 @@ class BackendSettingsDialog(QDialog):
                 "text_model_path": self.text_model_path_input.text().strip(),
                 "mmproj_path": self.mmproj_path_input.text().strip(),
                 "jinja": bool(self.kobold_jinja_check.isChecked()),
+                "llama_flash_attn": bool(self.llama_flash_attn_check.isChecked()),
+                "llama_mtp_enabled": bool(self.llama_mtp_check.isChecked()),
+                "llama_mtp_draft_model": self.llama_mtp_draft_input.text().strip(),
+                "llama_mtp_draft_n": self.llama_mtp_draft_n_input.text().strip(),
+                "llama_n_batch": self.llama_n_batch_input.text().strip(),
+                "llama_gpu_layers": self.llama_gpu_layers_input.text().strip() or "99",
+                "llama_extra_args": self.llama_extra_args_input.text().strip(),
+                "llama_hf_repo": self.llama_hf_repo_input.text().strip(),
+                "llama_hf_file": self.llama_hf_file_input.text().strip(),
+                "llama_hf_draft_repo": self.llama_hf_draft_repo_input.text().strip(),
+                "llama_hf_draft_file": self.llama_hf_draft_file_input.text().strip(),
+                "llama_hf_cache_dir": self.llama_hf_cache_dir_input.text().strip(),
+                "llama_runtime_flavor": str(self.llama_runtime_flavor_combo.currentData() or "auto").strip(),
+                "llama_git_url": self.llama_git_url_input.text().strip(),
+                "llama_git_ref": self.llama_git_ref_input.text().strip(),
+                "llama_source_dir": self.llama_source_dir_input.text().strip(),
+                "llama_build_dir": self.llama_build_dir_input.text().strip(),
                 "gemma4_audio_stt_enabled": bool(self.kobold_gemma4_audio_stt_check.isChecked()) if hasattr(self, "kobold_gemma4_audio_stt_check") else False,
                 "test_prompt": self.kobold_test_prompt_input.text().strip(),
                 "device": str(self.device_combo.currentData()),
@@ -2151,6 +2484,17 @@ class BackendSettingsDialog(QDialog):
                 "monitor_enabled": bool(self.monitor_check.isChecked()),
             }
         )
+        if profile.key == "llamacpp":
+            if not str(existing.get("llama_extra_args", "")).strip():
+                existing["llama_extra_args"] = LLAMACPP_SPEED_ARGS_DEFAULT
+            if not str(existing.get("llama_n_batch", "")).strip():
+                existing["llama_n_batch"] = "1024"
+            if not str(existing.get("llama_mtp_draft_n", "")).strip():
+                existing["llama_mtp_draft_n"] = "16"
+            if not str(existing.get("llama_gpu_layers", "")).strip():
+                existing["llama_gpu_layers"] = "99"
+            if not str(existing.get("llama_runtime_flavor", "")).strip():
+                existing["llama_runtime_flavor"] = "auto"
         if profile.key == "parakeet":
             existing["runtime"] = "parakeet_gguf"
             existing["parakeet_gguf_repo"] = self.model_input.text().strip() or "cstr/parakeet-tdt-0.6b-v3-GGUF"
@@ -2227,6 +2571,34 @@ class BackendSettingsDialog(QDialog):
         self.text_model_path_input.setText(str(payload.get("text_model_path", "")))
         self.mmproj_path_input.setText(str(payload.get("mmproj_path", "")))
         self.kobold_jinja_check.setChecked(bool(payload.get("jinja", False)))
+        self.llama_flash_attn_check.setChecked(bool(payload.get("llama_flash_attn", False)))
+        self.llama_mtp_check.setChecked(bool(payload.get("llama_mtp_enabled", False)))
+        self.llama_mtp_draft_input.setText(str(payload.get("llama_mtp_draft_model", "")))
+        self.llama_mtp_draft_n_input.setText(str(payload.get("llama_mtp_draft_n", "16")))
+        self.llama_n_batch_input.setText(str(payload.get("llama_n_batch", "1024")))
+        self.llama_gpu_layers_input.setText(str(payload.get("llama_gpu_layers", "99")))
+        llama_extra_args = str(payload.get("llama_extra_args", "")).strip()
+        if not llama_extra_args and profile.key == "llamacpp":
+            llama_extra_args = LLAMACPP_SPEED_ARGS_DEFAULT
+        self.llama_extra_args_input.setText(llama_extra_args)
+        self.llama_hf_repo_input.setText(str(payload.get("llama_hf_repo", "")))
+        self.llama_hf_file_input.setText(str(payload.get("llama_hf_file", "")))
+        self.llama_hf_draft_repo_input.setText(str(payload.get("llama_hf_draft_repo", "")))
+        self.llama_hf_draft_file_input.setText(str(payload.get("llama_hf_draft_file", "")))
+        self.llama_hf_cache_dir_input.setText(str(payload.get("llama_hf_cache_dir", "")))
+        self._set_combo_selected(self.llama_runtime_flavor_combo, str(payload.get("llama_runtime_flavor", "auto")).strip().lower() or "auto")
+        self.llama_git_url_input.setText(str(payload.get("llama_git_url", "")))
+        self.llama_git_ref_input.setText(str(payload.get("llama_git_ref", "")))
+        self.llama_source_dir_input.setText(str(payload.get("llama_source_dir", "")))
+        self.llama_build_dir_input.setText(str(payload.get("llama_build_dir", "")))
+        if profile.key == "llamacpp":
+            bin_path = str(payload.get("binary_path", "")).strip()
+            if bin_path and Path(bin_path).exists():
+                self.llama_build_status_label.setText(f"Runtime binary ready: {Path(bin_path).name}")
+            elif bin_path:
+                self.llama_build_status_label.setText("Configured binary path is missing on disk.")
+            else:
+                self.llama_build_status_label.setText("No runtime binary configured yet. Compile or set binary path.")
         self.kobold_gemma4_audio_stt_check.setChecked(bool(payload.get("gemma4_audio_stt_enabled", False)))
         self.kobold_test_prompt_input.setText(str(payload.get("test_prompt", "Tell me that KoboldCpp is working.")))
         self.token_saver_check.setChecked(bool(payload.get("token_saver_enabled", True)))
@@ -2256,15 +2628,17 @@ class BackendSettingsDialog(QDialog):
         self.api_key_input.setVisible(profile.needs_api_key or (profile.provider == "tts_local" and mode == "external_api"))
         is_sd = profile.provider == "sdwebui"
         is_kobold = profile.key == "koboldcpp"
+        is_llamacpp = profile.key == "llamacpp"
+        is_local_llm_cpp = is_kobold or is_llamacpp
         is_tts = profile.provider == "tts_local"
         is_whisper = profile.key == "whisper"
         is_parakeet = profile.key == "parakeet"
         is_text = profile.provider in {"openai", "openai_compat", "ollama"}
-        device_enabled = is_kobold or is_tts
+        device_enabled = is_local_llm_cpp or is_tts
         whisper_runtime = str(payload.get("runtime", "onnx")).strip().lower() or "onnx"
         self.sd_auth_user_input.setVisible(is_sd)
         self.sd_auth_pass_input.setVisible(is_sd)
-        self.binary_path_input.setVisible(is_kobold or (is_tts and mode == "local_onnx") or is_whisper)
+        self.binary_path_input.setVisible(is_local_llm_cpp or (is_tts and mode == "local_onnx") or is_whisper)
         self.binary_info_label.setVisible(self.binary_path_input.isVisible())
         self.whisper_runtime_row.setVisible(is_whisper or is_parakeet)
         self.whisper_runtime_combo.setEnabled(is_whisper)
@@ -2274,28 +2648,46 @@ class BackendSettingsDialog(QDialog):
         self.tts_server_command_input.setVisible(False)
         self.tts_server_row.setVisible(False)
         self.kokoro_autostart_check.setVisible(False)
-        self.kobold_server_row.setVisible(False)
+        self.kobold_server_row.setVisible(is_local_llm_cpp)
         self.pocket_lang_preset_row.setVisible(is_tts and profile.key == "pockettts")
         self.pocket_voice_ref_row.setVisible(is_tts and profile.key == "pockettts" and mode == "local_onnx")
         self.tts_voice_ref_input.setVisible(is_tts and profile.key == "pockettts" and mode == "local_onnx")
         self.tts_auto_download_check.setVisible(is_tts and mode == "local_onnx")
         self.download_tts_button.setVisible(is_tts and mode == "local_onnx")
         self.install_pocket_button.setVisible(is_tts and profile.key == "pockettts" and mode == "local_onnx")
+        self.install_kokoclone_button.setVisible(is_tts and profile.key == "kokoclone" and mode == "local_onnx")
         self.reinstall_pocket_lang_button.setVisible(is_tts and profile.key == "pockettts" and mode == "local_onnx")
         supports_tts_preview = is_tts and profile.key in {"kokorotts", "pockettts", "supertonic3"}
         self.tts_test_label.setVisible(supports_tts_preview)
         self.tts_test_row.setVisible(supports_tts_preview)
-        self.gguf_path_input.setVisible(is_kobold or (is_whisper and whisper_runtime == "gguf") or is_parakeet)
-        self.gguf_info_label.setVisible(is_kobold or (is_whisper and whisper_runtime == "gguf") or is_parakeet)
-        self.gguf_download_progress.setVisible(False if not is_kobold else self.gguf_download_progress.isVisible())
-        self.gguf_download_progress_label.setVisible(False if not is_kobold else self.gguf_download_progress_label.isVisible())
-        self.gguf_gallery_title.setVisible(is_kobold)
-        self.gguf_gallery_scroll.setVisible(is_kobold)
+        self.gguf_path_input.setVisible(is_local_llm_cpp or (is_whisper and whisper_runtime == "gguf") or is_parakeet)
+        self.gguf_info_label.setVisible(is_local_llm_cpp or (is_whisper and whisper_runtime == "gguf") or is_parakeet)
+        self.gguf_download_progress.setVisible(False)
+        self.gguf_download_progress_label.setVisible(False)
+        self.gguf_gallery_title.setVisible(False)
+        self.gguf_gallery_scroll.setVisible(False)
         self.text_model_path_input.setVisible(is_kobold)
         self.mmproj_path_input.setVisible(is_kobold)
         self.kobold_jinja_check.setVisible(is_kobold)
+        self.llama_scroll.setVisible(is_llamacpp)
         self.kobold_gemma4_audio_stt_check.setVisible(is_kobold)
         self.kobold_test_prompt_input.setVisible(is_kobold)
+        self.llama_flash_attn_check.setVisible(is_llamacpp)
+        self.llama_mtp_check.setVisible(is_llamacpp)
+        self.llama_mtp_draft_input.setVisible(is_llamacpp)
+        self.llama_mtp_draft_n_input.setVisible(is_llamacpp)
+        self.llama_n_batch_input.setVisible(is_llamacpp)
+        self.llama_gpu_layers_input.setVisible(is_llamacpp)
+        self.llama_extra_args_input.setVisible(is_llamacpp)
+        self.llama_hf_repo_input.setVisible(is_llamacpp)
+        self.llama_hf_file_input.setVisible(is_llamacpp)
+        self.llama_hf_draft_repo_input.setVisible(is_llamacpp)
+        self.llama_hf_draft_file_input.setVisible(is_llamacpp)
+        self.llama_hf_cache_dir_input.setVisible(is_llamacpp)
+        self.llama_numeric_row.setVisible(is_llamacpp)
+        self.llama_target_row.setVisible(is_llamacpp)
+        self.llama_draft_row.setVisible(is_llamacpp)
+        self.llama_build_card.setVisible(is_llamacpp)
         self.device_combo.setVisible(device_enabled)
         self.negative_prompt_input.setVisible(is_sd)
         self.sampler_combo.setVisible(is_sd)
@@ -2715,9 +3107,9 @@ class BackendSettingsDialog(QDialog):
     def _browse_binary_path(self) -> None:
         profile = self._selected_profile()
         current = self.binary_path_input.text().strip()
-        if profile.key == "koboldcpp":
+        if profile.key in {"koboldcpp", "llamacpp"}:
             picked = self._pick_existing_file(
-                "Select KoboldCpp binary",
+                "Select local LLM server binary",
                 current,
                 ["Executable files (*)", "All files (*)"],
             )
@@ -2764,10 +3156,142 @@ class BackendSettingsDialog(QDialog):
         if picked:
             self.mmproj_path_input.setText(picked)
 
+    def _browse_llama_mtp_draft_path(self) -> None:
+        picked = self._pick_existing_file(
+            "Select draft GGUF model",
+            self.llama_mtp_draft_input.text().strip(),
+            ["GGUF models (*.gguf)", "All files (*)"],
+        )
+        if picked:
+            self.llama_mtp_draft_input.setText(picked)
+
     def _browse_output_dir(self) -> None:
         picked = self._pick_existing_dir("Select SD output folder", self.output_dir_input.text().strip())
         if picked:
             self.output_dir_input.setText(picked)
+
+    def _browse_llama_cache_dir(self) -> None:
+        picked = self._pick_existing_dir(
+            "Select llama.cpp model cache directory",
+            self.llama_hf_cache_dir_input.text().strip(),
+        )
+        if picked:
+            self.llama_hf_cache_dir_input.setText(picked)
+
+    def _browse_llama_source_dir(self) -> None:
+        picked = self._pick_existing_dir(
+            "Select llama.cpp source directory",
+            self.llama_source_dir_input.text().strip(),
+        )
+        if picked:
+            self.llama_source_dir_input.setText(picked)
+
+    def _browse_llama_build_dir(self) -> None:
+        picked = self._pick_existing_dir(
+            "Select llama.cpp build directory",
+            self.llama_build_dir_input.text().strip(),
+        )
+        if picked:
+            self.llama_build_dir_input.setText(picked)
+
+    def _browse_llama_target_gguf(self) -> None:
+        picked = self._pick_existing_file(
+            "Select target GGUF model",
+            self.gguf_path_input.text().strip(),
+            ["GGUF models (*.gguf)", "All files (*)"],
+        )
+        if picked:
+            path = Path(picked).expanduser()
+            self.gguf_path_input.setText(str(path))
+            self.llama_hf_file_input.setText(path.name)
+
+    def _browse_llama_draft_gguf(self) -> None:
+        picked = self._pick_existing_file(
+            "Select draft/MTP GGUF model",
+            self.llama_mtp_draft_input.text().strip(),
+            ["GGUF models (*.gguf)", "All files (*)"],
+        )
+        if picked:
+            path = Path(picked).expanduser()
+            self.llama_mtp_draft_input.setText(str(path))
+            self.llama_hf_draft_file_input.setText(path.name)
+
+    def _install_llama_deps_with_polkit(self) -> None:
+        self._start_llama_build_worker(install_deps=True)
+
+    def _compile_llama_runtime(self) -> None:
+        self._start_llama_build_worker(install_deps=False)
+
+    def _compile_llama_runtime_with_deps(self) -> None:
+        self._start_llama_build_worker(install_deps=True)
+
+    def _start_llama_build_worker(self, install_deps: bool) -> None:
+        profile = self._selected_profile()
+        if profile.key != "llamacpp":
+            self.status_label.setText("Select llama.cpp backend first.")
+            self.status_label.setStyleSheet(f"color: {ACCENT_ALT};")
+            return
+        if self._llama_build_worker is not None and self._llama_build_worker.isRunning():
+            self.status_label.setText("llama.cpp build is already running.")
+            self.status_label.setStyleSheet(f"color: {UI_TEXT_MUTED};")
+            return
+        payload = self._current_payload()
+        try:
+            storage_paths = self._load_storage_paths()
+        except Exception:
+            storage_paths = {}
+        runtime_root = str(storage_paths.get("runtime_dir", "")).strip()
+        if runtime_root:
+            payload["runtime_dir"] = runtime_root
+        self.llama_build_log.clear()
+        self.llama_build_progress.show()
+        self.llama_build_progress.setValue(0)
+        self.llama_build_status_label.setText(
+            "Installing dependencies and compiling runtime…"
+            if install_deps
+            else "Compiling llama.cpp runtime…"
+        )
+        self.llama_compile_btn.setEnabled(False)
+        self.llama_install_deps_btn.setEnabled(False)
+        self.llama_compile_and_install_btn.setEnabled(False)
+        worker = LlamaRuntimeBuildWorker(payload, install_deps=bool(install_deps))
+        self._llama_build_worker = worker
+
+        def _on_progress(value: int, message: str) -> None:
+            self.llama_build_progress.show()
+            self.llama_build_progress.setValue(max(0, min(100, int(value))))
+            self.llama_build_status_label.setText(str(message).strip())
+
+        def _on_log(line: str) -> None:
+            txt = str(line).rstrip()
+            if txt:
+                self.llama_build_log.append(txt)
+
+        def _on_ok(binary_path: str, message: str) -> None:
+            self.llama_build_progress.setValue(100)
+            self.binary_path_input.setText(str(binary_path).strip())
+            self.llama_build_status_label.setText(str(message).strip())
+            self.status_label.setText(f"{message} Binary: {Path(binary_path).name}")
+            self.status_label.setStyleSheet(f"color: {ACCENT};")
+            self._save_backend()
+
+        def _on_fail(message: str) -> None:
+            self.llama_build_status_label.setText(f"Build failed: {message}")
+            self.status_label.setText(f"llama.cpp build failed: {message}")
+            self.status_label.setStyleSheet(f"color: {ACCENT_ALT};")
+
+        def _on_done() -> None:
+            self.llama_compile_btn.setEnabled(True)
+            self.llama_install_deps_btn.setEnabled(True)
+            self.llama_compile_and_install_btn.setEnabled(True)
+            self._llama_build_worker = None
+
+        worker.progress.connect(_on_progress)
+        worker.log.connect(_on_log)
+        worker.finished_ok.connect(_on_ok)
+        worker.failed.connect(_on_fail)
+        worker.finished.connect(_on_done)
+        worker.start()
 
     def _browse_bench_whisper_audio(self) -> None:
         picked = self._pick_existing_file(
@@ -3261,7 +3785,11 @@ class BackendSettingsDialog(QDialog):
         save_backend_settings(self.settings)
 
     def _refresh_kobold_status(self, payload: dict[str, object]) -> None:
-        active, message = _koboldcpp_status(payload)
+        profile = self._selected_profile()
+        if profile.key == "llamacpp":
+            active, message = _llamacpp_status(payload)
+        else:
+            active, message = _koboldcpp_status(payload)
         self.kobold_server_status_label.setText(f"Server status: {message}")
         self.kobold_server_status_label.setStyleSheet(f"color: {ACCENT if active else UI_ICON_DIM}; border: none;")
 
@@ -3302,29 +3830,32 @@ class BackendSettingsDialog(QDialog):
 
     def _start_kobold_clicked(self) -> None:
         profile = self._selected_profile()
-        if profile.key != "koboldcpp":
+        if profile.key not in {"koboldcpp", "llamacpp"}:
             return
         payload = self._current_payload()
         # Guard: don't spawn if already alive
         host = str(payload.get("host", profile.host)).strip()
-        if (host and _openai_compat_alive(host)) or _koboldcpp_status(payload)[0]:
-            self.status_label.setText("KoboldCpp is already running.")
+        alive = (host and _openai_compat_alive(host))
+        status_active = _llamacpp_status(payload)[0] if profile.key == "llamacpp" else _koboldcpp_status(payload)[0]
+        if alive or status_active:
+            self.status_label.setText(f"{profile.label} is already running.")
             self.status_label.setStyleSheet(f"color: {ACCENT};")
             return
-        ok, message = _start_koboldcpp(payload)
+        ok, message = _start_llamacpp(payload) if profile.key == "llamacpp" else _start_koboldcpp(payload)
         self._persist_selected_backend_payload(payload)
         self._refresh_kobold_status(payload)
         if ok:
-            self._schedule_kobold_ready_notification(profile, payload)
+            if profile.key == "koboldcpp":
+                self._schedule_kobold_ready_notification(profile, payload)
         self.status_label.setText(message)
         self.status_label.setStyleSheet(f"color: {ACCENT if ok else ACCENT_ALT};")
 
     def _stop_kobold_clicked(self) -> None:
         profile = self._selected_profile()
-        if profile.key != "koboldcpp":
+        if profile.key not in {"koboldcpp", "llamacpp"}:
             return
         payload = self._current_payload()
-        ok, message = _stop_koboldcpp(payload)
+        ok, message = _stop_llamacpp(payload) if profile.key == "llamacpp" else _stop_koboldcpp(payload)
         self._persist_selected_backend_payload(payload)
         self._refresh_kobold_status(payload)
         self.status_label.setText(message)
@@ -3332,15 +3863,20 @@ class BackendSettingsDialog(QDialog):
 
     def _restart_kobold_clicked(self) -> None:
         profile = self._selected_profile()
-        if profile.key != "koboldcpp":
+        if profile.key not in {"koboldcpp", "llamacpp"}:
             return
         payload = self._current_payload()
-        _stop_koboldcpp(payload)
-        ok, message = _start_koboldcpp(payload)
+        if profile.key == "llamacpp":
+            _stop_llamacpp(payload)
+            ok, message = _start_llamacpp(payload)
+        else:
+            _stop_koboldcpp(payload)
+            ok, message = _start_koboldcpp(payload)
         self._persist_selected_backend_payload(payload)
         self._refresh_kobold_status(payload)
         if ok:
-            self._schedule_kobold_ready_notification(profile, payload)
+            if profile.key == "koboldcpp":
+                self._schedule_kobold_ready_notification(profile, payload)
         self.status_label.setText(message)
         self.status_label.setStyleSheet(f"color: {ACCENT if ok else ACCENT_ALT};")
 
@@ -3408,6 +3944,7 @@ class BackendSettingsDialog(QDialog):
         self.pocket_voice_ref_row.setVisible(show_pocket_reference)
         self.tts_voice_ref_input.setVisible(show_pocket_reference_file)
         self.install_pocket_button.setVisible(show_pocket_voice)
+        self.install_kokoclone_button.setVisible(local_visible and profile.key == "kokoclone")
         self.reinstall_pocket_lang_button.setVisible(show_pocket_voice)
         if show_pocket_voice:
             self._reload_pocket_voice_list(payload)
@@ -3824,8 +4361,8 @@ class BackendSettingsDialog(QDialog):
 
     def _download_gguf(self, entry: dict[str, object]) -> None:
         profile = self._selected_profile()
-        if profile.key != "koboldcpp":
-            self.status_label.setText("GGUF gallery is only available for KoboldCpp.")
+        if profile.key not in {"koboldcpp", "llamacpp"}:
+            self.status_label.setText("GGUF gallery is only available for local GGUF LLM backends.")
             self.status_label.setStyleSheet(f"color: {UI_TEXT_MUTED};")
             return
         entry_id = str(entry.get("id", "")).strip() or str(entry.get("file", "")).strip()

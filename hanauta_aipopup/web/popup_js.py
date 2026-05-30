@@ -470,7 +470,7 @@ POPUP_JS = r"""
       if (s) return s;
       const key = String(item.key || '').trim().toLowerCase();
       if (key === 'whisper' || key === 'parakeet') return 'asr';
-      if (key === 'koboldcpp' || key === 'openai' || key === 'ollama' || key === 'lmstudio' || key === 'gemini' || key === 'mistral') return 'llm';
+      if (key === 'koboldcpp' || key === 'llamacpp' || key === 'openai' || key === 'ollama' || key === 'lmstudio' || key === 'gemini' || key === 'mistral') return 'llm';
       if (key === 'kokorotts' || key === 'pockettts' || key === 'supertonic3' || key === 'kokoclone') return 'tts';
       return '';
     }

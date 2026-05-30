@@ -87,6 +87,9 @@ from .backends import (
     koboldcpp_status as _koboldcpp_status,
     start_koboldcpp as _start_koboldcpp,
     stop_koboldcpp as _stop_koboldcpp,
+    llamacpp_status as _llamacpp_status,
+    start_llamacpp as _start_llamacpp,
+    stop_llamacpp as _stop_llamacpp,
 )
 from .user_profile import load_ai_popup_user_profile, save_ai_popup_user_profile
 from .tts import (
@@ -163,6 +166,7 @@ class SidebarPanel(QFrame):
         self.profiles = [
             BackendProfile("gemini", "Gemini", "gemini", "gemini-2.0-flash", "Google", "gemini", True),
             BackendProfile("koboldcpp", "KoboldCpp", "openai_compat", "koboldcpp", "127.0.0.1:5001", "koboldcpp", False, True),
+            BackendProfile("llamacpp", "llama.cpp", "openai_compat", "llama.cpp", "127.0.0.1:8080", "koboldcpp", False, True),
             BackendProfile("lmstudio", "LM Studio", "openai_compat", "local-model", "127.0.0.1:1234", "lmstudio"),
             BackendProfile("ollama", "Ollama", "ollama", "llama3.2", "127.0.0.1:11434", "ollama"),
             BackendProfile("openai", "OpenAI", "openai", "gpt-4.1-mini", "api.openai.com", "openai", True),
@@ -647,6 +651,7 @@ class SidebarPanel(QFrame):
         runtime_tts_active = False
         runtime_active_profiles: list[BackendProfile] = []
         kobold_loaded, _kobold_model, _kobold_host, _kobold_profile = self._configured_kobold_loaded_state()
+        llamacpp_loaded = False
         for profile in self.profiles:
             payload = self.backend_settings.get(profile.key, {})
             button = self.backend_buttons.get(profile.key)
@@ -654,6 +659,10 @@ class SidebarPanel(QFrame):
             runtime_ready = False
             if profile.key == "koboldcpp" and kobold_loaded:
                 runtime_ready = True
+            if profile.key == "llamacpp":
+                llamacpp_loaded, _msg = _llamacpp_status(dict(payload))
+                if llamacpp_loaded:
+                    runtime_ready = True
             if profile.key == "supertonic3":
                 started, _detail = _supertonic_server_status(dict(payload))
                 if started:
@@ -783,7 +792,7 @@ class SidebarPanel(QFrame):
             return "Unknown", "Unknown"
         payload = dict(self.backend_settings.get(profile.key, {}))
         model = str(payload.get("model", profile.model)).strip() or profile.model
-        if profile.key == "koboldcpp":
+        if profile.key in {"koboldcpp", "llamacpp"}:
             gguf_path = _existing_path(payload.get("gguf_path"))
             if gguf_path is not None:
                 model = gguf_path.name
@@ -1046,7 +1055,7 @@ class SidebarPanel(QFrame):
                 llm_ready = False
             else:
                 payload = dict(self.backend_settings.get(profile.key, {}))
-                if profile.key == "koboldcpp":
+                if profile.key in {"koboldcpp", "llamacpp"}:
                     llm_ready = _existing_path(payload.get("binary_path")) is not None and _existing_path(payload.get("gguf_path")) is not None
                 elif profile.provider == "ollama":
                     llm_ready = bool(str(payload.get("host", profile.host)).strip())
@@ -1088,6 +1097,11 @@ class SidebarPanel(QFrame):
                 loaded, _model_name, _host, _prof = self._configured_kobold_loaded_state()
                 kp = dict(self.backend_settings.get(profile.key, {}))
                 gguf_name = Path(str(kp.get("gguf_path", "")).strip()).name
+                description = f"LLM - {gguf_name}" if gguf_name else "LLM - Specify GGUF model on backend settings first"
+            elif profile.key == "llamacpp":
+                lp = dict(self.backend_settings.get(profile.key, {}))
+                loaded, _detail = _llamacpp_status(lp)
+                gguf_name = Path(str(lp.get("gguf_path", "")).strip()).name
                 description = f"LLM - {gguf_name}" if gguf_name else "LLM - Specify GGUF model on backend settings first"
             elif profile.key == "kokorotts":
                 loaded, _detail = _kokoro_server_status(dict(self.backend_settings.get(profile.key, {})))
@@ -1361,7 +1375,12 @@ class SidebarPanel(QFrame):
             runtime_supertonic = False
             if profile.key == "supertonic3":
                 runtime_supertonic, _detail = _supertonic_server_status(dict(self.backend_settings.get(profile.key, {})))
+            runtime_llama = False
+            if profile.key == "llamacpp":
+                runtime_llama, _detail = _llamacpp_status(dict(self.backend_settings.get(profile.key, {})))
             runtime_ready = (is_enabled and profile.key == "koboldcpp" and kobold_loaded) or (
+                is_enabled and profile.key == "llamacpp" and runtime_llama
+            ) or (
                 is_enabled and profile.key == "supertonic3" and (supertonic_reachable or runtime_supertonic)
             )
             if ready or runtime_ready:
@@ -1647,6 +1666,8 @@ class SidebarPanel(QFrame):
             message = ""
             if profile.key == "koboldcpp":
                 ok, message = _start_koboldcpp(payload)
+            elif profile.key == "llamacpp":
+                ok, message = _start_llamacpp(payload)
             elif profile.key == "kokorotts":
                 ok, message = _start_kokoro_server(payload)
             elif profile.key == "pockettts":
@@ -1705,6 +1726,8 @@ class SidebarPanel(QFrame):
             message = ""
             if profile.key == "koboldcpp":
                 ok, message = _start_koboldcpp(payload)
+            elif profile.key == "llamacpp":
+                ok, message = _start_llamacpp(payload)
             elif profile.key == "kokorotts":
                 ok, message = _start_kokoro_server(payload)
             elif profile.key == "pockettts":
@@ -1742,6 +1765,8 @@ class SidebarPanel(QFrame):
             message = ""
             if profile.key == "koboldcpp":
                 ok, message = _stop_koboldcpp(payload)
+            elif profile.key == "llamacpp":
+                ok, message = _stop_llamacpp(payload)
             elif profile.key == "kokorotts":
                 ok, message = _stop_kokoro_server(payload)
             elif profile.key == "pockettts":
@@ -1777,6 +1802,8 @@ class SidebarPanel(QFrame):
             message = ""
             if profile.key == "koboldcpp":
                 ok, message = _stop_koboldcpp(payload)
+            elif profile.key == "llamacpp":
+                ok, message = _stop_llamacpp(payload)
             elif profile.key == "kokorotts":
                 ok, message = _stop_kokoro_server(payload)
             elif profile.key == "pockettts":
@@ -1898,6 +1925,24 @@ class SidebarPanel(QFrame):
 
         self._maybe_probe_kobold_gemma4_audio_support()
         config = _voice_mode_settings(self.backend_settings)
+        # If the user explicitly selected backend keys in the Start/Stop dialog,
+        # prefer that transient selection for this warmup run over persisted
+        # voice_mode defaults.
+        if selected_backend_keys:
+            for key in selected_backend_keys:
+                profile = self.profile_by_key.get(str(key).strip())
+                if profile is None:
+                    continue
+                if profile.provider == "tts_local":
+                    config["tts_profile"] = profile.key
+                    selection["tts"] = True
+                elif profile.provider == "stt_local":
+                    # Voice mode STT key is backend slug (whisper/parakeet/vosk/...)
+                    config["stt_backend"] = profile.key
+                    selection["stt"] = True
+                elif profile.provider in {"openai", "openai_compat", "ollama", "gemini"}:
+                    config["llm_profile"] = profile.key
+                    selection["llm"] = True
         LOGGER.info("[VoiceModels] start requested, selection=%s", selection)
         LOGGER.info("[VoiceModels] config: stt_backend=%s llm_profile=%s tts_profile=%s",
             config.get("stt_backend"), config.get("llm_profile"), config.get("tts_profile"))
@@ -2001,6 +2046,29 @@ class SidebarPanel(QFrame):
                         status_lines.append(
                             tr("chat.voice.backend.kobold.loading", "KoboldCpp process started but model is still loading…")
                         )
+                    continue
+                if profile.key == "llamacpp":
+                    host = str(ppayload.get("host", profile.host)).strip()
+                    from .backends import _llamacpp_model_loaded, llamacpp_status
+                    lloaded, lmodel = _llamacpp_model_loaded(host)
+                    if lloaded:
+                        status_lines.append(
+                            tr("chat.voice.backend.llamacpp.loaded_model", "llama.cpp ready — model: <b>{model}</b>").format(
+                                model=html.escape(lmodel)
+                            )
+                        )
+                    else:
+                        running, _ = llamacpp_status(ppayload)
+                        if running:
+                            status_lines.append(
+                                tr("chat.voice.backend.llamacpp.loading", "llama.cpp process started and is still loading…")
+                            )
+                        else:
+                            status_lines.append(
+                                tr("chat.voice.backend.generic.not_responding_host", "{label} did not respond at <code>{host}</code>").format(
+                                    label=html.escape(profile.label), host=html.escape(host)
+                                )
+                            )
                     continue
                 if profile.key == "supertonic3":
                     host = str(ppayload.get("host", profile.host)).strip()

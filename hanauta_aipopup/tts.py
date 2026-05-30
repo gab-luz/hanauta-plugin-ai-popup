@@ -3948,6 +3948,17 @@ def validate_backend(profile: BackendProfile, payload: dict[str, object]) -> tup
             return True, "KoboldCpp is reachable."
         return True, "Launch config saved. Click the KoboldCpp icon to start it."
 
+    if profile.key == "llamacpp":
+        if binary_path is None:
+            return False, "llama.cpp binary path is required."
+        hf_repo = str(payload.get("llama_hf_repo", "")).strip()
+        hf_file = str(payload.get("llama_hf_file", "")).strip()
+        if gguf_path is None and not (hf_repo and hf_file):
+            return False, "Select a GGUF model for llama.cpp or set HF repo+file for auto-download."
+        if host and _openai_compat_alive(host):
+            return True, "llama.cpp server is reachable."
+        return True, "Launch config saved. Click the llama.cpp icon to start it."
+
     if profile.provider == "tts_local":
         mode = _default_tts_mode(payload)
         if mode == "external_api":

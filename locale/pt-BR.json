@@ -245,6 +245,8 @@
     "chat.voice.backend.supertonic.loading": "Supertonic 3 está carregando. Vamos avisar aqui assim que o servidor ficar pronto.",
     "chat.voice.backend.kobold.loaded_model": "KoboldCpp pronto — modelo: <b>{model}</b>",
     "chat.voice.backend.kobold.loading": "Processo do KoboldCpp iniciado, mas o modelo ainda está carregando…",
+    "chat.voice.backend.llamacpp.loaded_model": "llama.cpp pronto — modelo: <b>{model}</b>",
+    "chat.voice.backend.llamacpp.loading": "Processo do llama.cpp iniciado e ainda carregando…",
     "chat.voice.backend.supertonic.loaded_host": "Supertonic 3 está acessível em <code>{host}</code>",
     "chat.voice.backend.supertonic.loading_process": "Processo do Supertonic 3 iniciado e ainda carregando…",
     "chat.voice.backend.whisper.loaded_model": "Whisper carregado com sucesso — modelo: <b>{model}</b>",
@@ -253,5 +255,6 @@
     "chat.voice.backend.generic.not_responding_host": "{label} não respondeu em <code>{host}</code>",
     "chat.voice.warmup.done": "Aquecimento concluído.",
     "chat.voice.models_sub_select_to_stop": "Selecione quais backends iniciados você deseja parar."
-  }
+  },
+  "chat.voice.backend.llamacpp.preparing": "Preparando runtime do llama.cpp (baixando/compilando se necessário)."
 }

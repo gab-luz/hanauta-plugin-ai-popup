@@ -73,7 +73,9 @@ from .http import (
 from .backends import (
     _existing_path,
     _koboldcpp_model_loaded,
+    _llamacpp_model_loaded,
     start_koboldcpp as _start_koboldcpp,
+    start_llamacpp as _start_llamacpp,
 )
 from .tts import (
     synthesize_tts, _waveform_from_hanauta_service,
@@ -866,7 +868,7 @@ class TextReplyWorker(QThread):
                     tools=tools or None,
                 )
 
-            if profile.key == "koboldcpp":
+            if profile.key in {"koboldcpp", "llamacpp"}:
                 from .backends import _existing_path
                 gguf = _existing_path(payload.get("gguf_path"))
                 if gguf:
@@ -1349,6 +1351,29 @@ class VoiceModelsWarmupWorker(QThread):
             logging.info(f"[VoiceModels] _warm_llm: koboldcpp start ok={ok} msg={message}")
             if not ok:
                 raise RuntimeError(message)
+            updates[profile.key] = payload
+            return updates
+        if profile.key == "llamacpp":
+            host = str(payload.get("host", profile.host)).strip()
+            loaded, model_name = _llamacpp_model_loaded(host) if host else (False, "")
+            if loaded:
+                logging.info(
+                    "[VoiceModels] _warm_llm: llamacpp already loaded model=%s",
+                    model_name,
+                )
+                return updates
+            self._emit(
+                "llama.cpp",
+                tr(
+                    "chat.voice.backend.llamacpp.preparing",
+                    "Preparing llama.cpp runtime (downloading/compiling if needed).",
+                ),
+            )
+            ok, message = _start_llamacpp(payload)
+            logging.info(f"[VoiceModels] _warm_llm: llamacpp start ok={ok} msg={message}")
+            if not ok:
+                raise RuntimeError(message)
+            self._emit("llama.cpp", str(message))
             updates[profile.key] = payload
             return updates
         host = str(payload.get("host", profile.host)).strip()
