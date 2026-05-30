@@ -35,6 +35,7 @@ _ALLOWED_TAGS = {
     "em",
     "hr",
     "i",
+    "input",
     "img",
     "li",
     "ol",
@@ -70,6 +71,7 @@ _GLOBAL_ALLOWED_ATTRS = {
 _TAG_ALLOWED_ATTRS: dict[str, set[str]] = {
     "a": {"href", "title"},
     "button": {"class", "data-cmd", "data-card-id", "data-key", "data-text", "type", "style"},
+    "input": {"type", "data-role", "checked", "style"},
     "img": {"src", "alt", "title", "width", "height"},
     "td": {"colspan", "rowspan", "align", "valign"},
     "th": {"colspan", "rowspan", "align", "valign"},
@@ -210,6 +212,10 @@ class _SafeHtml(HTMLParser):
                     continue
             if tag == "img" and k == "src":
                 if not _is_safe_img_src(v):
+                    continue
+            if tag == "input" and k == "type":
+                # Keep form inputs highly constrained in chat cards.
+                if v.lower() not in {"checkbox"}:
                     continue
             parts.append(f' {k}="{html.escape(v, quote=True)}"')
         return "".join(parts)
