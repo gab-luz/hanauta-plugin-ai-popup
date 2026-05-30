@@ -79,6 +79,12 @@
     "chat.voice.chip.models": "модели",
     "chat.voice.chip.error": "ошибка",
     "chat.voice.warmup.tts_skipped": "Прогрев TTS пропущен",
-    "chat.voice.warmup.tts_skipped_404": "Не удалось скачать файлы модели TTS (HTTP 404). Проверьте репозиторий/модель TTS в настройках бэкенда."
+    "chat.voice.warmup.tts_skipped_404": "Не удалось скачать файлы модели TTS (HTTP 404). Проверьте репозиторий/модель TTS в настройках бэкенда.",
+    "chat.tts.generated_title": "Речь сгенерирована.",
+    "chat.tts.generated_playback_started": "Воспроизведение началось автоматически.",
+    "chat.tts.choose_engine": "Выберите TTS-движок для озвучивания:",
+    "chat.tts.set_active_backend": "Сделать выбранный TTS активным бэкендом",
+    "chat.backend.none_active": "Нет активного бэкенда.",
+    "chat.backend.none_tested": "Нет настроенного протестированного бэкенда"
   }
 }

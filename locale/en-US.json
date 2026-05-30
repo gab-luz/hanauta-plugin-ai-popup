@@ -79,6 +79,12 @@
     "chat.voice.chip.models": "models",
     "chat.voice.chip.error": "error",
     "chat.voice.warmup.tts_skipped": "TTS warmup skipped",
-    "chat.voice.warmup.tts_skipped_404": "Could not download TTS model files (HTTP 404). Check TTS repo/model in Backend Settings."
+    "chat.voice.warmup.tts_skipped_404": "Could not download TTS model files (HTTP 404). Check TTS repo/model in Backend Settings.",
+    "chat.tts.generated_title": "Speech generated.",
+    "chat.tts.generated_playback_started": "Playback was started automatically.",
+    "chat.tts.choose_engine": "Choose a TTS engine to speak this with:",
+    "chat.tts.set_active_backend": "Set selected TTS as active backend",
+    "chat.backend.none_active": "No active backend.",
+    "chat.backend.none_tested": "No tested backend configured"
   }
 }

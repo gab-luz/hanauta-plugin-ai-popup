@@ -463,7 +463,7 @@ class SidebarPanel(QFrame):
                 host_text = supertonic_host or "runtime process"
                 self.header_status.setText(f"Supertonic 3  •  active  •  {host_text}")
             else:
-                self.header_status.setText("No active backend.")
+                self.header_status.setText(tr("chat.backend.none_active", "No active backend."))
             self._sync_web_ui()
             return
         payload = self.backend_settings.get(self.current_profile.key, {})
@@ -668,7 +668,9 @@ class SidebarPanel(QFrame):
             if runtime_tts_active:
                 self.composer.provider_label.setText("Supertonic 3 active (TTS runtime)")
             else:
-                self.composer.provider_label.setText("No tested backend configured")
+                self.composer.provider_label.setText(
+                    tr("chat.backend.none_tested", "No tested backend configured")
+                )
             self.composer.entry.setEnabled(False)
             self.composer.entry.setPlaceholderText(
                 tr(
@@ -1282,9 +1284,11 @@ class SidebarPanel(QFrame):
                 supertonic_host = str(spayload.get("host", supertonic_profile.host)).strip()
         supertonic_active_runtime = bool(supertonic_reachable or supertonic_running)
         if supertonic_active_runtime:
-            if self.current_profile is None or header_status in {"", "No active backend."}:
+            no_active_label = tr("chat.backend.none_active", "No active backend.")
+            if self.current_profile is None or header_status in {"", "No active backend.", no_active_label}:
                 header_status = f"Supertonic 3  •  active  •  {supertonic_host or 'runtime process'}"
-            if provider_label in {"", "No tested backend configured"}:
+            no_tested_label = tr("chat.backend.none_tested", "No tested backend configured")
+            if provider_label in {"", "No tested backend configured", no_tested_label}:
                 provider_label = "Supertonic 3 active (TTS runtime)"
         for profile in self.profiles:
             payload = self.backend_settings.get(profile.key, {})
@@ -2762,7 +2766,10 @@ class SidebarPanel(QFrame):
                 role="assistant",
                 title=profile_label,
                 meta="tts",
-                body="<p><b>Speech generated.</b> Playback was started automatically.</p>",
+                body=(
+                    f"<p><b>{html.escape(tr('chat.tts.generated_title', 'Speech generated.'))}</b> "
+                    f"{html.escape(tr('chat.tts.generated_playback_started', 'Playback was started automatically.'))}</p>"
+                ),
                 chips=[SourceChipData("tts"), SourceChipData(source)],
                 audio_path=str(resolved_audio),
                 audio_waveform=waveform,
@@ -2976,11 +2983,11 @@ class SidebarPanel(QFrame):
                     f"Dismiss</button>"
                 )
                 body = (
-                    f"<p>Choose a TTS engine to speak this with:</p>"
+                    f"<p>{html.escape(tr('chat.tts.choose_engine', 'Choose a TTS engine to speak this with:'))}</p>"
                     f"<p><code>{html.escape(speak_prompt[:80])}{'...' if len(speak_prompt)>80 else ''}</code></p>"
                     f'<p><label style="display:inline-flex;align-items:center;gap:8px;color:rgba(255,255,255,0.8);">'
                     f'<input type="checkbox" data-role="set-active-backend" /> '
-                    f"Set selected TTS as active backend</label></p>"
+                    f"{html.escape(tr('chat.tts.set_active_backend', 'Set selected TTS as active backend'))}</label></p>"
                     f"<p>{buttons_html}{dismiss_btn}</p>"
                 )
                 item = ChatItemData(
