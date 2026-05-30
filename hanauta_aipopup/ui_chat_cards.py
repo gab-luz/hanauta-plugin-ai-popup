@@ -299,8 +299,9 @@ class ComposerBar(QFrame):
         footer.addWidget(send_button)
         layout.addLayout(footer)
 
-    def set_profile(self, profile: BackendProfile) -> None:
-        self.provider_label.setText(f"{profile.label}  •  {profile.model}")
+    def set_profile(self, profile: BackendProfile, model_override: str | None = None) -> None:
+        model = str(model_override or profile.model).strip() or profile.model
+        self.provider_label.setText(f"{profile.label}  •  {model}")
 
     def _emit_send(self) -> None:
         text = self.entry.toPlainText().strip()
@@ -308,4 +309,3 @@ class ComposerBar(QFrame):
             self.send_requested.emit(text)
             self.entry.clear()
             self.entry._sync_height()
-

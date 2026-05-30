@@ -626,7 +626,9 @@ class SidebarPanel(QFrame):
                 button.setChecked(False)
         active_button.setChecked(True)
         self._refresh_backend_hint()
-        self.composer.set_profile(profile)
+        payload = dict(self.backend_settings.get(profile.key, {}))
+        model = str(payload.get("model", profile.model)).strip() or profile.model
+        self.composer.set_profile(profile, model)
         self._sync_web_ui()
 
     def _refresh_available_backends(self) -> None:
@@ -652,7 +654,9 @@ class SidebarPanel(QFrame):
             active = self.backend_buttons.get(self.current_profile.key)
             if active is not None:
                 active.setChecked(True)
-            self.composer.set_profile(self.current_profile)
+            payload = dict(self.backend_settings.get(self.current_profile.key, {}))
+            model = str(payload.get("model", self.current_profile.model)).strip() or self.current_profile.model
+            self.composer.set_profile(self.current_profile, model)
             self.composer.entry.setEnabled(True)
             self.composer.entry.setPlaceholderText(
                 tr(
@@ -690,7 +694,9 @@ class SidebarPanel(QFrame):
         self.current_profile = preferred
         for key, button in self.backend_buttons.items():
             button.setChecked(key == preferred.key)
-        self.composer.set_profile(preferred)
+        payload = dict(self.backend_settings.get(preferred.key, {}))
+        model = str(payload.get("model", preferred.model)).strip() or preferred.model
+        self.composer.set_profile(preferred, model)
         self.composer.entry.setEnabled(True)
         self.composer.entry.setPlaceholderText(
             tr(
@@ -1360,7 +1366,9 @@ class SidebarPanel(QFrame):
         self.current_profile = profile
         for backend_key, button in self.backend_buttons.items():
             button.setChecked(backend_key == profile.key)
-        self.composer.set_profile(profile)
+        payload = dict(self.backend_settings.get(profile.key, {}))
+        model = str(payload.get("model", profile.model)).strip() or profile.model
+        self.composer.set_profile(profile, model)
         self._refresh_backend_hint()
         self._sync_web_ui()
 
