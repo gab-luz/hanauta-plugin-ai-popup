@@ -105,7 +105,16 @@ POPUP_JS = r"""
               } else if (cmd === 'selectBackendAndSay' && bridge && bridge.selectBackendAndSay) {
                 const key = btn.getAttribute('data-key') || '';
                 const text = btn.getAttribute('data-text') || '';
-                if (key && text) bridge.selectBackendAndSay(String(key), String(text));
+                const cardRoot = btn.closest('.body-text');
+                const pinInput = cardRoot ? cardRoot.querySelector('input[data-role="set-active-backend"]') : null;
+                const setActive = !!(pinInput && pinInput.checked);
+                if (key && text) {
+                  if (bridge.selectBackendAndSayWithOptions) {
+                    bridge.selectBackendAndSayWithOptions(String(key), String(text), setActive);
+                  } else {
+                    bridge.selectBackendAndSay(String(key), String(text));
+                  }
+                }
               } else if (cmd === 'selectTtsForVoice' && bridge && bridge.selectTtsForVoice) {
                 const key = btn.getAttribute('data-key') || '';
                 if (key) bridge.selectTtsForVoice(String(key));

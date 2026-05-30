@@ -212,8 +212,12 @@ class PopupWebBridge(QObject):
     @pyqtSlot(str, str)
     def selectBackendAndSay(self, key: str, text: str) -> None:
         """Switch to a TTS backend and immediately synthesize the given text."""
-        self.owner._select_backend_from_key(key)
-        self.owner._start_tts_generation_by_key(key, text)
+        self.owner._start_tts_generation_by_key(key, text, True)
+
+    @pyqtSlot(str, str, bool)
+    def selectBackendAndSayWithOptions(self, key: str, text: str, set_active_backend: bool) -> None:
+        """Switch to a TTS backend and synthesize text, optionally setting it as active."""
+        self.owner._start_tts_generation_by_key(key, text, bool(set_active_backend))
 
     @pyqtSlot(str)
     def selectTtsForVoice(self, key: str) -> None:

@@ -1356,11 +1356,21 @@ class SidebarPanel(QFrame):
             return
         self._select_backend(profile, button)
 
-    def _start_tts_generation_by_key(self, key: str, text: str) -> None:
+    def _set_active_backend_for_ui(self, profile: BackendProfile) -> None:
+        self.current_profile = profile
+        for backend_key, button in self.backend_buttons.items():
+            button.setChecked(backend_key == profile.key)
+        self.composer.set_profile(profile)
+        self._refresh_backend_hint()
+        self._sync_web_ui()
+
+    def _start_tts_generation_by_key(self, key: str, text: str, set_active_backend: bool = False) -> None:
         """Switch to a TTS backend by key and immediately synthesize text."""
         profile = self.profile_by_key.get(key)
         if profile is None or profile.provider != "tts_local":
             return
+        if set_active_backend:
+            self._set_active_backend_for_ui(profile)
         self._start_tts_generation(profile, text)
 
     def _dismiss_card(self, card_id: str) -> None:
@@ -2960,6 +2970,9 @@ class SidebarPanel(QFrame):
                 body = (
                     f"<p>Choose a TTS engine to speak this with:</p>"
                     f"<p><code>{html.escape(speak_prompt[:80])}{'...' if len(speak_prompt)>80 else ''}</code></p>"
+                    f'<p><label style="display:inline-flex;align-items:center;gap:8px;color:rgba(255,255,255,0.8);">'
+                    f'<input type="checkbox" data-role="set-active-backend" /> '
+                    f"Set selected TTS as active backend</label></p>"
                     f"<p>{buttons_html}{dismiss_btn}</p>"
                 )
                 item = ChatItemData(
