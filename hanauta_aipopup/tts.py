@@ -951,24 +951,49 @@ def _transcribe_with_whisper(audio_path: Path, config: dict[str, object]) -> str
     python_bin = _ensure_voice_venv("whisper", model_name, device, ["faster-whisper", "huggingface-hub"], "faster_whisper")
     script_path = _ensure_voice_whisper_script()
     model_cache = _voice_venv_dir("whisper", model_name, device) / "model-cache"
-    result = subprocess.run(
-        [
-            str(python_bin),
-            str(script_path),
-            "--model",
-            model_name,
-            "--audio",
-            str(audio_path.expanduser()),
-            "--device",
-            device,
-            "--model-cache",
-            str(model_cache),
-        ],
-        capture_output=True,
-        text=True,
-        check=False,
-        timeout=1800,
-    )
+    cmd = [
+        str(python_bin),
+        str(script_path),
+        "--model",
+        model_name,
+        "--audio",
+        str(audio_path.expanduser()),
+        "--device",
+        device,
+        "--model-cache",
+        str(model_cache),
+    ]
+
+    def _run_once() -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=1800,
+        )
+
+    def _missing_model_bin(detail: str) -> bool:
+        text = str(detail or "").lower()
+        return "unable to open file 'model.bin'" in text or "model.bin" in text and "unable to open file" in text
+
+    result = _run_once()
+    if result.returncode != 0:
+        detail_text = (result.stderr or result.stdout or "").strip()
+        if _missing_model_bin(detail_text):
+            try:
+                model_cache.mkdir(parents=True, exist_ok=True)
+                broken_dir = model_cache / f"Systran--faster-whisper-{model_name}"
+                if broken_dir.exists():
+                    shutil.rmtree(broken_dir, ignore_errors=True)
+                LOGGER.warning(
+                    "whisper cache missing model.bin; purged %s and retrying once",
+                    str(broken_dir),
+                )
+            except Exception:
+                pass
+            result = _run_once()
+
     if result.returncode != 0:
         detail = (result.stderr or result.stdout or "").strip().splitlines()[-12:]
         raise RuntimeError(
@@ -1124,6 +1149,84 @@ def transcribe_voice_audio(
     if backend == "whisperlive":
         return _transcribe_with_whisperlive(audio_path, config)
     return _transcribe_with_whisper(audio_path, config)
+
+
+def benchmark_whisper_transcription(
+    audio_path: Path,
+    payload: dict[str, object],
+) -> tuple[str, str]:
+    path = Path(audio_path).expanduser()
+    if not path.exists():
+        raise RuntimeError(f"Benchmark audio not found: {path}")
+    runtime = str(payload.get("runtime", "onnx")).strip().lower() or "onnx"
+    if runtime == "onnx":
+        cfg = {
+            "stt_backend": "whisper",
+            "stt_external_api": False,
+            "stt_model": str(payload.get("model", "small")).strip() or "small",
+            "stt_device": str(payload.get("device", "cpu")).strip().lower() or "cpu",
+        }
+        return _transcribe_with_whisper(path, cfg), "onnx/faster-whisper"
+
+    gguf_path = _existing_path(payload.get("gguf_path"))
+    if gguf_path is None:
+        raise RuntimeError("Select a GGUF model path for Whisper benchmark.")
+    cli_candidates: list[Path] = []
+    binary_hint = _existing_path(payload.get("binary_path"))
+    if binary_hint is not None:
+        if binary_hint.is_file():
+            cli_candidates.append(binary_hint)
+        else:
+            cli_candidates.extend(
+                [
+                    binary_hint / "whisper-cli",
+                    binary_hint / "main",
+                    binary_hint / "build/bin/whisper-cli",
+                    binary_hint / "build/bin/main",
+                ]
+            )
+    for name in ("whisper-cli", "whisper-cpp", "main"):
+        resolved = shutil.which(name)
+        if resolved:
+            cli_candidates.append(Path(resolved))
+    cli = next((c for c in cli_candidates if c.exists()), None)
+    if cli is None:
+        raise RuntimeError("Whisper GGUF benchmark needs whisper.cpp CLI (set binary path or install whisper-cli in PATH).")
+
+    with tempfile.TemporaryDirectory(prefix="hanauta-whisper-bench-") as tmp:
+        out_base = Path(tmp) / "bench_out"
+        cmd = [
+            str(cli),
+            "-m",
+            str(gguf_path),
+            "-f",
+            str(path),
+            "-otxt",
+            "-of",
+            str(out_base),
+        ]
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=1800,
+        )
+        if result.returncode != 0:
+            detail = (result.stderr or result.stdout or "").strip().splitlines()[-12:]
+            raise RuntimeError("Whisper GGUF benchmark failed:\n" + "\n".join(detail))
+        txt_path = out_base.with_suffix(".txt")
+        if not txt_path.exists():
+            txt_path = Path(str(out_base) + ".txt")
+        if not txt_path.exists():
+            text = (result.stdout or "").strip()
+            if not text:
+                raise RuntimeError("Whisper GGUF benchmark returned no transcript output.")
+            return text, "gguf/whisper.cpp"
+        text = txt_path.read_text(encoding="utf-8", errors="ignore").strip()
+        if not text:
+            raise RuntimeError("Whisper GGUF benchmark produced empty transcript.")
+        return text, "gguf/whisper.cpp"
 
 
 def _resolve_character_template(text: str, char_name: str, user_name: str) -> str:
@@ -3326,6 +3429,18 @@ def validate_backend(profile: BackendProfile, payload: dict[str, object]) -> tup
     api_key = secure_load_secret(f"{profile.key}:api_key")
     binary_path = _existing_path(payload.get("binary_path"))
     gguf_path = _existing_path(payload.get("gguf_path"))
+
+    if profile.provider == "stt_local" or profile.key == "whisper":
+        runtime = str(payload.get("runtime", "onnx")).strip().lower() or "onnx"
+        if runtime == "gguf":
+            if gguf_path is None:
+                return False, "Select a GGUF model path for Whisper."
+            return True, "Whisper GGUF configuration looks valid."
+        resolved_model = model or str(getattr(profile, "model", "small") or "small").strip() or "small"
+        if not resolved_model:
+            return False, "Whisper model is required."
+        return True, "Whisper ONNX configuration looks valid."
+
     if not model:
         return False, "Model is required."
     if profile.needs_api_key and not api_key:

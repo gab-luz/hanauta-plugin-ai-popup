@@ -179,7 +179,7 @@
     "backend_settings.tokens.save": "Save Tokens",
     "backend_settings.tokens.saved": "Saved â",
     "backend_settings.skills.enable": "Enable skills (tool calling) for AI responses",
-    "backend_settings.skills.apprise.title": "Apprise â Notifications",
+    "backend_settings.skills.apprise.title": "Apprise Notifications",
     "backend_settings.skills.enabled": "Enabled",
     "backend_settings.skills.apprise.placeholder": "tgram://bottoken/chatid\ndiscord://webhook_id/token",
     "backend_settings.skills.docker.title": "Docker",

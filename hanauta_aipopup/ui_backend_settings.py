@@ -9,6 +9,7 @@ from urllib import error
 from PyQt6.QtCore import Qt, QTimer, QObject, pyqtSignal, QThread
 from PyQt6.QtGui import QColor, QCursor, QFont, QGuiApplication, QPainter, QPen
 from PyQt6.QtWidgets import (
+    QApplication,
     QAbstractItemView,
     QCheckBox,
     QComboBox,
@@ -44,6 +45,8 @@ from .runtime import (
     POCKETTTS_LANGUAGES,
     POCKETTTS_PRESET_VOICES,
     SKILLS_SETTINGS_FILE,
+    TTS_OUTPUT_DIR,
+    VOICE_RECORDINGS_DIR,
     trigger_fullscreen_alert,
 )
 from .style import (
@@ -68,7 +71,7 @@ from .http import (
 from .backends import _existing_path, _is_pid_alive, _is_pgid_alive, koboldcpp_status as _koboldcpp_status, start_koboldcpp as _start_koboldcpp, stop_koboldcpp as _stop_koboldcpp
 from .catalog import MODEL_CATALOG, _dir_size_bytes, _format_bytes
 from .tts import (
-    synthesize_tts, validate_backend,
+    synthesize_tts, validate_backend, benchmark_whisper_transcription,
     _start_kokoro_server, _stop_kokoro_server, _kokoro_server_status,
     _start_pocket_server, _stop_pocket_server, _pocket_server_status,
     _start_supertonic_server, _stop_supertonic_server, _supertonic_server_status,
@@ -746,6 +749,18 @@ class BackendSettingsDialog(QDialog):
         model_device_layout.addWidget(self.device_combo, 1)
         shell_layout.addWidget(model_device_row)
 
+        self.whisper_runtime_row = QWidget()
+        whisper_runtime_layout = QHBoxLayout(self.whisper_runtime_row)
+        whisper_runtime_layout.setContentsMargins(0, 0, 0, 0)
+        whisper_runtime_layout.setSpacing(8)
+        whisper_runtime_layout.addWidget(QLabel("Whisper runtime"))
+        self.whisper_runtime_combo = QComboBox()
+        self.whisper_runtime_combo.addItem("GGUF (quantized)", "gguf")
+        self.whisper_runtime_combo.addItem("ONNX", "onnx")
+        self.whisper_runtime_combo.currentIndexChanged.connect(self._load_selected_backend)
+        whisper_runtime_layout.addWidget(self.whisper_runtime_combo, 1)
+        shell_layout.addWidget(self.whisper_runtime_row)
+
         self.token_saver_check = QCheckBox(tr("backend_settings.token_saver", "Token saver (compress voice prompts before LLM)"))
         self.token_saver_check.setToolTip(tr("backend_settings.token_saver.tooltip", "Voice mode only: reduces prompt tokens by compressing STT transcripts before sending to this backend."))
         shell_layout.addWidget(self.token_saver_check)
@@ -1185,6 +1200,7 @@ class BackendSettingsDialog(QDialog):
 
         # --- Skills tab ---
         self._tabs.addTab(self._build_skills_tab(), tr("backend_settings.tab.skills", "Skills"))
+        self._tabs.addTab(self._build_benchmarking_tab(), "Benchmarking")
 
         _apply_antialias_font(self)
         self._download_manager = get_tts_download_manager()
@@ -1906,6 +1922,79 @@ class BackendSettingsDialog(QDialog):
 
         return container
 
+    def _build_benchmarking_tab(self) -> QWidget:
+        container = QWidget()
+        outer = QVBoxLayout(container)
+        outer.setContentsMargins(14, 14, 14, 14)
+        outer.setSpacing(10)
+
+        shell = SurfaceFrame(bg=rgba(THEME.background, 0.98), border=BORDER_SOFT, radius=24)
+        layout = QVBoxLayout(shell)
+        layout.setContentsMargins(18, 16, 18, 16)
+        layout.setSpacing(10)
+
+        title = QLabel("Benchmarking")
+        title.setFont(QFont(self.ui_font, 13, QFont.Weight.DemiBold))
+        title.setStyleSheet(f"color: {UI_TEXT_STRONG}; border: none;")
+        layout.addWidget(title)
+
+        desc = QLabel("Runs selected variants one by one with the same prompt. Models are never benchmarked simultaneously.")
+        desc.setWordWrap(True)
+        desc.setStyleSheet(f"color: {UI_ICON_DIM}; border: none;")
+        layout.addWidget(desc)
+
+        self.bench_prompt_input = QLineEdit()
+        self.bench_prompt_input.setPlaceholderText("Benchmark prompt (used by all selected variants)")
+        self.bench_prompt_input.setText("The quick brown fox jumps over the lazy dog.")
+        layout.addWidget(self.bench_prompt_input)
+
+        self.bench_whisper_audio_input = ClickableLineEdit()
+        self.bench_whisper_audio_input.setPlaceholderText("Optional audio file for Whisper benchmarks (click to browse)")
+        self.bench_whisper_audio_input.clicked.connect(self._browse_bench_whisper_audio)
+        layout.addWidget(self.bench_whisper_audio_input)
+        latest_audio_row = QHBoxLayout()
+        latest_audio_row.setContentsMargins(0, 0, 0, 0)
+        latest_audio_row.setSpacing(8)
+        self.bench_latest_audio_button = QPushButton("Use latest recorded audio")
+        self.bench_latest_audio_button.clicked.connect(self._use_latest_bench_audio)
+        latest_audio_row.addWidget(self.bench_latest_audio_button)
+        latest_audio_row.addStretch(1)
+        layout.addLayout(latest_audio_row)
+
+        self.bench_whisper_gguf_check = QCheckBox("Whisper GGUF")
+        self.bench_whisper_onnx_check = QCheckBox("Whisper ONNX")
+        self.bench_pocket_server_check = QCheckBox("PocketTTS (normal/server)")
+        self.bench_pocket_onnx_check = QCheckBox("PocketTTS ONNX")
+        self.bench_pocket_gguf_check = QCheckBox("PocketTTS GGUF")
+        self.bench_whisper_gguf_check.setChecked(True)
+        self.bench_whisper_onnx_check.setChecked(True)
+        self.bench_pocket_server_check.setChecked(True)
+        self.bench_pocket_onnx_check.setChecked(True)
+        self.bench_pocket_gguf_check.setChecked(False)
+        layout.addWidget(self.bench_whisper_gguf_check)
+        layout.addWidget(self.bench_whisper_onnx_check)
+        layout.addWidget(self.bench_pocket_server_check)
+        layout.addWidget(self.bench_pocket_onnx_check)
+        layout.addWidget(self.bench_pocket_gguf_check)
+
+        btn_row = QHBoxLayout()
+        btn_row.setContentsMargins(0, 0, 0, 0)
+        self.bench_run_button = QPushButton("Run benchmark")
+        self.bench_run_button.clicked.connect(self._run_benchmark_suite)
+        btn_row.addWidget(self.bench_run_button)
+        btn_row.addStretch(1)
+        layout.addLayout(btn_row)
+
+        self.bench_results = QTextEdit()
+        self.bench_results.setReadOnly(True)
+        self.bench_results.setMinimumHeight(280)
+        self.bench_results.setPlaceholderText("Benchmark results will appear here.")
+        layout.addWidget(self.bench_results)
+
+        outer.addWidget(shell)
+        outer.addStretch()
+        return container
+
     def showEvent(self, event) -> None:  # type: ignore[override]
         super().showEvent(event)
         if getattr(self, "_did_center", False):
@@ -2001,6 +2090,7 @@ class BackendSettingsDialog(QDialog):
                     if profile.key == "supertonic3"
                     else str(self.pocket_language_combo.currentData() or "").strip()
                 ),
+                "runtime": str(self.whisper_runtime_combo.currentData() or "onnx").strip().lower(),
                 "tts_auto_portuguese_variant": str(self.pocket_auto_pt_combo.currentData() or "ptbr").strip().lower(),
                 "tts_voice_preset": pocket_preset if voice_mode == "preset" else "",
                 "tts_voice_mode": voice_mode,
@@ -2077,6 +2167,10 @@ class BackendSettingsDialog(QDialog):
             self.supertonic_language_combo,
             str(payload.get("tts_language", "en")).strip().lower() or "en",
         )
+        self._set_combo_selected(
+            self.whisper_runtime_combo,
+            str(payload.get("runtime", "onnx")).strip().lower() or "onnx",
+        )
         voice_mode = str(payload.get("tts_voice_mode", "reference")).strip().lower()
         effective_voice_mode = "preset" if profile.key == "pockettts" and preset else voice_mode
         self.tts_voice_ref_input.setText(
@@ -2110,6 +2204,8 @@ class BackendSettingsDialog(QDialog):
         self.monitor_check.setChecked(bool(payload.get("monitor_enabled", False)))
         mode = _default_tts_mode(payload)
         show_host = (not profile.needs_api_key) or profile.provider in {"sdwebui", "tts_local"}
+        if profile.provider == "stt_local":
+            show_host = False
         if profile.provider == "tts_local":
             if profile.key == "pockettts":
                 show_host = mode == "external_api"
@@ -2120,12 +2216,15 @@ class BackendSettingsDialog(QDialog):
         is_sd = profile.provider == "sdwebui"
         is_kobold = profile.key == "koboldcpp"
         is_tts = profile.provider == "tts_local"
+        is_whisper = profile.key == "whisper"
         is_text = profile.provider in {"openai", "openai_compat", "ollama"}
         device_enabled = is_kobold or is_tts
+        whisper_runtime = str(payload.get("runtime", "onnx")).strip().lower() or "onnx"
         self.sd_auth_user_input.setVisible(is_sd)
         self.sd_auth_pass_input.setVisible(is_sd)
-        self.binary_path_input.setVisible(is_kobold or (is_tts and mode == "local_onnx"))
+        self.binary_path_input.setVisible(is_kobold or (is_tts and mode == "local_onnx") or is_whisper)
         self.binary_info_label.setVisible(self.binary_path_input.isVisible())
+        self.whisper_runtime_row.setVisible(is_whisper)
         self.tts_mode_combo.setVisible(is_tts and profile.key != "pockettts")
         self.pocket_mode_row.setVisible(is_tts and profile.key == "pockettts")
         self.tts_repo_bundle_row.setVisible(is_tts and mode == "local_onnx")
@@ -2143,8 +2242,8 @@ class BackendSettingsDialog(QDialog):
         supports_tts_preview = is_tts and profile.key in {"kokorotts", "pockettts", "supertonic3"}
         self.tts_test_label.setVisible(supports_tts_preview)
         self.tts_test_row.setVisible(supports_tts_preview)
-        self.gguf_path_input.setVisible(is_kobold)
-        self.gguf_info_label.setVisible(is_kobold)
+        self.gguf_path_input.setVisible(is_kobold or (is_whisper and whisper_runtime == "gguf"))
+        self.gguf_info_label.setVisible(is_kobold or (is_whisper and whisper_runtime == "gguf"))
         self.gguf_download_progress.setVisible(False if not is_kobold else self.gguf_download_progress.isVisible())
         self.gguf_download_progress_label.setVisible(False if not is_kobold else self.gguf_download_progress_label.isVisible())
         self.gguf_gallery_title.setVisible(is_kobold)
@@ -2164,6 +2263,12 @@ class BackendSettingsDialog(QDialog):
         self.sd_options_refresh_button.setVisible(is_sd)
         if is_sd:
             self.model_input.setPlaceholderText(tr("backend_settings.sd.checkpoint_model", "Checkpoint / model"))
+        elif is_whisper:
+            self.model_input.setPlaceholderText("Whisper model name")
+            if whisper_runtime == "onnx":
+                self.binary_path_input.setPlaceholderText("ONNX model file/folder")
+            else:
+                self.gguf_path_input.setPlaceholderText("Whisper GGUF model path")
         elif is_tts:
             if profile.key == "pockettts":
                 self.binary_path_input.setPlaceholderText(tr("backend_settings.local_model_folder_optional", "Local model folder (optional)"))
@@ -2569,6 +2674,14 @@ class BackendSettingsDialog(QDialog):
                 current,
                 ["Executable files (*)", "All files (*)"],
             )
+        elif profile.key == "whisper":
+            picked = self._pick_existing_file(
+                "Select ONNX model file",
+                current,
+                ["ONNX model (*.onnx)", "Model files (*)", "All files (*)"],
+            )
+            if not picked:
+                picked = self._pick_existing_dir("Select ONNX model folder", current)
         else:
             picked = self._pick_existing_dir("Select local model folder", current)
         if picked:
@@ -2608,6 +2721,145 @@ class BackendSettingsDialog(QDialog):
         picked = self._pick_existing_dir("Select SD output folder", self.output_dir_input.text().strip())
         if picked:
             self.output_dir_input.setText(picked)
+
+    def _browse_bench_whisper_audio(self) -> None:
+        picked = self._pick_existing_file(
+            "Select benchmark audio",
+            self.bench_whisper_audio_input.text().strip(),
+            ["Audio files (*.wav *.mp3 *.ogg *.flac *.m4a *.aac *.opus)", "All files (*)"],
+        )
+        if picked:
+            self.bench_whisper_audio_input.setText(picked)
+
+    def _use_latest_bench_audio(self) -> None:
+        exts = {".wav", ".mp3", ".ogg", ".flac", ".m4a", ".aac", ".opus"}
+        roots = [VOICE_RECORDINGS_DIR, TTS_OUTPUT_DIR, AI_STATE_DIR]
+        candidates: list[Path] = []
+        seen: set[str] = set()
+        for root in roots:
+            try:
+                base = Path(root).expanduser()
+                if not base.exists():
+                    continue
+                for path in base.rglob("*"):
+                    if not path.is_file():
+                        continue
+                    if path.suffix.lower() not in exts:
+                        continue
+                    key = str(path.resolve())
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    candidates.append(path)
+            except Exception:
+                continue
+        if not candidates:
+            self.status_label.setText("No recorded audio file found yet.")
+            self.status_label.setStyleSheet(f"color: {ACCENT_ALT};")
+            return
+        latest = max(candidates, key=lambda p: p.stat().st_mtime)
+        self.bench_whisper_audio_input.setText(str(latest))
+        self.status_label.setText(f"Benchmark audio set to latest file: {latest.name}")
+        self.status_label.setStyleSheet(f"color: {UI_TEXT_MUTED};")
+
+    def _run_benchmark_suite(self) -> None:
+        def _bench_log(message: str) -> None:
+            line = str(message).strip()
+            if not line:
+                return
+            try:
+                LOGGER.info("[Benchmark] %s", line)
+            except Exception:
+                pass
+            try:
+                current = self.bench_results.toPlainText().rstrip()
+                self.bench_results.setPlainText((current + "\n" if current else "") + line)
+                self.bench_results.verticalScrollBar().setValue(self.bench_results.verticalScrollBar().maximum())
+                QApplication.processEvents()
+            except Exception:
+                pass
+
+        prompt = self.bench_prompt_input.text().strip() or "The quick brown fox jumps over the lazy dog."
+        tasks: list[tuple[str, BackendProfile, dict[str, object]]] = []
+        whisper_profile = self.profile_map.get("whisper")
+        pocket_profile = self.profile_map.get("pockettts")
+        whisper_settings = dict(self.settings.get("whisper", {}))
+        pocket_settings = dict(self.settings.get("pockettts", {}))
+        if whisper_profile is not None:
+            if self.bench_whisper_gguf_check.isChecked():
+                p = dict(whisper_settings)
+                p["runtime"] = "gguf"
+                p["model"] = str(p.get("model", whisper_profile.model)).strip() or whisper_profile.model
+                tasks.append(("Whisper GGUF", whisper_profile, p))
+            if self.bench_whisper_onnx_check.isChecked():
+                p = dict(whisper_settings)
+                p["runtime"] = "onnx"
+                p["model"] = str(p.get("model", whisper_profile.model)).strip() or whisper_profile.model
+                tasks.append(("Whisper ONNX", whisper_profile, p))
+        if pocket_profile is not None:
+            if self.bench_pocket_server_check.isChecked():
+                p = dict(pocket_settings)
+                p["tts_mode"] = "external_api"
+                tasks.append(("PocketTTS server", pocket_profile, p))
+            if self.bench_pocket_onnx_check.isChecked():
+                p = dict(pocket_settings)
+                p["tts_mode"] = "local_onnx"
+                p["runtime"] = "onnx"
+                tasks.append(("PocketTTS ONNX", pocket_profile, p))
+            if self.bench_pocket_gguf_check.isChecked():
+                p = dict(pocket_settings)
+                p["tts_mode"] = "local_onnx"
+                p["runtime"] = "gguf"
+                tasks.append(("PocketTTS GGUF", pocket_profile, p))
+        if not tasks:
+            self.bench_results.setPlainText("No benchmark target selected.")
+            return
+
+        self.bench_results.setPlainText("")
+        _bench_log(f"Prompt: {prompt}")
+        _bench_log("")
+        whisper_audio = Path(self.bench_whisper_audio_input.text().strip()).expanduser() if self.bench_whisper_audio_input.text().strip() else None
+        for name, profile, payload in tasks:
+            _bench_log(f"[start] {name}")
+            _bench_log(f"  backend={profile.key} runtime={str(payload.get('runtime', '')).strip() or 'default'}")
+            t0 = time.perf_counter()
+            ok, detail = validate_backend(profile, payload)
+            transcript_preview = ""
+            _bench_log(f"  validate: {'ok' if ok else 'fail'} | {detail}")
+            if ok and profile.key == "whisper":
+                if whisper_audio is None:
+                    ok = False
+                    detail = "Select an audio file to benchmark Whisper."
+                    _bench_log("  whisper: no audio selected")
+                else:
+                    try:
+                        _bench_log(f"  whisper: transcribing {whisper_audio.name}")
+                        transcript, engine = benchmark_whisper_transcription(whisper_audio, payload)
+                        preview = transcript[:180] + ("..." if len(transcript) > 180 else "")
+                        transcript_preview = f"  transcript ({engine}): {preview}"
+                        _bench_log(f"  whisper: done engine={engine}")
+                    except Exception as exc:
+                        ok = False
+                        detail = f"Whisper transcription failed: {exc}"
+                        _bench_log(f"  whisper: failed | {exc}")
+            if ok and profile.key == "pockettts":
+                try:
+                    _bench_log("  pockettts: synthesizing")
+                    out_path, mode = synthesize_tts(profile, payload, prompt)
+                    detail = f"{detail} | synthesized via {mode}: {Path(out_path).name}"
+                    _bench_log(f"  pockettts: done mode={mode} file={Path(out_path).name}")
+                except Exception as exc:
+                    ok = False
+                    detail = f"TTS synthesis failed: {exc}"
+                    _bench_log(f"  pockettts: failed | {exc}")
+            elapsed = (time.perf_counter() - t0) * 1000.0
+            status = "OK" if ok else "FAIL"
+            _bench_log(f"{name}: {status} • {elapsed:.1f} ms")
+            _bench_log(f"  {detail}")
+            if transcript_preview:
+                _bench_log(transcript_preview)
+            _bench_log(f"[end] {name}")
+            _bench_log("")
 
     def _refresh_kobold_status(self, payload: dict[str, object]) -> None:
         active, message = _koboldcpp_status(payload)
