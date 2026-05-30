@@ -2912,9 +2912,6 @@ class SidebarPanel(QFrame):
             LOGGER.debug("command /voice settings")
             self._open_voice_mode_settings()
             return
-        if self.current_profile is None:
-            LOGGER.warning("message ignored because no current_profile")
-            return
 
         safe = html.escape(text).replace("\n", "<br>")
         active_character = self._active_character()
@@ -2975,6 +2972,10 @@ class SidebarPanel(QFrame):
                 self.add_card(item)
                 return
             self._start_tts_generation(self.current_profile, speak_prompt)
+            return
+
+        if self.current_profile is None:
+            LOGGER.warning("message ignored because no current_profile")
             return
 
         if command.startswith("/image "):
