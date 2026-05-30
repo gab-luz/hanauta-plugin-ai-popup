@@ -291,6 +291,12 @@ class PocketPresetVoiceWorker(QThread):
             )
         except Exception as exc:
             self.failed.emit(str(exc))
+            return
+        self.finished_ok.emit(str(voice_path))
+
+    def _emit(self, done: int, total: int, label: str) -> None:
+        value = 0 if total <= 0 else int(max(0.0, min(1.0, done / float(total))) * 100)
+        self.progress.emit(value, str(label).strip() or "Downloading voice…")
 
 
 class LlamaRuntimeBuildWorker(QThread):
@@ -299,10 +305,11 @@ class LlamaRuntimeBuildWorker(QThread):
     finished_ok = pyqtSignal(str, str)
     failed = pyqtSignal(str)
 
-    def __init__(self, payload: dict[str, object], install_deps: bool = False) -> None:
+    def __init__(self, payload: dict[str, object], install_deps: bool = False, compile_runtime: bool = True) -> None:
         super().__init__()
         self.payload = dict(payload)
         self.install_deps = bool(install_deps)
+        self.compile_runtime = bool(compile_runtime)
 
     def _emit(self, pct: int, msg: str) -> None:
         self.progress.emit(max(0, min(100, int(pct))), str(msg))
@@ -369,6 +376,9 @@ fi
                 self._emit(5, "Installing build dependencies via Polkit…")
                 self._install_deps_with_polkit()
                 self._emit(18, "Dependencies installed.")
+                if not self.compile_runtime:
+                    self.finished_ok.emit("", "Dependencies installed successfully.")
+                    return
 
             for tool in ("git", "cmake"):
                 if shutil.which(tool) is None:
@@ -416,12 +426,6 @@ fi
             self.finished_ok.emit(str(binary), f"{flavor} runtime compiled successfully.")
         except Exception as exc:
             self.failed.emit(str(exc).strip() or exc.__class__.__name__)
-            return
-        self.finished_ok.emit(str(voice_path))
-
-    def _emit(self, done: int, total: int, label: str) -> None:
-        value = 0 if total <= 0 else int(max(0.0, min(1.0, done / float(total))) * 100)
-        self.progress.emit(value, str(label).strip() or "Downloading voice…")
 
 
 class TtsDownloadManager(QObject):
@@ -1263,9 +1267,16 @@ class BackendSettingsDialog(QDialog):
         llama_build_layout = QVBoxLayout(self.llama_build_card)
         llama_build_layout.setContentsMargins(12, 10, 12, 10)
         llama_build_layout.setSpacing(8)
+        llama_build_header = QHBoxLayout()
+        llama_build_header.setContentsMargins(0, 0, 0, 0)
+        llama_build_header.setSpacing(8)
         llama_build_title = QLabel("llama.cpp Runtime Build")
         llama_build_title.setStyleSheet(f"color: {UI_TEXT_STRONG}; font-weight: 700; border: none;")
-        llama_build_layout.addWidget(llama_build_title)
+        llama_build_header.addWidget(llama_build_title, 1)
+        self.llama_copy_log_btn = QPushButton("Copy log")
+        self.llama_copy_log_btn.clicked.connect(self._copy_llama_build_log)
+        llama_build_header.addWidget(self.llama_copy_log_btn, 0)
+        llama_build_layout.addLayout(llama_build_header)
         self.llama_build_status_label = QLabel("Idle.")
         self.llama_build_status_label.setWordWrap(True)
         self.llama_build_status_label.setStyleSheet(f"color: {UI_TEXT_MUTED}; border: none;")
@@ -3021,6 +3032,14 @@ class BackendSettingsDialog(QDialog):
         QGuiApplication.clipboard().setText(payload)
         send_desktop_notification("Clipboard", "Copied backend errors/status text.")
 
+    def _copy_llama_build_log(self) -> None:
+        text = self.llama_build_log.toPlainText().strip() if hasattr(self, "llama_build_log") else ""
+        if not text:
+            send_desktop_notification("Clipboard", "No llama.cpp build log to copy yet.")
+            return
+        QGuiApplication.clipboard().setText(text)
+        send_desktop_notification("Clipboard", "Copied llama.cpp build log.")
+
     def _copy_error_log(self) -> None:
         try:
             text = AI_POPUP_ERROR_LOG_FILE.read_text(encoding="utf-8")
@@ -3217,15 +3236,15 @@ class BackendSettingsDialog(QDialog):
             self.llama_hf_draft_file_input.setText(path.name)
 
     def _install_llama_deps_with_polkit(self) -> None:
-        self._start_llama_build_worker(install_deps=True)
+        self._start_llama_build_worker(install_deps=True, compile_runtime=False)
 
     def _compile_llama_runtime(self) -> None:
-        self._start_llama_build_worker(install_deps=False)
+        self._start_llama_build_worker(install_deps=False, compile_runtime=True)
 
     def _compile_llama_runtime_with_deps(self) -> None:
-        self._start_llama_build_worker(install_deps=True)
+        self._start_llama_build_worker(install_deps=True, compile_runtime=True)
 
-    def _start_llama_build_worker(self, install_deps: bool) -> None:
+    def _start_llama_build_worker(self, install_deps: bool, compile_runtime: bool) -> None:
         profile = self._selected_profile()
         if profile.key != "llamacpp":
             self.status_label.setText("Select llama.cpp backend first.")
@@ -3246,15 +3265,20 @@ class BackendSettingsDialog(QDialog):
         self.llama_build_log.clear()
         self.llama_build_progress.show()
         self.llama_build_progress.setValue(0)
-        self.llama_build_status_label.setText(
-            "Installing dependencies and compiling runtime…"
-            if install_deps
-            else "Compiling llama.cpp runtime…"
-        )
+        if install_deps and compile_runtime:
+            self.llama_build_status_label.setText("Installing dependencies and compiling runtime…")
+        elif install_deps:
+            self.llama_build_status_label.setText("Installing dependencies via Polkit…")
+        else:
+            self.llama_build_status_label.setText("Compiling llama.cpp runtime…")
         self.llama_compile_btn.setEnabled(False)
         self.llama_install_deps_btn.setEnabled(False)
         self.llama_compile_and_install_btn.setEnabled(False)
-        worker = LlamaRuntimeBuildWorker(payload, install_deps=bool(install_deps))
+        worker = LlamaRuntimeBuildWorker(
+            payload,
+            install_deps=bool(install_deps),
+            compile_runtime=bool(compile_runtime),
+        )
         self._llama_build_worker = worker
 
         def _on_progress(value: int, message: str) -> None:
@@ -3269,11 +3293,25 @@ class BackendSettingsDialog(QDialog):
 
         def _on_ok(binary_path: str, message: str) -> None:
             self.llama_build_progress.setValue(100)
-            self.binary_path_input.setText(str(binary_path).strip())
             self.llama_build_status_label.setText(str(message).strip())
-            self.status_label.setText(f"{message} Binary: {Path(binary_path).name}")
+            if str(binary_path).strip():
+                self.binary_path_input.setText(str(binary_path).strip())
+                self.status_label.setText(f"{message} Binary: {Path(binary_path).name}")
+                self.status_label.setStyleSheet(f"color: {ACCENT};")
+                self._save_backend()
+                return
+            self.status_label.setText(message)
             self.status_label.setStyleSheet(f"color: {ACCENT};")
-            self._save_backend()
+            if install_deps and not compile_runtime:
+                reply = QMessageBox.question(
+                    self,
+                    "Dependencies installed",
+                    "Dependencies were installed. Do you want to compile llama.cpp now?",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                    QMessageBox.StandardButton.Yes,
+                )
+                if reply == QMessageBox.StandardButton.Yes:
+                    QTimer.singleShot(0, self._compile_llama_runtime)
 
         def _on_fail(message: str) -> None:
             self.llama_build_status_label.setText(f"Build failed: {message}")
