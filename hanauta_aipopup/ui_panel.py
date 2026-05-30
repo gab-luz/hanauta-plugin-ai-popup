@@ -852,8 +852,25 @@ class SidebarPanel(QFrame):
         return bool(_host_reachable(host, timeout=1.2)), host, profile
 
     def _resolve_tts_profile_for_command(self) -> BackendProfile | None:
+        def _tts_profile_usable(profile: BackendProfile) -> bool:
+            payload = dict(self.backend_settings.get(profile.key, {}))
+            if not bool(payload.get("enabled", True)):
+                return False
+            mode = _default_tts_mode(payload)
+            if mode == "external_api":
+                host = str(payload.get("host", profile.host)).strip()
+                return bool(host)
+            model_dir = _default_tts_model_dir(profile, payload)
+            if model_dir.exists():
+                return True
+            return bool(payload.get("tested", False))
+
         # 1) If current profile is already a TTS backend, use it.
-        if self.current_profile is not None and self.current_profile.provider == "tts_local":
+        if (
+            self.current_profile is not None
+            and self.current_profile.provider == "tts_local"
+            and _tts_profile_usable(self.current_profile)
+        ):
             return self.current_profile
 
         # 2) Prefer a running/reachable Supertonic 3 runtime when available.
@@ -870,12 +887,14 @@ class SidebarPanel(QFrame):
         tts_key = str(config.get("tts_profile", "")).strip()
         if tts_key:
             profile = self.profile_by_key.get(tts_key)
-            if profile is not None and profile.provider == "tts_local":
+            if profile is not None and profile.provider == "tts_local" and _tts_profile_usable(profile):
                 return profile
 
-        # 4) Final fallback: first configured local TTS profile.
-        tts_profiles_available = [p for p in self.profiles if p.provider == "tts_local"]
-        return tts_profiles_available[0] if tts_profiles_available else None
+        # 4) Final fallback: first usable local TTS profile only (never a blind default).
+        for profile in self.profiles:
+            if profile.provider == "tts_local" and _tts_profile_usable(profile):
+                return profile
+        return None
 
     def _schedule_supertonic_ready_notification(self, profile: BackendProfile, payload: dict[str, object]) -> None:
         host = str(payload.get("host", profile.host)).strip()
