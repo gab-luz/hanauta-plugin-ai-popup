@@ -7,6 +7,7 @@ __pycache__/
 *.egg
 *.egg-info/
 dist/
+fixme.md
 build/
 .eggs/
 .mypy_cache/

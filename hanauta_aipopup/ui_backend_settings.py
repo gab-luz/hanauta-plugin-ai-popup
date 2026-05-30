@@ -674,7 +674,7 @@ class BackendSettingsDialog(QDialog):
         title.setStyleSheet(f"color: {UI_TEXT_STRONG}; border: none;")
         header_layout.addWidget(title)
 
-        subtitle = QLabel("Teste e habilite os providers antes de expor os ícones na sidebar.")
+        subtitle = QLabel("Configure each backend and mark it Active to make it available in the popup.")
         subtitle.setFont(QFont(ui_font, 10))
         subtitle.setStyleSheet(f"color: {UI_ICON_DIM}; border: none;")
         header_layout.addWidget(subtitle)
@@ -686,7 +686,8 @@ class BackendSettingsDialog(QDialog):
         self.backend_combo.currentIndexChanged.connect(self._load_selected_backend)
         shell_layout.addWidget(self.backend_combo)
 
-        self.enabled_check = QCheckBox("Mostrar backend na barra após teste bem-sucedido")
+        self.enabled_check = QCheckBox("Active")
+        self.enabled_check.stateChanged.connect(lambda _state: self._refresh_enabled_checkbox_style())
         shell_layout.addWidget(self.enabled_check)
 
         url_binary_row = QWidget()
@@ -787,42 +788,14 @@ class BackendSettingsDialog(QDialog):
         self.tts_server_command_input.setPlaceholderText("Optional local TTS server command (OpenAI-compatible)")
         shell_layout.addWidget(self.tts_server_command_input)
         self.tts_server_row = QWidget()
-        tts_server_layout = QHBoxLayout(self.tts_server_row)
-        tts_server_layout.setContentsMargins(0, 0, 0, 0)
-        tts_server_layout.setSpacing(8)
-        self.tts_server_status_label = QLabel("Server status: unknown")
-        self.tts_server_status_label.setStyleSheet(f"color: {UI_ICON_DIM}; border: none;")
-        tts_server_layout.addWidget(self.tts_server_status_label, 1)
-        self.kokoro_start_button = QPushButton("Start")
-        self.kokoro_start_button.clicked.connect(self._start_tts_server_clicked)
-        tts_server_layout.addWidget(self.kokoro_start_button)
-        self.kokoro_restart_button = QPushButton("Restart")
-        self.kokoro_restart_button.clicked.connect(self._restart_tts_server_clicked)
-        tts_server_layout.addWidget(self.kokoro_restart_button)
-        self.kokoro_stop_button = QPushButton("Stop")
-        self.kokoro_stop_button.clicked.connect(self._stop_tts_server_clicked)
-        tts_server_layout.addWidget(self.kokoro_stop_button)
-        shell_layout.addWidget(self.tts_server_row)
+        self.tts_server_row.hide()
+        self.tts_server_status_label = QLabel("")
         self.kokoro_autostart_check = QCheckBox("Auto-start local TTS server when Linux session boots")
-        shell_layout.addWidget(self.kokoro_autostart_check)
+        self.kokoro_autostart_check.hide()
 
         self.kobold_server_row = QWidget()
-        kobold_server_layout = QHBoxLayout(self.kobold_server_row)
-        kobold_server_layout.setContentsMargins(0, 0, 0, 0)
-        kobold_server_layout.setSpacing(8)
-        self.kobold_server_status_label = QLabel("Server status: unknown")
-        self.kobold_server_status_label.setStyleSheet(f"color: {UI_ICON_DIM}; border: none;")
-        kobold_server_layout.addWidget(self.kobold_server_status_label, 1)
-        self.kobold_start_button = QPushButton("Start")
-        self.kobold_start_button.clicked.connect(self._start_kobold_clicked)
-        kobold_server_layout.addWidget(self.kobold_start_button)
-        self.kobold_restart_button = QPushButton("Restart")
-        self.kobold_restart_button.clicked.connect(self._restart_kobold_clicked)
-        kobold_server_layout.addWidget(self.kobold_restart_button)
-        self.kobold_stop_button = QPushButton("Stop")
-        self.kobold_stop_button.clicked.connect(self._stop_kobold_clicked)
-        kobold_server_layout.addWidget(self.kobold_stop_button)
-        shell_layout.addWidget(self.kobold_server_row)
+        self.kobold_server_row.hide()
+        self.kobold_server_status_label = QLabel("")
 
         self.pocket_language_combo = QComboBox()
         self.pocket_language_combo.setToolTip(
@@ -1206,6 +1179,18 @@ class BackendSettingsDialog(QDialog):
         self._kobold_ready_timer.timeout.connect(self._poll_pending_kobold_ready)
         self._populate_gguf_gallery()
         self._load_selected_backend()
+
+    def _refresh_enabled_checkbox_style(self) -> None:
+        if bool(self.enabled_check.isChecked()):
+            self.enabled_check.setStyleSheet(
+                f"color: {ACCENT}; font-weight: 800; padding: 2px 0;"
+            )
+            self.enabled_check.setText("Active (enabled)")
+        else:
+            self.enabled_check.setStyleSheet(
+                f"color: {UI_TEXT_MUTED}; font-weight: 700; padding: 2px 0;"
+            )
+            self.enabled_check.setText("Active (disabled)")
 
     # ------------------------------------------------------------------ skills
 
@@ -1947,6 +1932,7 @@ class BackendSettingsDialog(QDialog):
         profile = self._selected_profile()
         payload = dict(self.settings.get(profile.key, {}))
         self.enabled_check.setChecked(bool(payload.get("enabled", True)))
+        self._refresh_enabled_checkbox_style()
         self.host_input.setText(str(payload.get("host", profile.host)))
         self.sd_auth_user_input.setText(str(payload.get("sd_auth_user", "")).strip())
         self.sd_auth_pass_input.setText(secure_load_secret(f"{profile.key}:sd_auth_pass"))
@@ -2026,12 +2012,10 @@ class BackendSettingsDialog(QDialog):
         self.pocket_mode_row.setVisible(is_tts and profile.key == "pockettts")
         self.tts_repo_input.setVisible(is_tts and mode == "local_onnx")
         self.tts_bundle_url_input.setVisible(is_tts and mode == "local_onnx")
-        show_tts_server_controls = is_tts and profile.key in {"kokorotts", "pockettts", "supertonic3"} and mode == "local_onnx"
-        show_kobold_controls = is_kobold
-        self.tts_server_command_input.setVisible(show_tts_server_controls)
-        self.tts_server_row.setVisible(show_tts_server_controls)
-        self.kokoro_autostart_check.setVisible(show_tts_server_controls)
-        self.kobold_server_row.setVisible(show_kobold_controls)
+        self.tts_server_command_input.setVisible(False)
+        self.tts_server_row.setVisible(False)
+        self.kokoro_autostart_check.setVisible(False)
+        self.kobold_server_row.setVisible(False)
         self.pocket_lang_preset_row.setVisible(is_tts and profile.key == "pockettts")
         self.hf_token_input.setVisible(is_tts and mode == "local_onnx")
         self.pocket_voice_ref_row.setVisible(is_tts and profile.key == "pockettts" and mode == "local_onnx")
@@ -2084,10 +2068,6 @@ class BackendSettingsDialog(QDialog):
             self._reload_kokoro_voice_list(payload)
         if is_tts and profile.key == "pockettts" and mode == "local_onnx":
             self._reload_pocket_voice_list(payload)
-        if show_tts_server_controls:
-            self._refresh_tts_server_status(payload)
-        if show_kobold_controls:
-            self._refresh_kobold_status(payload)
         self._refresh_download_progress(profile.key if is_tts else "")
         if is_tts:
             self._apply_tts_mode_visibility()
@@ -2648,10 +2628,9 @@ class BackendSettingsDialog(QDialog):
         self.tts_auto_download_check.setVisible(local_visible)
         self.download_tts_button.setVisible(local_visible)
 
-        show_server_controls = local_visible and profile.key in {"kokorotts", "pockettts", "supertonic3"}
-        self.tts_server_command_input.setVisible(show_server_controls)
-        self.tts_server_row.setVisible(show_server_controls)
-        self.kokoro_autostart_check.setVisible(show_server_controls)
+        self.tts_server_command_input.setVisible(False)
+        self.tts_server_row.setVisible(False)
+        self.kokoro_autostart_check.setVisible(False)
 
         show_pocket_voice = local_visible and profile.key == "pockettts"
         pocket_preset = str(self.pocket_preset_combo.currentData() or "").strip().lower()

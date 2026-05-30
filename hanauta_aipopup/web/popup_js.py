@@ -408,11 +408,11 @@ POPUP_JS = r"""
     }
 
     function _modelModalSelection() {
-      return {
-        stt: !!document.getElementById('modelCheckStt')?.checked,
-        llm: !!document.getElementById('modelCheckLlm')?.checked,
-        tts: !!document.getElementById('modelCheckTts')?.checked,
-      };
+      const keys = [];
+      document.querySelectorAll('#modelBackendList input.check[data-backend-key]').forEach((el) => {
+        if (el.checked) keys.push(String(el.getAttribute('data-backend-key') || ''));
+      });
+      return { backend_keys: keys.filter(Boolean) };
     }
 
     function openModelModal(open) {
@@ -424,16 +424,9 @@ POPUP_JS = r"""
         if (sub) sub.textContent = MODEL_MODAL_SUB_DEFAULT;
         pendingVoiceOpen = false;
       } else {
-        // If no selection is known yet, default to "all" so Voice Mode works out of the box.
-        const cStt = document.getElementById('modelCheckStt');
-        const cLlm = document.getElementById('modelCheckLlm');
-        const cTts = document.getElementById('modelCheckTts');
-        const anyChecked = !!(cStt?.checked || cLlm?.checked || cTts?.checked);
-        if (!anyChecked) {
-          if (cStt) cStt.checked = true;
-          if (cLlm) cLlm.checked = true;
-          if (cTts) cTts.checked = true;
-        }
+        const checks = Array.from(document.querySelectorAll('#modelBackendList input.check[data-backend-key]'));
+        const anyChecked = checks.some((el) => !!el.checked);
+        if (!anyChecked) checks.forEach((el) => { el.checked = true; });
       }
     }
 
@@ -464,21 +457,47 @@ POPUP_JS = r"""
       }
       if (stopBtn) stopBtn.disabled = busy || !active;
 
-      const noteStt = document.getElementById('modelNoteStt');
-      const noteLlm = document.getElementById('modelNoteLlm');
-      const noteTts = document.getElementById('modelNoteTts');
-      if (noteStt) noteStt.innerHTML = `__I18N_CONFIGURED__: <b>${esc(_fmtModelLine(models && models.stt))}</b>` + ((models && models.stt && models.stt.loaded) ? ' <span style="color:rgba(57,255,136,.92); font-weight:950">__I18N_LOADED__</span>' : '');
-      if (noteLlm) noteLlm.innerHTML = `__I18N_CONFIGURED__: <b>${esc(_fmtModelLine(models && models.llm))}</b>` + ((models && models.llm && models.llm.loaded) ? ' <span style="color:rgba(57,255,136,.92); font-weight:950">__I18N_LOADED__</span>' : '');
-      if (noteTts) noteTts.innerHTML = `__I18N_CONFIGURED__: <b>${esc(_fmtModelLine(models && models.tts))}</b>` + ((models && models.tts && models.tts.loaded) ? ' <span style="color:rgba(57,255,136,.92); font-weight:950">__I18N_LOADED__</span>' : '');
-
-      if (models && models.selection) {
-        const sel = models.selection;
-        const cStt = document.getElementById('modelCheckStt');
-        const cLlm = document.getElementById('modelCheckLlm');
-        const cTts = document.getElementById('modelCheckTts');
-        if (cStt) cStt.checked = !!sel.stt;
-        if (cLlm) cLlm.checked = !!sel.llm;
-        if (cTts) cTts.checked = !!sel.tts;
+      const list = document.getElementById('modelBackendList');
+      if (list) {
+        const selected = new Set(
+          Array.from(list.querySelectorAll('input.check[data-backend-key]:checked')).map((el) => String(el.getAttribute('data-backend-key') || ''))
+        );
+        const rows = Array.isArray(models && models.active_backends) ? models.active_backends : [];
+        list.innerHTML = '';
+        if (!rows.length) {
+          const empty = document.createElement('div');
+          empty.className = 'check-note';
+          empty.textContent = '__I18N_NOT_CONFIGURED__';
+          list.appendChild(empty);
+        } else {
+          rows.forEach((item) => {
+            const key = String(item.key || '');
+            const label = String(item.label || key || 'Backend');
+            const loaded = !!item.loaded;
+            const row = document.createElement('label');
+            row.className = 'check-row';
+            const input = document.createElement('input');
+            input.className = 'check';
+            input.type = 'checkbox';
+            input.setAttribute('data-backend-key', key);
+            input.checked = selected.has(key) || selected.size === 0;
+            const main = document.createElement('div');
+            main.className = 'check-main';
+            const title = document.createElement('div');
+            title.className = 'check-title';
+            title.textContent = label;
+            const note = document.createElement('div');
+            note.className = 'check-note';
+            note.innerHTML = loaded
+              ? '<span style="color:rgba(57,255,136,.92); font-weight:950">__I18N_LOADED__</span>'
+              : '__I18N_CONFIGURED__';
+            main.appendChild(title);
+            main.appendChild(note);
+            row.appendChild(input);
+            row.appendChild(main);
+            list.appendChild(row);
+          });
+        }
       }
     }
 

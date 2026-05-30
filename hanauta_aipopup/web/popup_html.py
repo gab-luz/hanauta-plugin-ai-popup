@@ -38,7 +38,7 @@ __POPUP_THEME_CSS__
         </div>
       </div>
       <div class="actions">
-        <button class="icon-btn" id="modelsBtn" title="Start/Stop voice backends" aria-label="Start/Stop models"><img class="icon-svg" id="modelsIcon" alt="" /></button>
+        <button class="icon-btn" id="modelsBtn" title="Start/Stop backends" aria-label="Start/Stop backends"><img class="icon-svg" id="modelsIcon" alt="" /></button>
         <button class="icon-btn" id="voiceBtn" title="__I18N_VOICE_MODE__" aria-label="__I18N_VOICE_MODE__"><img class="icon-svg" id="voiceIcon" alt="" /></button>
         <button class="icon-btn" id="settingsBtn" title="__I18N_SETTINGS__" aria-label="__I18N_SETTINGS__"><img class="icon-svg" id="settingsIcon" alt="" /></button>
         <button class="icon-btn" id="charactersBtn" title="__I18N_CHARACTERS__" aria-label="__I18N_CHARACTERS__"><img class="icon-svg" id="charactersIcon" alt="" /></button>
@@ -137,27 +137,7 @@ __POPUP_THEME_CSS__
           </div>
           <div class="sheet-body">
             <div class="sheet-warn" id="modelWarn" hidden></div>
-            <label class="check-row">
-              <input class="check" type="checkbox" id="modelCheckStt" />
-              <div class="check-main">
-                <div class="check-title">STT (Speech to Text)</div>
-                <div class="check-note" id="modelNoteStt">Configured: <b>…</b></div>
-              </div>
-            </label>
-            <label class="check-row">
-              <input class="check" type="checkbox" id="modelCheckLlm" />
-              <div class="check-main">
-                <div class="check-title">LLM (Text Model)</div>
-                <div class="check-note" id="modelNoteLlm">Configured: <b>…</b></div>
-              </div>
-            </label>
-            <label class="check-row">
-              <input class="check" type="checkbox" id="modelCheckTts" />
-              <div class="check-main">
-                <div class="check-title">TTS (Speech Output)</div>
-                <div class="check-note" id="modelNoteTts">Configured: <b>…</b></div>
-              </div>
-            </label>
+            <div id="modelBackendList"></div>
           </div>
           <div class="sheet-actions">
             <button class="sheet-btn" id="modelsRefreshBtn">__I18N_REFRESH__</button>
@@ -204,14 +184,14 @@ def render_popup_html(theme_css: str = "") -> str:
         "__I18N_VOICE_SUB__": tr("chat.voice.sub", "Stay in the conversation. Start talking anytime."),
         "__I18N_VOICE_READY__": tr("chat.voice.ready", "Voice mode is ready."),
         "__I18N_RETURN_TO_CHAT__": tr("chat.voice.return", "Return to chat"),
-        "__I18N_VOICE_BACKENDS__": tr("chat.voice.backends", "Voice Backends"),
-        "__I18N_MODELS_SUB_DEFAULT__": tr("chat.voice.models_sub_default", "Preload models for hands-free voice mode."),
+        "__I18N_VOICE_BACKENDS__": tr("chat.voice.backends", "Backends"),
+        "__I18N_MODELS_SUB_DEFAULT__": tr("chat.voice.models_sub_default", "Start and stop your active backends."),
         "__I18N_REFRESH__": tr("chat.refresh", "Refresh"),
         "__I18N_START_SELECTED__": tr("chat.start_selected", "Start Selected"),
         "__I18N_STOP_LOADED__": tr("chat.stop_loaded", "Stop Loaded"),
     }
     js_translations = {
-        "__I18N_MODELS_SUB_DEFAULT__": tr("chat.voice.models_sub_default", "Preload models for hands-free voice mode."),
+        "__I18N_MODELS_SUB_DEFAULT__": tr("chat.voice.models_sub_default", "Start and stop your active backends."),
         "__I18N_ASSISTANT_NAME__": tr("chat.assistant_name", "Hanauta AI"),
         "__I18N_EMPTY_TITLE__": tr("chat.empty.title", "Start a conversation"),
         "__I18N_EMPTY_COPY__": tr("chat.empty.copy", "Type a message below. Enter sends and Shift+Enter adds a new line."),

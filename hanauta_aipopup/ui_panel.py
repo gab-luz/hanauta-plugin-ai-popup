@@ -93,6 +93,9 @@ from .tts import (
     synthesize_tts, _waveform_from_hanauta_service,
     _start_kokoro_server, _stop_kokoro_server,
     _start_pocket_server, _stop_pocket_server,
+    _start_supertonic_server, _stop_supertonic_server,
+    _kokoro_server_status, _pocket_server_status, _supertonic_server_status,
+    _host_reachable,
     transcribe_voice_audio, generate_voice_chat_reply,
     _voice_mode_settings, _voice_log,
     _render_llm_text_html,
@@ -221,6 +224,8 @@ class SidebarPanel(QFrame):
         self._web_draft_id: int = 0
         self._pending_kobold_ready_profile: str = ""
         self._pending_kobold_ready_host: str = ""
+        self._pending_supertonic_ready_profile: str = ""
+        self._pending_supertonic_ready_host: str = ""
         self._text_response_timer = QTimer(self)
         self._text_response_timer.setSingleShot(True)
         self._text_response_timer.timeout.connect(self._finish_mock_text_response)
@@ -231,6 +236,9 @@ class SidebarPanel(QFrame):
         self._kobold_state_timer.setInterval(3500)
         self._kobold_state_timer.timeout.connect(self._poll_configured_kobold_state)
         self._kobold_state_timer.start()
+        self._supertonic_ready_timer = QTimer(self)
+        self._supertonic_ready_timer.setInterval(1300)
+        self._supertonic_ready_timer.timeout.connect(self._poll_pending_supertonic_ready)
 
         self.setObjectName("sidebarPanel")
         self.setFixedWidth(452)
@@ -446,7 +454,11 @@ class SidebarPanel(QFrame):
 
     def _refresh_backend_hint(self) -> None:
         if self.current_profile is None:
-            self.header_status.setText("No active backend.")
+            supertonic_ok, supertonic_host, _profile = self._configured_supertonic_reachable_state()
+            if supertonic_ok:
+                self.header_status.setText(f"Supertonic 3  •  active  •  {supertonic_host}")
+            else:
+                self.header_status.setText("No active backend.")
             self._sync_web_ui()
             return
         payload = self.backend_settings.get(self.current_profile.key, {})
@@ -816,6 +828,72 @@ class SidebarPanel(QFrame):
             self._voice_llm_loaded_probe_result = (bool(loaded), str(model_name or ""))
         return bool(loaded), str(model_name or ""), host, profile
 
+    def _configured_supertonic_reachable_state(self) -> tuple[bool, str, BackendProfile | None]:
+        profile = self.profile_by_key.get("supertonic3")
+        if profile is None:
+            return False, "", None
+        payload = dict(self.backend_settings.get(profile.key, {}))
+        host = str(payload.get("host", profile.host)).strip()
+        if not host:
+            return False, "", profile
+        return bool(_host_reachable(host, timeout=1.2)), host, profile
+
+    def _resolve_tts_profile_for_command(self) -> BackendProfile | None:
+        # 1) If current profile is already a TTS backend, use it.
+        if self.current_profile is not None and self.current_profile.provider == "tts_local":
+            return self.current_profile
+
+        # 2) Prefer a running/reachable Supertonic 3 runtime when available.
+        supertonic = self.profile_by_key.get("supertonic3")
+        if supertonic is not None:
+            spayload = dict(self.backend_settings.get(supertonic.key, {}))
+            started, _detail = _supertonic_server_status(spayload)
+            reachable, _host, _profile = self._configured_supertonic_reachable_state()
+            if started or reachable:
+                return supertonic
+
+        # 3) Use Voice Mode configured tts_profile if valid.
+        config = _voice_mode_settings(self.backend_settings)
+        tts_key = str(config.get("tts_profile", "")).strip()
+        if tts_key:
+            profile = self.profile_by_key.get(tts_key)
+            if profile is not None and profile.provider == "tts_local":
+                return profile
+
+        # 4) Final fallback: first configured local TTS profile.
+        tts_profiles_available = [p for p in self.profiles if p.provider == "tts_local"]
+        return tts_profiles_available[0] if tts_profiles_available else None
+
+    def _schedule_supertonic_ready_notification(self, profile: BackendProfile, payload: dict[str, object]) -> None:
+        host = str(payload.get("host", profile.host)).strip()
+        if not host:
+            return
+        self._pending_supertonic_ready_profile = profile.label
+        self._pending_supertonic_ready_host = host
+        if not self._supertonic_ready_timer.isActive():
+            self._supertonic_ready_timer.start()
+
+    def _poll_pending_supertonic_ready(self) -> None:
+        host = self._pending_supertonic_ready_host.strip()
+        if not host:
+            self._supertonic_ready_timer.stop()
+            return
+        if not _host_reachable(host, timeout=1.2):
+            return
+        label = self._pending_supertonic_ready_profile or "Supertonic 3"
+        self._pending_supertonic_ready_profile = ""
+        self._pending_supertonic_ready_host = ""
+        self._supertonic_ready_timer.stop()
+        self._voice_models_loaded["tts"] = True
+        self._add_runtime_status_card(
+            "Supertonic 3 Ready",
+            f"{html.escape(label)} is now reachable at <code>{html.escape(host)}</code>.",
+            tone="success",
+            chips=["backends", "tts", "ready"],
+        )
+        self._refresh_backend_hint()
+        self._sync_web_ui()
+
     def _poll_configured_kobold_state(self) -> None:
         loaded, model_name, host, profile = self._configured_kobold_loaded_state()
         if not loaded or profile is None:
@@ -938,12 +1016,33 @@ class SidebarPanel(QFrame):
         if llm_runtime_model and llm_backend == "KoboldCpp":
             llm_model = llm_runtime_model
         selection = dict(self._voice_models_last_selection or {})
+        active_backends: list[dict[str, object]] = []
+        for profile in self._active_backend_profiles():
+            loaded = False
+            if profile.key == "koboldcpp":
+                loaded, _model_name, _host, _prof = self._configured_kobold_loaded_state()
+            elif profile.key == "kokorotts":
+                loaded, _detail = _kokoro_server_status(dict(self.backend_settings.get(profile.key, {})))
+            elif profile.key == "pockettts":
+                loaded, _detail = _pocket_server_status(dict(self.backend_settings.get(profile.key, {})))
+            elif profile.key == "supertonic3":
+                loaded, _detail = _supertonic_server_status(dict(self.backend_settings.get(profile.key, {})))
+            else:
+                continue
+            active_backends.append(
+                {
+                    "key": profile.key,
+                    "label": profile.label,
+                    "loaded": bool(loaded),
+                }
+            )
         return {
             "active": bool(any(self._voice_models_loaded.values())),
             "busy": bool(self._voice_models_busy),
             "warning": str(self._voice_models_warning or ""),
             "needs_confirm": bool(self._voice_models_needs_confirm),
             "selection": selection,
+            "active_backends": active_backends,
             "stt": {"backend": stt_backend, "model": stt_model, "device": stt_device, "mode": "external" if bool(config.get("stt_external_api", False)) else "local", "loaded": bool(self._voice_models_loaded.get("stt", False))},
             "llm": {"backend": llm_backend, "model": llm_model, "device": llm_device, "mode": "external" if bool(config.get("llm_external_api", False)) else "local", "loaded": bool(llm_loaded)},
             "tts": {"backend": tts_backend, "model": tts_model, "device": tts_device, "mode": tts_mode, "loaded": bool(self._voice_models_loaded.get("tts", False))},
@@ -1136,16 +1235,27 @@ class SidebarPanel(QFrame):
         provider_label = self.composer.provider_label.text().strip() if hasattr(self, "composer") else ""
         available_backends = []
         kobold_loaded, _kobold_model, _kobold_host, _kobold_profile = self._configured_kobold_loaded_state()
+        supertonic_reachable, _supertonic_host, _supertonic_profile = self._configured_supertonic_reachable_state()
         for profile in self.profiles:
             payload = self.backend_settings.get(profile.key, {})
-            ready = bool(payload.get("enabled", True) and payload.get("tested", False))
-            if ready or (profile.key == "koboldcpp" and kobold_loaded):
+            is_enabled = bool(payload.get("enabled", True))
+            ready = bool(is_enabled and payload.get("tested", False))
+            supertonic_running = False
+            if profile.key == "supertonic3":
+                supertonic_running, _detail = _supertonic_server_status(dict(self.backend_settings.get(profile.key, {})))
+            runtime_ready = (is_enabled and profile.key == "koboldcpp" and kobold_loaded) or (
+                is_enabled and profile.key == "supertonic3" and (supertonic_reachable or supertonic_running)
+            )
+            if ready or runtime_ready:
                 available_backends.append(
                     {
                         "key": profile.key,
                         "label": profile.label,
                         "icon": _backend_icon_uri(profile.icon_name),
-                        "active": bool(self.current_profile is not None and self.current_profile.key == profile.key),
+                        "active": bool(
+                            (self.current_profile is not None and self.current_profile.key == profile.key)
+                            or (self.current_profile is None and runtime_ready)
+                        ),
                     }
                 )
         history = list(self.chat_history)
@@ -1307,13 +1417,6 @@ class SidebarPanel(QFrame):
     def _voice_models_preflight_warning(self, selection: dict[str, bool]) -> str:
         config = _voice_mode_settings(self.backend_settings)
         warnings: list[str] = []
-        if not bool(config.get("enabled", False)):
-            warnings.append(
-                tr(
-                    "chat.voice.warning.disabled",
-                    "Voice mode is disabled. Enable it in Settings first.",
-                )
-            )
 
         # Heuristic memory warning: compare model weight/file sizes to available memory.
         ram_avail = 0
@@ -1397,6 +1500,87 @@ class SidebarPanel(QFrame):
 
         return " ".join(warnings).strip()
 
+    def _active_backend_profiles(self) -> list[BackendProfile]:
+        active: list[BackendProfile] = []
+        for profile in self.profiles:
+            payload = dict(self.backend_settings.get(profile.key, {}))
+            if bool(payload.get("enabled", True)):
+                active.append(profile)
+        return active
+
+    def _start_active_backends(self) -> list[str]:
+        notes: list[str] = []
+        for profile in self._active_backend_profiles():
+            payload = dict(self.backend_settings.get(profile.key, {}))
+            ok = False
+            message = ""
+            if profile.key == "koboldcpp":
+                ok, message = _start_koboldcpp(payload)
+            elif profile.key == "kokorotts":
+                ok, message = _start_kokoro_server(payload)
+            elif profile.key == "pockettts":
+                ok, message = _start_pocket_server(payload)
+            elif profile.key == "supertonic3":
+                ok, message = _start_supertonic_server(payload)
+                if ok:
+                    self._schedule_supertonic_ready_notification(profile, payload)
+            else:
+                continue
+            self.backend_settings[profile.key] = dict(payload)
+            notes.append(f"{profile.label}: {message or ('started' if ok else 'not started')}")
+        if notes:
+            save_backend_settings(self.backend_settings)
+        return notes
+
+    def _start_selected_backends(self, selected_keys: list[str]) -> list[str]:
+        chosen = {str(k).strip() for k in selected_keys if str(k).strip()}
+        notes: list[str] = []
+        for profile in self._active_backend_profiles():
+            if profile.key not in chosen:
+                continue
+            payload = dict(self.backend_settings.get(profile.key, {}))
+            ok = False
+            message = ""
+            if profile.key == "koboldcpp":
+                ok, message = _start_koboldcpp(payload)
+            elif profile.key == "kokorotts":
+                ok, message = _start_kokoro_server(payload)
+            elif profile.key == "pockettts":
+                ok, message = _start_pocket_server(payload)
+            elif profile.key == "supertonic3":
+                ok, message = _start_supertonic_server(payload)
+                if ok:
+                    self._schedule_supertonic_ready_notification(profile, payload)
+            else:
+                continue
+            self.backend_settings[profile.key] = dict(payload)
+            notes.append(f"{profile.label}: {message or ('started' if ok else 'not started')}")
+        if notes:
+            save_backend_settings(self.backend_settings)
+        return notes
+
+    def _stop_active_backends(self) -> list[str]:
+        notes: list[str] = []
+        for profile in self._active_backend_profiles():
+            payload = dict(self.backend_settings.get(profile.key, {}))
+            ok = False
+            message = ""
+            if profile.key == "koboldcpp":
+                ok, message = _stop_koboldcpp(payload)
+            elif profile.key == "kokorotts":
+                ok, message = _stop_kokoro_server(payload)
+            elif profile.key == "pockettts":
+                ok, message = _stop_pocket_server(payload)
+            elif profile.key == "supertonic3":
+                ok, message = _stop_supertonic_server(payload)
+            else:
+                continue
+            self.backend_settings[profile.key] = dict(payload)
+            notes.append(f"{profile.label}: {message or ('stopped' if ok else 'not stopped')}")
+        if notes:
+            save_backend_settings(self.backend_settings)
+        return notes
+
     def _web_request_start_voice_models(self, selection_json: str) -> None:
         if bool(getattr(self, "_voice_models_busy", False)) or (
             self._voice_models_worker is not None and self._voice_models_worker.isRunning()
@@ -1418,6 +1602,11 @@ class SidebarPanel(QFrame):
             "llm": bool(raw.get("llm", False)) if isinstance(raw, dict) else False,
             "tts": bool(raw.get("tts", False)) if isinstance(raw, dict) else False,
         }
+        selected_backend_keys: list[str] = []
+        if isinstance(raw, dict):
+            values = raw.get("backend_keys", [])
+            if isinstance(values, list):
+                selected_backend_keys = [str(v).strip() for v in values if str(v).strip()]
         LOGGER.info(
             "[VoiceModels] selection parsed=%s busy=%s needs_confirm=%s last_selection=%s",
             selection,
@@ -1425,7 +1614,7 @@ class SidebarPanel(QFrame):
             bool(getattr(self, "_voice_models_needs_confirm", False)),
             getattr(self, "_voice_models_last_selection", None),
         )
-        if not any(selection.values()):
+        if not any(selection.values()) and not selected_backend_keys:
             self._voice_models_warning = "Select at least one model to start."
             self._voice_models_needs_confirm = False
             self._voice_models_last_selection = selection
@@ -1460,11 +1649,30 @@ class SidebarPanel(QFrame):
         self._voice_models_busy = True
         self._sync_web_ui()
 
+        active_start_notes = (
+            self._start_selected_backends(selected_backend_keys)
+            if selected_backend_keys
+            else self._start_active_backends()
+        )
+        if active_start_notes:
+            self._add_runtime_status_card(
+                "Start Backends",
+                "<p>" + "</p><p>".join(html.escape(line) for line in active_start_notes) + "</p>",
+                chips=[tr("chat.voice.chip.models", "models"), "backends", "start"],
+            )
+        started_keys = set(selected_backend_keys) if selected_backend_keys else {p.key for p in self._active_backend_profiles()}
+        if "supertonic3" in started_keys:
+            self._add_runtime_status_card(
+                "Supertonic 3",
+                "Supertonic 3 is loading. We'll notify you here as soon as the server is ready.",
+                chips=["backends", "tts", "loading"],
+            )
+
         self._add_runtime_status_card(
             tr("chat.voice.warmup.title", "Model Warmup"),
             tr(
                 "chat.voice.warmup.starting",
-                "Starting selected voice backends. This may take a moment on first run.",
+                "Starting selected backends. This may take a moment on first run.",
             ),
             chips=[
                 tr("chat.voice.chip.voice", "voice"),
@@ -1509,23 +1717,32 @@ class SidebarPanel(QFrame):
                         self._voice_models_loaded[k] = bool(loaded.get(k, False))
             self._apply_voice_button_state()
             self._sync_web_ui()
-            # Build an honest status message based on what actually loaded
-            config = _voice_mode_settings(self.backend_settings)
-            profile_key = str(config.get("llm_profile", "koboldcpp")).strip()
-            profile = self.profile_by_key.get(profile_key)
+            # Build status from what was actually requested in this warmup run.
             status_lines: list[str] = []
-            if profile is not None and profile.key == "koboldcpp":
-                kpayload = dict(self.backend_settings.get(profile.key, {}))
-                host = str(kpayload.get("host", profile.host)).strip()
-                from .backends import _koboldcpp_model_loaded
-                kloaded, kmodel = _koboldcpp_model_loaded(host)
-                if kloaded:
-                    status_lines.append(f"KoboldCpp ready — model: <b>{html.escape(kmodel)}</b>")
-                else:
-                    status_lines.append("KoboldCpp process started but model is still loading…")
-            elif profile is not None:
-                kpayload = dict(self.backend_settings.get(profile.key, {}))
-                host = str(kpayload.get("host", profile.host)).strip()
+            requested_backend_keys = selected_backend_keys or [p.key for p in self._active_backend_profiles()]
+            for key in requested_backend_keys:
+                profile = self.profile_by_key.get(str(key).strip())
+                if profile is None:
+                    continue
+                ppayload = dict(self.backend_settings.get(profile.key, {}))
+                if profile.key == "koboldcpp":
+                    host = str(ppayload.get("host", profile.host)).strip()
+                    from .backends import _koboldcpp_model_loaded
+                    kloaded, kmodel = _koboldcpp_model_loaded(host)
+                    if kloaded:
+                        status_lines.append(f"KoboldCpp ready — model: <b>{html.escape(kmodel)}</b>")
+                    else:
+                        status_lines.append("KoboldCpp process started but model is still loading…")
+                    continue
+                if profile.key == "supertonic3":
+                    host = str(ppayload.get("host", profile.host)).strip()
+                    reachable = bool(host and _host_reachable(host, timeout=1.2))
+                    if reachable:
+                        status_lines.append(f"Supertonic 3 is reachable at <code>{html.escape(host)}</code>")
+                    else:
+                        status_lines.append("Supertonic 3 process started and is still loading…")
+                    continue
+                host = str(ppayload.get("host", profile.host)).strip()
                 from .http import _openai_compat_alive
                 if host and _openai_compat_alive(host):
                     status_lines.append(f"{html.escape(profile.label)} is reachable at <code>{html.escape(host)}</code>")
@@ -1573,39 +1790,14 @@ class SidebarPanel(QFrame):
         if self._voice_worker is not None and self._voice_worker.isRunning():
             self._stop_voice_mode()
         config = _voice_mode_settings(self.backend_settings)
-        if not bool(config.get("llm_external_api", False)):
-            profile = self.profile_by_key.get(str(config.get("llm_profile", "koboldcpp")).strip())
-            if profile is not None and profile.key == "koboldcpp":
-                payload = dict(self.backend_settings.get(profile.key, {}))
-                ok, message = _stop_koboldcpp(payload)
-                self.backend_settings[profile.key] = dict(payload)
-                save_backend_settings(self.backend_settings)
-                self._add_runtime_status_card(
-                    "Stop LLM",
-                    message,
-                    tone="success" if ok else "warn",
-                    chips=["voice", "llm", "stop"],
-                )
-        # Stop any tracked TTS server process (Kokoro/Pocket) if it was started from backend settings.
-        tts_profile = self.profile_by_key.get(str(config.get("tts_profile", "kokorotts")).strip())
-        if tts_profile is not None and tts_profile.provider == "tts_local":
-            payload = dict(self.backend_settings.get(tts_profile.key, {}))
-            pid = int(payload.get("tts_server_pid", 0) or 0)
-            stopped = False
-            message = ""
-            if tts_profile.key == "kokorotts":
-                stopped, message = _stop_kokoro_server(payload)
-            elif tts_profile.key == "pockettts":
-                stopped, message = _stop_pocket_server(payload)
-            if stopped or pid:
-                self.backend_settings[tts_profile.key] = dict(payload)
-                save_backend_settings(self.backend_settings)
-                self._add_runtime_status_card(
-                    "Stop TTS Server",
-                    message or "Stopped TTS server.",
-                    tone="success" if stopped else "warn",
-                    chips=["voice", "tts", "stop"],
-                )
+        stop_notes = self._stop_active_backends()
+        if stop_notes:
+            self._add_runtime_status_card(
+                "Stop Backends",
+                "<p>" + "</p><p>".join(html.escape(line) for line in stop_notes) + "</p>",
+                tone="warn",
+                chips=["backends", "stop"],
+            )
         self._voice_models_loaded = {"stt": False, "llm": False, "tts": False}
         self._voice_models_warning = ""
         self._voice_models_needs_confirm = False
@@ -2655,6 +2847,25 @@ class SidebarPanel(QFrame):
         if command == "/tts":
             LOGGER.debug("command /tts")
             self._open_backend_settings()
+            return
+        if command.startswith("/tts "):
+            LOGGER.debug("command /tts with payload")
+            speak_prompt = command[len("/tts "):].strip()
+            if not speak_prompt:
+                self._open_backend_settings()
+                return
+            tts_profile = self._resolve_tts_profile_for_command()
+            if tts_profile is None:
+                self.add_card(
+                    ChatItemData(
+                        role="assistant",
+                        title="Hanauta AI",
+                        body="<p>No TTS backend configured. Open settings with <code>/tts</code>.</p>",
+                        meta="tts command",
+                    )
+                )
+                return
+            self._start_tts_generation(tts_profile, speak_prompt)
             return
         if command == "/voice":
             LOGGER.debug("command /voice")
