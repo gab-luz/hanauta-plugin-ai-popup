@@ -132,6 +132,7 @@ __POPUP_THEME_CSS__
             <div style="flex:1; min-width:0">
               <div class="sheet-title">__I18N_VOICE_BACKENDS__</div>
               <div class="sheet-sub" id="modelModalSub">__I18N_MODELS_SUB_DEFAULT__</div>
+              <div class="sheet-sub-note" id="modelModalSubNote">Only 1 ASR, 1 TTS and 1 LLM can be selected at the same time.</div>
             </div>
             <button class="icon-btn" id="modelModalCloseBtn" title="Close" aria-label="Close"><img class="icon-svg" id="modalCloseIcon" alt="" /></button>
           </div>
@@ -210,6 +211,7 @@ def render_popup_html(theme_css: str = "") -> str:
         "__I18N_CONFIGURED__": tr("chat.configured", "Configured"),
         "__I18N_LOADED__": tr("chat.loaded", "loaded"),
         "__I18N_MODELS_SUB_OPENING_VOICE__": tr("chat.voice.models_sub_opening_voice", "Select which backends to warm up. Voice mode opens automatically when ready."),
+        "__I18N_MODELS_SUB_SELECT_TO_STOP__": tr("chat.voice.models_sub_select_to_stop", "Select which started backends you want to stop."),
         "__I18N_REVIEW_ATTACHMENTS__": tr("chat.review_attachments", "Please review the attached content."),
         "__I18N_NOW__": tr("chat.now", "now"),
     }

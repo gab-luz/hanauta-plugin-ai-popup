@@ -235,6 +235,23 @@
     "backend_settings.kobold.gemma4.variant_detected": "Gemma 4 audio variant detected.",
     "backend_settings.kobold.gemma4.variant_unknown": "Gemma 4 variant unknown (audio may or may not work).",
     "backend_settings.gguf.none_found": "No bundled models found. (model_catalog.json missing?)",
-    "backend_settings.gguf.download_and_select": "Download this GGUF into Hanauta cache and select it"
+    "backend_settings.gguf.download_and_select": "Download this GGUF into Hanauta cache and select it",
+    "chat.voice.backend.parakeet.ondemand_ready": "Parakeet готов к использованию по запросу (без постоянного сервера).",
+    "chat.voice.backend.whisper.ondemand_ready": "Whisper готов к использованию по запросу (без постоянного сервера).",
+    "chat.voice.backend.parakeet.nothing_to_stop": "У Parakeet нет постоянного сервера для остановки.",
+    "chat.voice.backend.whisper.nothing_to_stop": "У Whisper нет постоянного сервера для остановки.",
+    "chat.voice.backends.start_title": "Запуск бэкендов",
+    "chat.voice.backends.stop_title": "Остановка бэкендов",
+    "chat.voice.backend.supertonic.loading": "Supertonic 3 загружается. Мы сообщим здесь, как только сервер будет готов.",
+    "chat.voice.backend.kobold.loaded_model": "KoboldCpp готов — модель: <b>{model}</b>",
+    "chat.voice.backend.kobold.loading": "Процесс KoboldCpp запущен, но модель всё ещё загружается…",
+    "chat.voice.backend.supertonic.loaded_host": "Supertonic 3 доступен по адресу <code>{host}</code>",
+    "chat.voice.backend.supertonic.loading_process": "Процесс Supertonic 3 запущен и всё ещё загружается…",
+    "chat.voice.backend.whisper.loaded_model": "Whisper успешно загружен — модель: <b>{model}</b>",
+    "chat.voice.backend.parakeet.loaded_repo": "Parakeet успешно загружен — репозиторий: <b>{repo}</b>",
+    "chat.voice.backend.generic.loaded_host": "{label} доступен по адресу <code>{host}</code>",
+    "chat.voice.backend.generic.not_responding_host": "{label} не отвечает по адресу <code>{host}</code>",
+    "chat.voice.warmup.done": "Прогрев завершён.",
+    "chat.voice.models_sub_select_to_stop": "Выберите, какие запущенные бэкенды нужно остановить."
   }
 }

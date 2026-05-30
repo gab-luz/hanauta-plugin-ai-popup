@@ -418,10 +418,68 @@ POPUP_JS = r"""
 
     function _modelModalSelection() {
       const keys = [];
+      const backendOptions = {};
       document.querySelectorAll('#modelBackendList input.check[data-backend-key]').forEach((el) => {
         if (el.checked) keys.push(String(el.getAttribute('data-backend-key') || ''));
       });
-      return { backend_keys: keys.filter(Boolean) };
+      document.querySelectorAll('#modelBackendList select.check-variant[data-backend-key]').forEach((el) => {
+        const key = String(el.getAttribute('data-backend-key') || '').trim();
+        if (!key) return;
+        const variant = String(el.value || '').trim();
+        if (!variant) return;
+        backendOptions[key] = Object.assign({}, backendOptions[key] || {}, { variant });
+      });
+      return { backend_keys: keys.filter(Boolean), backend_options: backendOptions };
+    }
+
+    function _backendSlotFromRow(item) {
+      if (!item) return '';
+      const s = String(item.slot || '').trim().toLowerCase();
+      if (s) return s;
+      const key = String(item.key || '').trim().toLowerCase();
+      if (key === 'whisper' || key === 'parakeet') return 'asr';
+      if (key === 'koboldcpp' || key === 'openai' || key === 'ollama' || key === 'lmstudio' || key === 'gemini' || key === 'mistral') return 'llm';
+      if (key === 'kokorotts' || key === 'pockettts' || key === 'supertonic3' || key === 'kokoclone') return 'tts';
+      return '';
+    }
+
+    function _enforceExclusiveChecks(changedInput) {
+      if (!changedInput || !changedInput.checked) return;
+      const changedSlot = String(changedInput.getAttribute('data-slot') || '').trim().toLowerCase();
+      if (!changedSlot) return;
+      document.querySelectorAll('#modelBackendList input.check[data-backend-key]').forEach((el) => {
+        if (el === changedInput) return;
+        const slot = String(el.getAttribute('data-slot') || '').trim().toLowerCase();
+        if (slot && slot === changedSlot) el.checked = false;
+      });
+    }
+
+    function _normalizeModelModalSelection() {
+      const checks = Array.from(document.querySelectorAll('#modelBackendList input.check[data-backend-key]'));
+      const keptBySlot = {};
+      checks.forEach((el) => {
+        if (!el.checked) return;
+        const slot = String(el.getAttribute('data-slot') || '').trim().toLowerCase();
+        if (!slot) return;
+        if (!keptBySlot[slot]) {
+          keptBySlot[slot] = el;
+          return;
+        }
+        el.checked = false;
+      });
+    }
+
+    function _updateModelModalSelectionHint() {
+      const sub = document.getElementById('modelModalSub');
+      if (!sub) return;
+      const checks = Array.from(document.querySelectorAll('#modelBackendList input.check[data-backend-key]'));
+      const picked = { asr: 0, tts: 0, llm: 0 };
+      checks.forEach((el) => {
+        if (!el.checked) return;
+        const slot = String(el.getAttribute('data-slot') || '').trim().toLowerCase();
+        if (slot === 'asr' || slot === 'tts' || slot === 'llm') picked[slot] += 1;
+      });
+      sub.textContent = `Selected: ASR ${picked.asr}/1 • TTS ${picked.tts}/1 • LLM ${picked.llm}/1`;
     }
 
     function openModelModal(open) {
@@ -435,7 +493,18 @@ POPUP_JS = r"""
       } else {
         const checks = Array.from(document.querySelectorAll('#modelBackendList input.check[data-backend-key]'));
         const anyChecked = checks.some((el) => !!el.checked);
-        if (!anyChecked) checks.forEach((el) => { el.checked = true; });
+        if (!anyChecked) {
+          const taken = { asr: false, tts: false, llm: false };
+          checks.forEach((el) => {
+            const slot = String(el.getAttribute('data-slot') || '').trim().toLowerCase();
+            if ((slot === 'asr' || slot === 'tts' || slot === 'llm') && !taken[slot]) {
+              el.checked = true;
+              taken[slot] = true;
+            }
+          });
+        }
+        _normalizeModelModalSelection();
+        _updateModelModalSelectionHint();
       }
     }
 
@@ -489,12 +558,19 @@ POPUP_JS = r"""
             input.className = 'check';
             input.type = 'checkbox';
             input.setAttribute('data-backend-key', key);
+            input.setAttribute('data-slot', _backendSlotFromRow(item));
             input.checked = selected.has(key) || selected.size === 0;
+            input.addEventListener('change', () => {
+              _enforceExclusiveChecks(input);
+              _normalizeModelModalSelection();
+              _updateModelModalSelectionHint();
+            });
             const main = document.createElement('div');
             main.className = 'check-main';
             const title = document.createElement('div');
             title.className = 'check-title';
-            title.textContent = label;
+            const desc = String(item.description || '').trim();
+            title.textContent = desc ? `${label} (${desc})` : label;
             const note = document.createElement('div');
             note.className = 'check-note';
             note.innerHTML = loaded
@@ -502,10 +578,30 @@ POPUP_JS = r"""
               : '__I18N_CONFIGURED__';
             main.appendChild(title);
             main.appendChild(note);
+            const variants = Array.isArray(item.variants) ? item.variants : [];
+            if (variants.length > 0) {
+              const metaRow = document.createElement('div');
+              metaRow.className = 'check-meta-row';
+              const variantSelect = document.createElement('select');
+              variantSelect.className = 'check-variant';
+              variantSelect.setAttribute('data-backend-key', key);
+              const selectedVariant = String(item.variant_selected || '').trim().toLowerCase();
+              variants.forEach((v) => {
+                const opt = document.createElement('option');
+                opt.value = String(v.value || '');
+                opt.textContent = String(v.label || v.value || '');
+                if (selectedVariant && String(opt.value).toLowerCase() === selectedVariant) opt.selected = true;
+                variantSelect.appendChild(opt);
+              });
+              metaRow.appendChild(variantSelect);
+              main.appendChild(metaRow);
+            }
             row.appendChild(input);
             row.appendChild(main);
             list.appendChild(row);
           });
+          _normalizeModelModalSelection();
+          _updateModelModalSelectionHint();
         }
       }
     }
@@ -639,7 +735,9 @@ POPUP_JS = r"""
     document.getElementById('modelsBtn').addEventListener('click', () => {
       const active = !!(state && state.models && state.models.active);
       if (active) {
-        if (bridge && bridge.stopVoiceModels) bridge.stopVoiceModels();
+        const sub = document.getElementById('modelModalSub');
+        if (sub) sub.textContent = '__I18N_MODELS_SUB_SELECT_TO_STOP__';
+        openModelModal(true);
         return;
       }
       openModelModal(true);
@@ -655,7 +753,15 @@ POPUP_JS = r"""
       if (startBtn) startBtn.disabled = true;
       bridge.startVoiceModels(JSON.stringify(sel));
     });
-    document.getElementById('modelsStopBtn').addEventListener('click', () => bridge && bridge.stopVoiceModels && bridge.stopVoiceModels());
+    document.getElementById('modelsStopBtn').addEventListener('click', () => {
+      const sel = _modelModalSelection();
+      if (!bridge) return;
+      if (bridge.stopVoiceModelsWithSelection) {
+        bridge.stopVoiceModelsWithSelection(JSON.stringify(sel));
+      } else if (bridge.stopVoiceModels) {
+        bridge.stopVoiceModels();
+      }
+    });
     document.getElementById('modelModal').addEventListener('click', (ev) => {
       if (ev.target && ev.target.id === 'modelModal') openModelModal(false);
     });

@@ -753,6 +753,7 @@ class VoiceModeDialog(QDialog):
         form.addWidget(self.stt_external_check)
         self.stt_backend_combo = QComboBox()
         self.stt_backend_combo.addItem("Faster Whisper local", "whisper")
+        self.stt_backend_combo.addItem("Parakeet GGUF local", "parakeet")
         self.stt_backend_combo.addItem("LLM audio (Gemma 4 / KoboldCpp)", "llm_audio")
         self.stt_backend_combo.addItem("WhisperLive (OpenAI REST)", "whisperlive")
         self.stt_backend_combo.addItem("VOSK English local", "vosk")
@@ -768,6 +769,7 @@ class VoiceModeDialog(QDialog):
         # Helpful HF repo suggestions (still routed through faster-whisper / CTranslate2).
         self.stt_model_combo.addItem("Systran/faster-whisper-small", "Systran/faster-whisper-small")
         self.stt_model_combo.addItem("Systran/faster-whisper-large-v3", "Systran/faster-whisper-large-v3")
+        self.stt_model_combo.addItem("Systran/faster-whisper-large-v3-turbo", "Systran/faster-whisper-large-v3-turbo")
         # Distil-Whisper family (may require a CTranslate2-converted repo to work with faster-whisper).
         self.stt_model_combo.addItem("distil-whisper/distil-small.en", "distil-whisper/distil-small.en")
         self.stt_model_combo.addItem("distil-whisper/distil-medium.en", "distil-whisper/distil-medium.en")
@@ -805,6 +807,12 @@ class VoiceModeDialog(QDialog):
         self.stt_vosk_model_input = QLineEdit(str(self.config.get("stt_vosk_model_path", "")))
         self.stt_vosk_model_input.setPlaceholderText("Local VOSK model folder (auto-filled after download)")
         form.addWidget(self._labeled("VOSK model folder", self.stt_vosk_model_input))
+        self.stt_parakeet_repo_input = QLineEdit(str(self.config.get("stt_parakeet_repo", "cstr/parakeet-tdt-0.6b-v3-GGUF")))
+        self.stt_parakeet_repo_input.setPlaceholderText("Parakeet GGUF repo id")
+        form.addWidget(self._labeled("Parakeet repo", self.stt_parakeet_repo_input))
+        self.stt_parakeet_model_input = QLineEdit(str(self.config.get("stt_parakeet_gguf_path", "")))
+        self.stt_parakeet_model_input.setPlaceholderText("Optional local Parakeet GGUF path")
+        form.addWidget(self._labeled("Parakeet GGUF path", self.stt_parakeet_model_input))
         self.stt_host_input = QLineEdit(str(self.config.get("stt_host", "api.openai.com")))
         self.stt_host_input.setPlaceholderText("STT API host")
         form.addWidget(self._labeled("STT API host", self.stt_host_input))
@@ -999,6 +1007,7 @@ class VoiceModeDialog(QDialog):
         stt_is_vosk = str(self.stt_backend_combo.currentData() or "") == "vosk"
         stt_is_whisperlive = str(self.stt_backend_combo.currentData() or "") == "whisperlive"
         stt_is_llm_audio = str(self.stt_backend_combo.currentData() or "") == "llm_audio"
+        stt_is_parakeet = str(self.stt_backend_combo.currentData() or "") == "parakeet"
         for widget in (
             self.stt_backend_combo,
             self.stt_model_combo,
@@ -1009,16 +1018,22 @@ class VoiceModeDialog(QDialog):
             self.stt_vosk_model_combo,
             self.stt_vosk_refresh_button,
             self.stt_vosk_download_button,
+            self.stt_parakeet_repo_input,
+            self.stt_parakeet_model_input,
         ):
             wrapper = widget.parentWidget()
             if wrapper is not None:
                 wrapper.setVisible(not stt_external)
         if self.stt_model_combo.parentWidget() is not None:
-            self.stt_model_combo.parentWidget().setVisible((not stt_external) and (not stt_is_vosk) and (not stt_is_whisperlive) and (not stt_is_llm_audio))
+            self.stt_model_combo.parentWidget().setVisible((not stt_external) and (not stt_is_vosk) and (not stt_is_whisperlive) and (not stt_is_llm_audio) and (not stt_is_parakeet))
         if self.stt_device_combo.parentWidget() is not None:
             self.stt_device_combo.parentWidget().setVisible((not stt_external) and (not stt_is_whisperlive) and (not stt_is_llm_audio))
         if self.stt_vosk_model_input.parentWidget() is not None:
             self.stt_vosk_model_input.parentWidget().setVisible((not stt_external) and stt_is_vosk)
+        if self.stt_parakeet_repo_input.parentWidget() is not None:
+            self.stt_parakeet_repo_input.parentWidget().setVisible((not stt_external) and stt_is_parakeet)
+        if self.stt_parakeet_model_input.parentWidget() is not None:
+            self.stt_parakeet_model_input.parentWidget().setVisible((not stt_external) and stt_is_parakeet)
         if self.whisperlive_host_input.parentWidget() is not None:
             self.whisperlive_host_input.parentWidget().setVisible((not stt_external) and stt_is_whisperlive)
         if self.whisperlive_model_input.parentWidget() is not None:
@@ -1161,6 +1176,8 @@ class VoiceModeDialog(QDialog):
                 "stt_host": self.stt_host_input.text().strip(),
                 "stt_remote_model": self.stt_remote_model_input.text().strip() or "whisper-1",
                 "stt_vosk_model_path": self.stt_vosk_model_input.text().strip(),
+                "stt_parakeet_repo": self.stt_parakeet_repo_input.text().strip() or "cstr/parakeet-tdt-0.6b-v3-GGUF",
+                "stt_parakeet_gguf_path": self.stt_parakeet_model_input.text().strip(),
                 "stt_streaming_enabled": bool(self.stt_streaming_check.isChecked()),
                 "llm_streaming_enabled": bool(self.llm_streaming_check.isChecked()),
                 "tts_streaming_enabled": bool(self.tts_streaming_check.isChecked()),

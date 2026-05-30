@@ -174,6 +174,7 @@ class SidebarPanel(QFrame):
             BackendProfile("pockettts", "PocketTTS", "tts_local", "pocket", "127.0.0.1:8890", "pockettts", False, True),
             BackendProfile("supertonic3", "Supertonic 3", "tts_local", "M1", "127.0.0.1:7788", "supertonic3", False, True),
             BackendProfile("whisper", "Whisper", "stt_local", "small", "", "whisper", False, False),
+            BackendProfile("parakeet", "Parakeet GGUF", "stt_local", "parakeet-tdt-0.6b-v3", "", "whisper", False, False),
         ]
         self.profile_by_key = {profile.key: profile for profile in self.profiles}
         self.backend_settings = load_backend_settings()
@@ -638,7 +639,7 @@ class SidebarPanel(QFrame):
         for profile in self.profiles:
             payload = self.backend_settings.get(profile.key, {})
             button = self.backend_buttons.get(profile.key)
-            ready = bool(payload.get("enabled", True) and payload.get("tested", False))
+            ready = bool(payload.get("enabled", False) and payload.get("tested", False))
             if profile.key == "supertonic3":
                 started, _detail = _supertonic_server_status(dict(payload))
                 if started:
@@ -692,7 +693,7 @@ class SidebarPanel(QFrame):
         if preferred.provider not in {"openai", "openai_compat", "ollama"}:
             return False
         payload = dict(self.backend_settings.get(preferred.key, {}))
-        if not bool(payload.get("enabled", True)):
+        if not bool(payload.get("enabled", False)):
             return False
         self.current_profile = preferred
         for key, button in self.backend_buttons.items():
@@ -802,8 +803,6 @@ class SidebarPanel(QFrame):
             self._voice_llm_loaded_probe_at = now
             self._voice_llm_loaded_probe_host = host
             self._voice_llm_loaded_probe_result = (bool(loaded), str(model_name or ""))
-        if loaded:
-            self._voice_models_loaded["llm"] = True
         return bool(loaded or self._voice_models_loaded.get("llm", False)), str(model_name or "")
 
     def _voice_loaded_backend_chips(self) -> list[str]:
@@ -863,7 +862,7 @@ class SidebarPanel(QFrame):
     def _resolve_tts_profile_for_command(self) -> BackendProfile | None:
         def _tts_profile_usable(profile: BackendProfile) -> bool:
             payload = dict(self.backend_settings.get(profile.key, {}))
-            if not bool(payload.get("enabled", True)):
+            if not bool(payload.get("enabled", False)):
                 return False
             mode = _default_tts_mode(payload)
             if mode == "external_api":
@@ -1060,14 +1059,47 @@ class SidebarPanel(QFrame):
         active_backends: list[dict[str, object]] = []
         for profile in self._active_backend_profiles():
             loaded = False
+            description = ""
+            variants: list[dict[str, str]] = []
+            variant_selected = ""
             if profile.key == "koboldcpp":
                 loaded, _model_name, _host, _prof = self._configured_kobold_loaded_state()
+                kp = dict(self.backend_settings.get(profile.key, {}))
+                gguf_name = Path(str(kp.get("gguf_path", "")).strip()).name
+                description = f"LLM - {gguf_name}" if gguf_name else "LLM - Specify GGUF model on backend settings first"
             elif profile.key == "kokorotts":
                 loaded, _detail = _kokoro_server_status(dict(self.backend_settings.get(profile.key, {})))
+                description = "Text-to-speech Model"
             elif profile.key == "pockettts":
                 loaded, _detail = _pocket_server_status(dict(self.backend_settings.get(profile.key, {})))
+                description = "Text-to-speech Model"
             elif profile.key == "supertonic3":
                 loaded, _detail = _supertonic_server_status(dict(self.backend_settings.get(profile.key, {})))
+                description = "Text-to-speech Model"
+            elif profile.key == "parakeet":
+                pp = dict(self.backend_settings.get(profile.key, {}))
+                loaded = bool(
+                    str(pp.get("parakeet_gguf_path", "")).strip()
+                    or str(pp.get("model", "")).strip()
+                    or str(pp.get("parakeet_gguf_repo", "")).strip()
+                )
+                description = "ASR Model"
+            elif profile.key == "whisper":
+                wp = dict(self.backend_settings.get(profile.key, {}))
+                runtime = str(wp.get("runtime", "onnx")).strip().lower() or "onnx"
+                if runtime == "gguf":
+                    loaded = bool(str(wp.get("gguf_path", "")).strip())
+                else:
+                    loaded = bool(str(wp.get("model", profile.model)).strip() or str(wp.get("binary_path", "")).strip())
+                description = "ASR Model"
+                variants = [
+                    {"value": "tiny", "label": "tiny"},
+                    {"value": "small", "label": "small"},
+                    {"value": "medium", "label": "medium"},
+                    {"value": "large", "label": "large"},
+                    {"value": "large-v3-turbo", "label": "large-v3-turbo"},
+                ]
+                variant_selected = _canonical_whisper_model(wp.get("model", profile.model))
             else:
                 continue
             active_backends.append(
@@ -1075,6 +1107,15 @@ class SidebarPanel(QFrame):
                     "key": profile.key,
                     "label": profile.label,
                     "loaded": bool(loaded),
+                    "description": description,
+                    "variants": variants,
+                    "variant_selected": variant_selected,
+                    "slot": (
+                        "tts" if profile.provider == "tts_local"
+                        else "asr" if profile.provider == "stt_local"
+                        else "llm" if profile.provider in {"openai", "openai_compat", "ollama", "gemini"}
+                        else ""
+                    ),
                 }
             )
         return {
@@ -1293,7 +1334,7 @@ class SidebarPanel(QFrame):
                 provider_label = "Supertonic 3 active (TTS runtime)"
         for profile in self.profiles:
             payload = self.backend_settings.get(profile.key, {})
-            is_enabled = bool(payload.get("enabled", True))
+            is_enabled = bool(payload.get("enabled", False))
             ready = bool(is_enabled and payload.get("tested", False))
             runtime_supertonic = False
             if profile.key == "supertonic3":
@@ -1571,7 +1612,7 @@ class SidebarPanel(QFrame):
         active: list[BackendProfile] = []
         for profile in self.profiles:
             payload = dict(self.backend_settings.get(profile.key, {}))
-            if bool(payload.get("enabled", True)):
+            if bool(payload.get("enabled", False)):
                 active.append(profile)
         return active
 
@@ -1591,6 +1632,14 @@ class SidebarPanel(QFrame):
                 ok, message = _start_supertonic_server(payload)
                 if ok:
                     self._schedule_supertonic_ready_notification(profile, payload)
+            elif profile.key == "parakeet":
+                if not str(payload.get("parakeet_gguf_repo", "")).strip():
+                    payload["parakeet_gguf_repo"] = "cstr/parakeet-tdt-0.6b-v3-GGUF"
+                ok = True
+                message = tr("chat.voice.backend.parakeet.ondemand_ready", "Parakeet is ready on-demand (no persistent server).")
+            elif profile.key == "whisper":
+                ok = True
+                message = tr("chat.voice.backend.whisper.ondemand_ready", "Whisper is ready on-demand (no persistent server).")
             else:
                 continue
             self.backend_settings[profile.key] = dict(payload)
@@ -1599,13 +1648,36 @@ class SidebarPanel(QFrame):
             save_backend_settings(self.backend_settings)
         return notes
 
-    def _start_selected_backends(self, selected_keys: list[str]) -> list[str]:
-        chosen = {str(k).strip() for k in selected_keys if str(k).strip()}
-        notes: list[str] = []
-        for profile in self._active_backend_profiles():
-            if profile.key not in chosen:
+    def _start_selected_backends(self, selected_keys: list[str], selected_options: dict[str, dict[str, object]] | None = None) -> list[str]:
+        ordered_keys = [str(k).strip() for k in selected_keys if str(k).strip()]
+        chosen: set[str] = set()
+        used_slots: set[str] = set()
+        for key in ordered_keys:
+            profile = self.profile_by_key.get(key)
+            if profile is None:
                 continue
+            slot = ""
+            if profile.provider == "tts_local":
+                slot = "tts"
+            elif profile.provider == "stt_local":
+                slot = "asr"
+            elif profile.provider in {"openai", "openai_compat", "ollama", "gemini"}:
+                slot = "llm"
+            if slot and slot in used_slots:
+                continue
+            chosen.add(key)
+            if slot:
+                used_slots.add(slot)
+        notes: list[str] = []
+        for key in ordered_keys:
+            if key not in chosen:
+                continue
+            profile = self.profile_by_key.get(key)
+            if profile is None:
+                continue
+            chosen.discard(key)
             payload = dict(self.backend_settings.get(profile.key, {}))
+            options = dict((selected_options or {}).get(profile.key, {}) or {})
             ok = False
             message = ""
             if profile.key == "koboldcpp":
@@ -1618,8 +1690,21 @@ class SidebarPanel(QFrame):
                 ok, message = _start_supertonic_server(payload)
                 if ok:
                     self._schedule_supertonic_ready_notification(profile, payload)
+            elif profile.key == "parakeet":
+                if not str(payload.get("parakeet_gguf_repo", "")).strip():
+                    payload["parakeet_gguf_repo"] = "cstr/parakeet-tdt-0.6b-v3-GGUF"
+                ok = True
+                message = tr("chat.voice.backend.parakeet.ondemand_ready", "Parakeet is ready on-demand (no persistent server).")
+            elif profile.key == "whisper":
+                chosen_variant = str(options.get("variant", "")).strip().lower()
+                if chosen_variant:
+                    payload["model"] = _canonical_whisper_model(chosen_variant)
+                ok = True
+                message = tr("chat.voice.backend.whisper.ondemand_ready", "Whisper is ready on-demand (no persistent server).")
             else:
                 continue
+            # Selecting from Start/Stop dialog should be enough; persist as enabled.
+            payload["enabled"] = True
             self.backend_settings[profile.key] = dict(payload)
             notes.append(f"{profile.label}: {message or ('started' if ok else 'not started')}")
         if notes:
@@ -1640,6 +1725,47 @@ class SidebarPanel(QFrame):
                 ok, message = _stop_pocket_server(payload)
             elif profile.key == "supertonic3":
                 ok, message = _stop_supertonic_server(payload)
+            elif profile.key == "parakeet":
+                ok = True
+                message = tr("chat.voice.backend.parakeet.nothing_to_stop", "Parakeet has no persistent server to stop.")
+            elif profile.key == "whisper":
+                ok = True
+                message = tr("chat.voice.backend.whisper.nothing_to_stop", "Whisper has no persistent server to stop.")
+            else:
+                continue
+            self.backend_settings[profile.key] = dict(payload)
+            notes.append(f"{profile.label}: {message or ('stopped' if ok else 'not stopped')}")
+        if notes:
+            save_backend_settings(self.backend_settings)
+        return notes
+
+    def _stop_selected_backends(self, selected_keys: list[str]) -> list[str]:
+        chosen = {str(k).strip() for k in selected_keys if str(k).strip()}
+        if not chosen:
+            return []
+        notes: list[str] = []
+        for key in selected_keys:
+            profile = self.profile_by_key.get(str(key).strip())
+            if profile is None or profile.key not in chosen:
+                continue
+            chosen.discard(profile.key)
+            payload = dict(self.backend_settings.get(profile.key, {}))
+            ok = False
+            message = ""
+            if profile.key == "koboldcpp":
+                ok, message = _stop_koboldcpp(payload)
+            elif profile.key == "kokorotts":
+                ok, message = _stop_kokoro_server(payload)
+            elif profile.key == "pockettts":
+                ok, message = _stop_pocket_server(payload)
+            elif profile.key == "supertonic3":
+                ok, message = _stop_supertonic_server(payload)
+            elif profile.key == "parakeet":
+                ok = True
+                message = tr("chat.voice.backend.parakeet.nothing_to_stop", "Parakeet has no persistent server to stop.")
+            elif profile.key == "whisper":
+                ok = True
+                message = tr("chat.voice.backend.whisper.nothing_to_stop", "Whisper has no persistent server to stop.")
             else:
                 continue
             self.backend_settings[profile.key] = dict(payload)
@@ -1670,10 +1796,40 @@ class SidebarPanel(QFrame):
             "tts": bool(raw.get("tts", False)) if isinstance(raw, dict) else False,
         }
         selected_backend_keys: list[str] = []
+        selected_backend_options: dict[str, dict[str, object]] = {}
         if isinstance(raw, dict):
             values = raw.get("backend_keys", [])
             if isinstance(values, list):
                 selected_backend_keys = [str(v).strip() for v in values if str(v).strip()]
+            options_raw = raw.get("backend_options", {})
+            if isinstance(options_raw, dict):
+                for key, value in options_raw.items():
+                    if isinstance(value, dict):
+                        selected_backend_options[str(key).strip()] = dict(value)
+        # Enforce one backend per slot (ASR/TTS/LLM) even if UI sends multiple keys.
+        # Keeps the first key per slot to preserve user click order.
+        dropped_backend_keys: list[str] = []
+        if selected_backend_keys:
+            normalized: list[str] = []
+            used_slots: set[str] = set()
+            for key in selected_backend_keys:
+                profile = self.profile_by_key.get(key)
+                if profile is None:
+                    continue
+                slot = ""
+                if profile.provider == "tts_local":
+                    slot = "tts"
+                elif profile.provider == "stt_local":
+                    slot = "asr"
+                elif profile.provider in {"openai", "openai_compat", "ollama", "gemini"}:
+                    slot = "llm"
+                if slot and slot in used_slots:
+                    dropped_backend_keys.append(key)
+                    continue
+                normalized.append(key)
+                if slot:
+                    used_slots.add(slot)
+            selected_backend_keys = normalized
         LOGGER.info(
             "[VoiceModels] selection parsed=%s busy=%s needs_confirm=%s last_selection=%s",
             selection,
@@ -1681,6 +1837,16 @@ class SidebarPanel(QFrame):
             bool(getattr(self, "_voice_models_needs_confirm", False)),
             getattr(self, "_voice_models_last_selection", None),
         )
+        if dropped_backend_keys:
+            dropped_labels: list[str] = []
+            for key in dropped_backend_keys:
+                profile = self.profile_by_key.get(key)
+                dropped_labels.append(profile.label if profile is not None else key)
+            self._voice_models_warning = (
+                "Only one backend per slot is allowed (1 ASR, 1 TTS, 1 LLM). "
+                f"Ignored: {', '.join(dropped_labels)}."
+            )
+            self._sync_web_ui()
         if not any(selection.values()) and not selected_backend_keys:
             self._voice_models_warning = "Select at least one model to start."
             self._voice_models_needs_confirm = False
@@ -1717,13 +1883,13 @@ class SidebarPanel(QFrame):
         self._sync_web_ui()
 
         active_start_notes = (
-            self._start_selected_backends(selected_backend_keys)
+            self._start_selected_backends(selected_backend_keys, selected_backend_options)
             if selected_backend_keys
             else self._start_active_backends()
         )
         if active_start_notes:
             self._add_runtime_status_card(
-                "Start Backends",
+                tr("chat.voice.backends.start_title", "Start Backends"),
                 "<p>" + "</p><p>".join(html.escape(line) for line in active_start_notes) + "</p>",
                 chips=[tr("chat.voice.chip.models", "models"), "backends", "start"],
             )
@@ -1731,7 +1897,7 @@ class SidebarPanel(QFrame):
         if "supertonic3" in started_keys:
             self._add_runtime_status_card(
                 "Supertonic 3",
-                "Supertonic 3 is loading. We'll notify you here as soon as the server is ready.",
+                tr("chat.voice.backend.supertonic.loading", "Supertonic 3 is loading. We'll notify you here as soon as the server is ready."),
                 chips=["backends", "tts", "loading"],
             )
 
@@ -1782,6 +1948,12 @@ class SidebarPanel(QFrame):
                 for k in ("stt", "llm", "tts"):
                     if k in loaded:
                         self._voice_models_loaded[k] = bool(loaded.get(k, False))
+            # If an LLM was loaded during warmup, make chat immediately usable.
+            try:
+                if bool((loaded or {}).get("llm", False)):
+                    self._auto_switch_to_text_backend_for_chat()
+            except Exception:
+                LOGGER.exception("auto switch to text backend after warmup failed")
             self._apply_voice_button_state()
             self._sync_web_ui()
             # Build status from what was actually requested in this warmup run.
@@ -1797,25 +1969,62 @@ class SidebarPanel(QFrame):
                     from .backends import _koboldcpp_model_loaded
                     kloaded, kmodel = _koboldcpp_model_loaded(host)
                     if kloaded:
-                        status_lines.append(f"KoboldCpp ready — model: <b>{html.escape(kmodel)}</b>")
+                        status_lines.append(
+                            tr("chat.voice.backend.kobold.loaded_model", "KoboldCpp ready — model: <b>{model}</b>").format(
+                                model=html.escape(kmodel)
+                            )
+                        )
                     else:
-                        status_lines.append("KoboldCpp process started but model is still loading…")
+                        status_lines.append(
+                            tr("chat.voice.backend.kobold.loading", "KoboldCpp process started but model is still loading…")
+                        )
                     continue
                 if profile.key == "supertonic3":
                     host = str(ppayload.get("host", profile.host)).strip()
                     reachable = bool(host and _host_reachable(host, timeout=1.2))
                     if reachable:
-                        status_lines.append(f"Supertonic 3 is reachable at <code>{html.escape(host)}</code>")
+                        status_lines.append(
+                            tr("chat.voice.backend.supertonic.loaded_host", "Supertonic 3 is reachable at <code>{host}</code>").format(
+                                host=html.escape(host)
+                            )
+                        )
                     else:
-                        status_lines.append("Supertonic 3 process started and is still loading…")
+                        status_lines.append(
+                            tr("chat.voice.backend.supertonic.loading_process", "Supertonic 3 process started and is still loading…")
+                        )
+                    continue
+                if profile.key == "whisper":
+                    vm_config = _voice_mode_settings(self.backend_settings)
+                    model_name = _canonical_whisper_model(vm_config.get("stt_model", "small"))
+                    status_lines.append(
+                        tr("chat.voice.backend.whisper.loaded_model", "Whisper loaded successfully — model: <b>{model}</b>").format(
+                            model=html.escape(model_name)
+                        )
+                    )
+                    continue
+                if profile.key == "parakeet":
+                    repo = str(ppayload.get("parakeet_gguf_repo", "cstr/parakeet-tdt-0.6b-v3-GGUF")).strip()
+                    status_lines.append(
+                        tr("chat.voice.backend.parakeet.loaded_repo", "Parakeet loaded successfully — repo: <b>{repo}</b>").format(
+                            repo=html.escape(repo)
+                        )
+                    )
                     continue
                 host = str(ppayload.get("host", profile.host)).strip()
                 from .http import _openai_compat_alive
                 if host and _openai_compat_alive(host):
-                    status_lines.append(f"{html.escape(profile.label)} is reachable at <code>{html.escape(host)}</code>")
+                    status_lines.append(
+                        tr("chat.voice.backend.generic.loaded_host", "{label} is reachable at <code>{host}</code>").format(
+                            label=html.escape(profile.label), host=html.escape(host)
+                        )
+                    )
                 else:
-                    status_lines.append(f"{html.escape(profile.label)} did not respond at <code>{html.escape(host)}</code>")
-            body = "<p>" + "</p><p>".join(status_lines) + "</p>" if status_lines else "<p>Warmup complete.</p>"
+                    status_lines.append(
+                        tr("chat.voice.backend.generic.not_responding_host", "{label} did not respond at <code>{host}</code>").format(
+                            label=html.escape(profile.label), host=html.escape(host)
+                        )
+                    )
+            body = "<p>" + "</p><p>".join(status_lines) + "</p>" if status_lines else f"<p>{html.escape(tr('chat.voice.warmup.done', 'Warmup complete.'))}</p>"
             tone = "success" if status_lines and "loading" not in body and "not respond" not in body else "warn"
             self._add_runtime_status_card(
                 tr("chat.voice.warmup.complete", "Model Warmup Complete"),
@@ -1849,18 +2058,31 @@ class SidebarPanel(QFrame):
         worker.start()
         LOGGER.info("[VoiceModels] worker.start() called isRunning=%s", bool(worker.isRunning()))
 
-    def _web_stop_voice_models(self) -> None:
+    def _web_stop_voice_models(self, selection_json: str | None = None) -> None:
         if self._voice_models_worker is not None and self._voice_models_worker.isRunning():
             self._voice_models_warning = "Models are busy starting; stop is disabled until warmup finishes."
             self._sync_web_ui()
             return
         if self._voice_worker is not None and self._voice_worker.isRunning():
             self._stop_voice_mode()
-        config = _voice_mode_settings(self.backend_settings)
-        stop_notes = self._stop_active_backends()
+        selected_backend_keys: list[str] = []
+        if selection_json:
+            try:
+                raw = json.loads(selection_json or "{}")
+            except Exception:
+                raw = {}
+            if isinstance(raw, dict):
+                values = raw.get("backend_keys", [])
+                if isinstance(values, list):
+                    selected_backend_keys = [str(v).strip() for v in values if str(v).strip()]
+        stop_notes = (
+            self._stop_selected_backends(selected_backend_keys)
+            if selected_backend_keys
+            else self._stop_active_backends()
+        )
         if stop_notes:
             self._add_runtime_status_card(
-                "Stop Backends",
+                tr("chat.voice.backends.stop_title", "Stop Backends"),
                 "<p>" + "</p><p>".join(html.escape(line) for line in stop_notes) + "</p>",
                 tone="warn",
                 chips=["backends", "stop"],
@@ -3004,8 +3226,14 @@ class SidebarPanel(QFrame):
             return
 
         if self.current_profile is None:
-            LOGGER.warning("message ignored because no current_profile")
-            return
+            if self._auto_switch_to_text_backend_for_chat():
+                LOGGER.info(
+                    "no current_profile on message; auto-switched to text backend=%s",
+                    self.current_profile.key if self.current_profile else "none",
+                )
+            else:
+                LOGGER.warning("message ignored because no current_profile")
+                return
 
         if command.startswith("/image "):
             LOGGER.debug("command /image")

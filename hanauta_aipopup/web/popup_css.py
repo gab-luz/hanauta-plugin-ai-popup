@@ -1017,6 +1017,7 @@ POPUP_CSS = r"""
     .sheet-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 12px 12px; border-bottom: 1px solid rgba(214,195,255,.10); }
     .sheet-title { font-weight: 950; font-size: 13px; }
     .sheet-sub { font-weight: 700; font-size: 12px; color: rgba(255,255,255,0.56); margin-top: 2px; }
+    .sheet-sub-note { margin-top: 4px; font-size: 11px; font-weight: 700; color: rgba(255,255,255,0.48); }
     .sheet-body { padding: 12px; display: grid; gap: 10px; }
     .sheet-warn { padding: 10px 12px; border-radius: 16px; background: rgba(255, 212, 96, 0.08); border: 1px solid rgba(255, 212, 96, 0.18); color: rgba(255, 235, 170, 0.92); font-weight: 750; }
     .check-row { display: flex; gap: 10px; align-items: center; padding: 10px 12px; border-radius: 16px; border: 1px solid rgba(214,195,255,.10); background: rgba(255,255,255,0.03); cursor: pointer; }
@@ -1024,6 +1025,17 @@ POPUP_CSS = r"""
     .check-main { min-width: 0; }
     .check-title { font-weight: 950; font-size: 12px; }
     .check-note { font-weight: 700; font-size: 12px; color: rgba(255,255,255,0.60); margin-top: 2px; }
+    .check-meta-row { display: flex; align-items: center; gap: 8px; margin-top: 4px; }
+    .check-variant {
+      height: 28px;
+      border-radius: 10px;
+      border: 1px solid rgba(214,195,255,.18);
+      background: rgba(18,14,28,0.95);
+      color: rgba(255,255,255,0.86);
+      font-size: 12px;
+      font-weight: 700;
+      padding: 0 8px;
+    }
     .sheet-actions { display: flex; gap: 10px; padding: 12px; border-top: 1px solid rgba(214,195,255,.10); justify-content: flex-end; }
     .sheet-btn {
       min-height: 40px;

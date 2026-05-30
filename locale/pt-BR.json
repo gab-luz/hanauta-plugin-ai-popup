@@ -235,6 +235,23 @@
     "backend_settings.kobold.gemma4.variant_detected": "Gemma 4 audio variant detected.",
     "backend_settings.kobold.gemma4.variant_unknown": "Gemma 4 variant unknown (audio may or may not work).",
     "backend_settings.gguf.none_found": "No bundled models found. (model_catalog.json missing?)",
-    "backend_settings.gguf.download_and_select": "Download this GGUF into Hanauta cache and select it"
+    "backend_settings.gguf.download_and_select": "Download this GGUF into Hanauta cache and select it",
+    "chat.voice.backend.parakeet.ondemand_ready": "Parakeet está pronto sob demanda (sem servidor persistente).",
+    "chat.voice.backend.whisper.ondemand_ready": "Whisper está pronto sob demanda (sem servidor persistente).",
+    "chat.voice.backend.parakeet.nothing_to_stop": "Parakeet não possui servidor persistente para parar.",
+    "chat.voice.backend.whisper.nothing_to_stop": "Whisper não possui servidor persistente para parar.",
+    "chat.voice.backends.start_title": "Iniciar Backends",
+    "chat.voice.backends.stop_title": "Parar Backends",
+    "chat.voice.backend.supertonic.loading": "Supertonic 3 está carregando. Vamos avisar aqui assim que o servidor ficar pronto.",
+    "chat.voice.backend.kobold.loaded_model": "KoboldCpp pronto — modelo: <b>{model}</b>",
+    "chat.voice.backend.kobold.loading": "Processo do KoboldCpp iniciado, mas o modelo ainda está carregando…",
+    "chat.voice.backend.supertonic.loaded_host": "Supertonic 3 está acessível em <code>{host}</code>",
+    "chat.voice.backend.supertonic.loading_process": "Processo do Supertonic 3 iniciado e ainda carregando…",
+    "chat.voice.backend.whisper.loaded_model": "Whisper carregado com sucesso — modelo: <b>{model}</b>",
+    "chat.voice.backend.parakeet.loaded_repo": "Parakeet carregado com sucesso — repositório: <b>{repo}</b>",
+    "chat.voice.backend.generic.loaded_host": "{label} está acessível em <code>{host}</code>",
+    "chat.voice.backend.generic.not_responding_host": "{label} não respondeu em <code>{host}</code>",
+    "chat.voice.warmup.done": "Aquecimento concluído.",
+    "chat.voice.models_sub_select_to_stop": "Selecione quais backends iniciados você deseja parar."
   }
 }

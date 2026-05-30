@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from html import escape as _html_escape
 import json
 import shutil
 import time
@@ -40,7 +41,9 @@ from .models import BackendProfile, ChatItemData, SourceChipData
 from .runtime import (
     AI_STATE_DIR,
     BACKEND_SETTINGS_FILE,
+    CHAT_ARCHIVES_DIR,
     GGUF_GALLERY_DIR,
+    IMAGE_OUTPUT_DIR,
     KOKORO_SYNTH_LOG_FILE,
     POCKETTTS_LANGUAGES,
     POCKETTTS_PRESET_VOICES,
@@ -71,7 +74,7 @@ from .http import (
 from .backends import _existing_path, _is_pid_alive, _is_pgid_alive, koboldcpp_status as _koboldcpp_status, start_koboldcpp as _start_koboldcpp, stop_koboldcpp as _stop_koboldcpp
 from .catalog import MODEL_CATALOG, _dir_size_bytes, _format_bytes
 from .tts import (
-    synthesize_tts, validate_backend, benchmark_whisper_transcription,
+    synthesize_tts, validate_backend, benchmark_whisper_transcription, benchmark_parakeet_transcription,
     _start_kokoro_server, _stop_kokoro_server, _kokoro_server_status,
     _start_pocket_server, _stop_pocket_server, _pocket_server_status,
     _start_supertonic_server, _stop_supertonic_server, _supertonic_server_status,
@@ -91,6 +94,16 @@ from .ui_widgets import (
 )
 from .fonts import button_css_weight
 from .i18n import tr
+
+BENCHMARK_STATE_FILE = AI_STATE_DIR / "benchmarking.json"
+STORAGE_PATHS_FILE = AI_STATE_DIR / "storage_paths.json"
+WHISPER_BENCH_VARIANTS: list[tuple[str, str, str, str]] = [
+    ("tiny", "Tiny", "oxide-lab/whisper-tiny-GGUF", "tiny"),
+    ("small", "Small", "oxide-lab/whisper-small-GGUF", "small"),
+    ("medium", "Medium", "oxide-lab/whisper-medium-GGUF", "medium"),
+    ("large", "Large", "oxide-lab/whisper-large-v3-GGUF", "large"),
+    ("large_v3_turbo", "Large v3 Turbo", "oxide-lab/whisper-large-v3-turbo-GGUF", "large-v3-turbo"),
+]
 
 try:
     from PyQt6.QtMultimedia import QAudioOutput, QMediaPlayer
@@ -757,6 +770,7 @@ class BackendSettingsDialog(QDialog):
         self.whisper_runtime_combo = QComboBox()
         self.whisper_runtime_combo.addItem("GGUF (quantized)", "gguf")
         self.whisper_runtime_combo.addItem("ONNX", "onnx")
+        self.whisper_runtime_combo.addItem("Parakeet GGUF", "parakeet_gguf")
         self.whisper_runtime_combo.currentIndexChanged.connect(self._load_selected_backend)
         whisper_runtime_layout.addWidget(self.whisper_runtime_combo, 1)
         shell_layout.addWidget(self.whisper_runtime_row)
@@ -1201,6 +1215,7 @@ class BackendSettingsDialog(QDialog):
         # --- Skills tab ---
         self._tabs.addTab(self._build_skills_tab(), tr("backend_settings.tab.skills", "Skills"))
         self._tabs.addTab(self._build_benchmarking_tab(), "Benchmarking")
+        self._tabs.addTab(self._build_storage_tab(), "Storage")
 
         _apply_antialias_font(self)
         self._download_manager = get_tts_download_manager()
@@ -1223,6 +1238,10 @@ class BackendSettingsDialog(QDialog):
         self._kobold_ready_timer = QTimer(self)
         self._kobold_ready_timer.setInterval(1500)
         self._kobold_ready_timer.timeout.connect(self._poll_pending_kobold_ready)
+        self._storage_refresh_timer = QTimer(self)
+        self._storage_refresh_timer.setInterval(1000)
+        self._storage_refresh_timer.timeout.connect(self._refresh_storage_sizes_label)
+        self._storage_refresh_timer.start()
         self._populate_gguf_gallery()
         self._load_selected_backend()
 
@@ -1944,7 +1963,7 @@ class BackendSettingsDialog(QDialog):
         layout.addWidget(desc)
 
         self.bench_prompt_input = QLineEdit()
-        self.bench_prompt_input.setPlaceholderText("Benchmark prompt (used by all selected variants)")
+        self.bench_prompt_input.setPlaceholderText("Benchmark text input (used only for TTS variants)")
         self.bench_prompt_input.setText("The quick brown fox jumps over the lazy dog.")
         layout.addWidget(self.bench_prompt_input)
 
@@ -1961,21 +1980,36 @@ class BackendSettingsDialog(QDialog):
         latest_audio_row.addStretch(1)
         layout.addLayout(latest_audio_row)
 
+        whisper_variant_row = QHBoxLayout()
+        whisper_variant_row.setContentsMargins(0, 0, 0, 0)
+        whisper_variant_row.setSpacing(8)
         self.bench_whisper_gguf_check = QCheckBox("Whisper GGUF")
+        whisper_variant_row.addWidget(self.bench_whisper_gguf_check)
+        whisper_variant_row.addWidget(QLabel("Variant"))
+        self.bench_whisper_variant_combo = QComboBox()
+        for key, label, _repo, _onnx in WHISPER_BENCH_VARIANTS:
+            self.bench_whisper_variant_combo.addItem(label, key)
+        whisper_variant_row.addWidget(self.bench_whisper_variant_combo, 1)
+        whisper_variant_row.addWidget(QLabel("ONNX pair"))
+        self.bench_whisper_onnx_pair_combo = QComboBox()
+        self.bench_whisper_onnx_pair_combo.setEnabled(False)
+        whisper_variant_row.addWidget(self.bench_whisper_onnx_pair_combo, 1)
+        layout.addLayout(whisper_variant_row)
         self.bench_whisper_onnx_check = QCheckBox("Whisper ONNX")
+        self.bench_parakeet_gguf_check = QCheckBox("Parakeet GGUF")
         self.bench_pocket_server_check = QCheckBox("PocketTTS (normal/server)")
         self.bench_pocket_onnx_check = QCheckBox("PocketTTS ONNX")
-        self.bench_pocket_gguf_check = QCheckBox("PocketTTS GGUF")
         self.bench_whisper_gguf_check.setChecked(True)
         self.bench_whisper_onnx_check.setChecked(True)
+        self.bench_parakeet_gguf_check.setChecked(False)
         self.bench_pocket_server_check.setChecked(True)
         self.bench_pocket_onnx_check.setChecked(True)
-        self.bench_pocket_gguf_check.setChecked(False)
-        layout.addWidget(self.bench_whisper_gguf_check)
         layout.addWidget(self.bench_whisper_onnx_check)
+        layout.addWidget(self.bench_parakeet_gguf_check)
         layout.addWidget(self.bench_pocket_server_check)
         layout.addWidget(self.bench_pocket_onnx_check)
-        layout.addWidget(self.bench_pocket_gguf_check)
+        self.bench_whisper_variant_combo.currentIndexChanged.connect(self._sync_whisper_variant_pair)
+        self._sync_whisper_variant_pair()
 
         btn_row = QHBoxLayout()
         btn_row.setContentsMargins(0, 0, 0, 0)
@@ -2117,6 +2151,10 @@ class BackendSettingsDialog(QDialog):
                 "monitor_enabled": bool(self.monitor_check.isChecked()),
             }
         )
+        if profile.key == "parakeet":
+            existing["runtime"] = "parakeet_gguf"
+            existing["parakeet_gguf_repo"] = self.model_input.text().strip() or "cstr/parakeet-tdt-0.6b-v3-GGUF"
+            existing["parakeet_gguf_path"] = self.gguf_path_input.text().strip()
         if profile.key == "koboldcpp":
             gguf_name = Path(str(existing.get("gguf_path", "")).strip()).name
             if not _looks_like_gemma4_model_name(gguf_name):
@@ -2135,7 +2173,7 @@ class BackendSettingsDialog(QDialog):
     def _load_selected_backend(self) -> None:
         profile = self._selected_profile()
         payload = dict(self.settings.get(profile.key, {}))
-        self.enabled_check.setChecked(bool(payload.get("enabled", True)))
+        self.enabled_check.setChecked(bool(payload.get("enabled", False)))
         self._refresh_enabled_checkbox_style()
         self.host_input.setText(str(payload.get("host", profile.host)))
         self.sd_auth_user_input.setText(str(payload.get("sd_auth_user", "")).strip())
@@ -2169,7 +2207,8 @@ class BackendSettingsDialog(QDialog):
         )
         self._set_combo_selected(
             self.whisper_runtime_combo,
-            str(payload.get("runtime", "onnx")).strip().lower() or "onnx",
+            str(payload.get("runtime", "parakeet_gguf" if profile.key == "parakeet" else "onnx")).strip().lower()
+            or ("parakeet_gguf" if profile.key == "parakeet" else "onnx"),
         )
         voice_mode = str(payload.get("tts_voice_mode", "reference")).strip().lower()
         effective_voice_mode = "preset" if profile.key == "pockettts" and preset else voice_mode
@@ -2182,7 +2221,9 @@ class BackendSettingsDialog(QDialog):
             self._set_combo_selected(self.pocket_preset_combo, "")
         self.tts_auto_download_check.setChecked(bool(payload.get("tts_download_if_missing", True)))
         self.kokoro_autostart_check.setChecked(bool(payload.get("tts_autostart", False)))
-        self.gguf_path_input.setText(str(payload.get("gguf_path", "")))
+        self.gguf_path_input.setText(
+            str(payload.get("parakeet_gguf_path", "") if profile.key == "parakeet" else payload.get("gguf_path", ""))
+        )
         self.text_model_path_input.setText(str(payload.get("text_model_path", "")))
         self.mmproj_path_input.setText(str(payload.get("mmproj_path", "")))
         self.kobold_jinja_check.setChecked(bool(payload.get("jinja", False)))
@@ -2217,6 +2258,7 @@ class BackendSettingsDialog(QDialog):
         is_kobold = profile.key == "koboldcpp"
         is_tts = profile.provider == "tts_local"
         is_whisper = profile.key == "whisper"
+        is_parakeet = profile.key == "parakeet"
         is_text = profile.provider in {"openai", "openai_compat", "ollama"}
         device_enabled = is_kobold or is_tts
         whisper_runtime = str(payload.get("runtime", "onnx")).strip().lower() or "onnx"
@@ -2224,7 +2266,8 @@ class BackendSettingsDialog(QDialog):
         self.sd_auth_pass_input.setVisible(is_sd)
         self.binary_path_input.setVisible(is_kobold or (is_tts and mode == "local_onnx") or is_whisper)
         self.binary_info_label.setVisible(self.binary_path_input.isVisible())
-        self.whisper_runtime_row.setVisible(is_whisper)
+        self.whisper_runtime_row.setVisible(is_whisper or is_parakeet)
+        self.whisper_runtime_combo.setEnabled(is_whisper)
         self.tts_mode_combo.setVisible(is_tts and profile.key != "pockettts")
         self.pocket_mode_row.setVisible(is_tts and profile.key == "pockettts")
         self.tts_repo_bundle_row.setVisible(is_tts and mode == "local_onnx")
@@ -2242,8 +2285,8 @@ class BackendSettingsDialog(QDialog):
         supports_tts_preview = is_tts and profile.key in {"kokorotts", "pockettts", "supertonic3"}
         self.tts_test_label.setVisible(supports_tts_preview)
         self.tts_test_row.setVisible(supports_tts_preview)
-        self.gguf_path_input.setVisible(is_kobold or (is_whisper and whisper_runtime == "gguf"))
-        self.gguf_info_label.setVisible(is_kobold or (is_whisper and whisper_runtime == "gguf"))
+        self.gguf_path_input.setVisible(is_kobold or (is_whisper and whisper_runtime == "gguf") or is_parakeet)
+        self.gguf_info_label.setVisible(is_kobold or (is_whisper and whisper_runtime == "gguf") or is_parakeet)
         self.gguf_download_progress.setVisible(False if not is_kobold else self.gguf_download_progress.isVisible())
         self.gguf_download_progress_label.setVisible(False if not is_kobold else self.gguf_download_progress_label.isVisible())
         self.gguf_gallery_title.setVisible(is_kobold)
@@ -2263,6 +2306,10 @@ class BackendSettingsDialog(QDialog):
         self.sd_options_refresh_button.setVisible(is_sd)
         if is_sd:
             self.model_input.setPlaceholderText(tr("backend_settings.sd.checkpoint_model", "Checkpoint / model"))
+        elif is_parakeet:
+            self.model_input.setPlaceholderText("Parakeet GGUF repository")
+            self.model_input.setText(str(payload.get("parakeet_gguf_repo", "cstr/parakeet-tdt-0.6b-v3-GGUF")).strip())
+            self.gguf_path_input.setPlaceholderText("Parakeet GGUF model path")
         elif is_whisper:
             self.model_input.setPlaceholderText("Whisper model name")
             if whisper_runtime == "onnx":
@@ -2281,7 +2328,7 @@ class BackendSettingsDialog(QDialog):
                 self.model_input.setPlaceholderText(tr("backend_settings.kokoro_voice", "Kokoro voice"))
         else:
             self.model_input.setPlaceholderText(tr("backend_settings.model", "Model"))
-        self.model_input.setVisible(not (is_tts and profile.key in {"kokorotts", "supertonic3"}) and not is_sd)
+        self.model_input.setVisible((not (is_tts and profile.key in {"kokorotts", "supertonic3"}) and not is_sd) or is_parakeet)
         self.token_saver_check.setVisible(is_text)
         self.voice_barge_in_check.setVisible(is_tts)
         self.sd_model_combo.setVisible(is_sd)
@@ -2763,7 +2810,7 @@ class BackendSettingsDialog(QDialog):
         self.status_label.setStyleSheet(f"color: {UI_TEXT_MUTED};")
 
     def _run_benchmark_suite(self) -> None:
-        def _bench_log(message: str) -> None:
+        def _bench_log(message: str, tone: str = "auto") -> None:
             line = str(message).strip()
             if not line:
                 return
@@ -2772,8 +2819,24 @@ class BackendSettingsDialog(QDialog):
             except Exception:
                 pass
             try:
-                current = self.bench_results.toPlainText().rstrip()
-                self.bench_results.setPlainText((current + "\n" if current else "") + line)
+                text = line.lower()
+                resolved_tone = tone
+                if resolved_tone == "auto":
+                    if any(k in text for k in (" fail", "failed", "error", "not found", "select ", "unable", "missing")):
+                        resolved_tone = "error"
+                    elif any(k in text for k in (" ok", "done", "saved", "complete", "downloaded", "installed")):
+                        resolved_tone = "success"
+                    elif any(k in text for k in ("[start]", "[end]", "downloading", "transcribing", "installing")):
+                        resolved_tone = "info"
+                    else:
+                        resolved_tone = "muted"
+                color = {
+                    "error": ACCENT_ALT,
+                    "success": ACCENT,
+                    "info": UI_TEXT_STRONG,
+                    "muted": UI_TEXT_MUTED,
+                }.get(resolved_tone, UI_TEXT_MUTED)
+                self.bench_results.append(f"<span style=\"color:{color};\">{_html_escape(line)}</span>")
                 self.bench_results.verticalScrollBar().setValue(self.bench_results.verticalScrollBar().maximum())
                 QApplication.processEvents()
             except Exception:
@@ -2785,17 +2848,26 @@ class BackendSettingsDialog(QDialog):
         pocket_profile = self.profile_map.get("pockettts")
         whisper_settings = dict(self.settings.get("whisper", {}))
         pocket_settings = dict(self.settings.get("pockettts", {}))
+        selected_variant_key = str(self.bench_whisper_variant_combo.currentData() or "small").strip()
+        variant_row = next((row for row in WHISPER_BENCH_VARIANTS if row[0] == selected_variant_key), WHISPER_BENCH_VARIANTS[1])
+        _variant_key, _variant_label, variant_repo, onnx_model = variant_row
         if whisper_profile is not None:
             if self.bench_whisper_gguf_check.isChecked():
                 p = dict(whisper_settings)
                 p["runtime"] = "gguf"
-                p["model"] = str(p.get("model", whisper_profile.model)).strip() or whisper_profile.model
+                p["model"] = onnx_model
+                p["whisper_gguf_repo"] = variant_repo
                 tasks.append(("Whisper GGUF", whisper_profile, p))
             if self.bench_whisper_onnx_check.isChecked():
                 p = dict(whisper_settings)
                 p["runtime"] = "onnx"
-                p["model"] = str(p.get("model", whisper_profile.model)).strip() or whisper_profile.model
+                p["model"] = onnx_model
                 tasks.append(("Whisper ONNX", whisper_profile, p))
+            if self.bench_parakeet_gguf_check.isChecked():
+                p = dict(whisper_settings)
+                p["runtime"] = "parakeet_gguf"
+                p["parakeet_gguf_repo"] = "cstr/parakeet-tdt-0.6b-v3-GGUF"
+                tasks.append(("Parakeet GGUF", whisper_profile, p))
         if pocket_profile is not None:
             if self.bench_pocket_server_check.isChecked():
                 p = dict(pocket_settings)
@@ -2806,25 +2878,39 @@ class BackendSettingsDialog(QDialog):
                 p["tts_mode"] = "local_onnx"
                 p["runtime"] = "onnx"
                 tasks.append(("PocketTTS ONNX", pocket_profile, p))
-            if self.bench_pocket_gguf_check.isChecked():
-                p = dict(pocket_settings)
-                p["tts_mode"] = "local_onnx"
-                p["runtime"] = "gguf"
-                tasks.append(("PocketTTS GGUF", pocket_profile, p))
         if not tasks:
             self.bench_results.setPlainText("No benchmark target selected.")
             return
 
         self.bench_results.setPlainText("")
-        _bench_log(f"Prompt: {prompt}")
-        _bench_log("")
+        has_tts_task = any(profile.key == "pockettts" for _name, profile, _payload in tasks)
+        has_whisper_task = any(profile.key == "whisper" for _name, profile, _payload in tasks)
         whisper_audio = Path(self.bench_whisper_audio_input.text().strip()).expanduser() if self.bench_whisper_audio_input.text().strip() else None
+        bench_rows: list[dict[str, object]] = []
+        if has_whisper_task:
+            if whisper_audio is not None:
+                _bench_log(f"ASR input audio: {whisper_audio.name}")
+            else:
+                _bench_log("ASR input audio: <not selected>")
+        if has_tts_task:
+            _bench_log(f"TTS input text: {prompt}")
+        _bench_log("")
         for name, profile, payload in tasks:
             _bench_log(f"[start] {name}")
             _bench_log(f"  backend={profile.key} runtime={str(payload.get('runtime', '')).strip() or 'default'}")
+            if profile.key == "whisper":
+                _bench_log(f"  whisper_variant={_variant_label} onnx_model={onnx_model}")
             t0 = time.perf_counter()
             ok, detail = validate_backend(profile, payload)
             transcript_preview = ""
+            if (
+                profile.key == "whisper"
+                and str(payload.get("runtime", "onnx")).strip().lower() == "gguf"
+                and (not ok)
+                and "gguf model path" in str(detail).lower()
+            ):
+                ok = True
+                detail = "Whisper GGUF path missing; auto-download will run for this benchmark."
             _bench_log(f"  validate: {'ok' if ok else 'fail'} | {detail}")
             if ok and profile.key == "whisper":
                 if whisper_audio is None:
@@ -2833,15 +2919,43 @@ class BackendSettingsDialog(QDialog):
                     _bench_log("  whisper: no audio selected")
                 else:
                     try:
-                        _bench_log(f"  whisper: transcribing {whisper_audio.name}")
-                        transcript, engine = benchmark_whisper_transcription(whisper_audio, payload)
+                        runtime = str(payload.get("runtime", "onnx")).strip().lower()
+                        if runtime == "gguf" and not str(payload.get("gguf_path", "")).strip():
+                            _bench_log("  whisper: no local GGUF path, auto-downloading benchmark model")
+                        if runtime == "parakeet_gguf":
+                            _bench_log("  parakeet: benchmark model source is cstr/parakeet-tdt-0.6b-v3-GGUF")
+                        _bench_log(f"  asr: transcribing {whisper_audio.name}")
+                        def _dl_progress(done: int, total: int, label: str) -> None:
+                            if int(total or 0) > 0:
+                                pct = max(0.0, min(100.0, (float(done) / float(total)) * 100.0))
+                                _bench_log(f"  {label} • {pct:.1f}%")
+                            else:
+                                _bench_log(f"  {label}")
+                        if runtime == "parakeet_gguf":
+                            transcript, engine = benchmark_parakeet_transcription(
+                                whisper_audio,
+                                payload,
+                                progress_cb=_dl_progress,
+                            )
+                        else:
+                            transcript, engine = benchmark_whisper_transcription(
+                                whisper_audio,
+                                payload,
+                                progress_cb=_dl_progress,
+                            )
+                        downloaded_path = str(payload.get("gguf_path", "")).strip()
+                        if downloaded_path:
+                            _bench_log(f"  whisper: model path {Path(downloaded_path).name}")
+                        parakeet_downloaded_path = str(payload.get("parakeet_gguf_path", "")).strip()
+                        if parakeet_downloaded_path:
+                            _bench_log(f"  parakeet: model path {Path(parakeet_downloaded_path).name}")
                         preview = transcript[:180] + ("..." if len(transcript) > 180 else "")
                         transcript_preview = f"  transcript ({engine}): {preview}"
-                        _bench_log(f"  whisper: done engine={engine}")
+                        _bench_log(f"  asr: done engine={engine}")
                     except Exception as exc:
                         ok = False
-                        detail = f"Whisper transcription failed: {exc}"
-                        _bench_log(f"  whisper: failed | {exc}")
+                        detail = f"ASR transcription failed: {exc}"
+                        _bench_log(f"  asr: failed | {exc}")
             if ok and profile.key == "pockettts":
                 try:
                     _bench_log("  pockettts: synthesizing")
@@ -2854,12 +2968,297 @@ class BackendSettingsDialog(QDialog):
                     _bench_log(f"  pockettts: failed | {exc}")
             elapsed = (time.perf_counter() - t0) * 1000.0
             status = "OK" if ok else "FAIL"
+            bench_rows.append(
+                {
+                    "name": name,
+                    "backend_key": profile.key,
+                    "runtime": str(payload.get("runtime", "")).strip(),
+                    "ok": bool(ok),
+                    "elapsed_ms": float(elapsed),
+                    "detail": str(detail).strip(),
+                }
+            )
             _bench_log(f"{name}: {status} • {elapsed:.1f} ms")
             _bench_log(f"  {detail}")
             if transcript_preview:
                 _bench_log(transcript_preview)
             _bench_log(f"[end] {name}")
             _bench_log("")
+
+        ok_rows = [r for r in bench_rows if bool(r.get("ok", False))]
+        if ok_rows:
+            _bench_log("=== Benchmark Summary ===", tone="info")
+            ranking = sorted(ok_rows, key=lambda r: float(r.get("elapsed_ms", 0.0) or 0.0))
+            for idx, row in enumerate(ranking, start=1):
+                name = str(row.get("name", ""))
+                ms = float(row.get("elapsed_ms", 0.0) or 0.0)
+                _bench_log(f"#{idx} {name}: {ms:.1f} ms", tone="muted")
+            winner = ranking[0]
+            winner_name = str(winner.get("name", "")).strip() or "Unknown"
+            winner_ms = float(winner.get("elapsed_ms", 0.0) or 0.0)
+            _bench_log(f"Winner: {winner_name} ({winner_ms:.1f} ms)", tone="success")
+
+            def _find(label: str) -> dict[str, object] | None:
+                return next((r for r in ok_rows if str(r.get("name", "")).strip() == label), None)
+
+            whisper_gguf = _find("Whisper GGUF")
+            whisper_onnx = _find("Whisper ONNX")
+            if whisper_gguf is not None and whisper_onnx is not None:
+                g = float(whisper_gguf.get("elapsed_ms", 0.0) or 0.0)
+                o = float(whisper_onnx.get("elapsed_ms", 0.0) or 0.0)
+                if g <= o:
+                    diff = o - g
+                    pct = (diff / max(o, 1e-9)) * 100.0
+                    _bench_log(
+                        f"Whisper pair winner: GGUF by {diff:.1f} ms ({pct:.1f}% faster).",
+                        tone="success",
+                    )
+                else:
+                    diff = g - o
+                    pct = (diff / max(g, 1e-9)) * 100.0
+                    _bench_log(
+                        f"Whisper pair winner: ONNX by {diff:.1f} ms ({pct:.1f}% faster).",
+                        tone="success",
+                    )
+            _bench_log("")
+        else:
+            _bench_log("No successful benchmark runs to compare winners.", tone="error")
+
+        try:
+            self._persist_benchmark_summary(
+                prompt=prompt,
+                whisper_audio=whisper_audio,
+                rows=bench_rows,
+            )
+            _bench_log("Benchmark summary saved to local config.")
+        except Exception as exc:
+            _bench_log(f"Could not save benchmark summary: {exc}")
+
+    def _sync_whisper_variant_pair(self) -> None:
+        selected_variant_key = str(self.bench_whisper_variant_combo.currentData() or "small").strip()
+        variant_row = next((row for row in WHISPER_BENCH_VARIANTS if row[0] == selected_variant_key), WHISPER_BENCH_VARIANTS[1])
+        _variant_key, _variant_label, _repo, onnx_model = variant_row
+        self.bench_whisper_onnx_pair_combo.blockSignals(True)
+        self.bench_whisper_onnx_pair_combo.clear()
+        self.bench_whisper_onnx_pair_combo.addItem(onnx_model, onnx_model)
+        self.bench_whisper_onnx_pair_combo.blockSignals(False)
+
+    def _storage_defaults(self) -> dict[str, str]:
+        base = Path.home() / ".cache" / "hanauta-ai-popup"
+        return {
+            "asr_models_dir": str(base / "asr-models"),
+            "tts_models_dir": str(base / "tts-models"),
+            "runtime_dir": str(base / "runtimes"),
+        }
+
+    def _load_storage_paths(self) -> dict[str, str]:
+        data = self._storage_defaults()
+        try:
+            if STORAGE_PATHS_FILE.exists():
+                raw = json.loads(STORAGE_PATHS_FILE.read_text(encoding="utf-8"))
+                if isinstance(raw, dict):
+                    for key in ("asr_models_dir", "tts_models_dir", "runtime_dir"):
+                        value = str(raw.get(key, "")).strip()
+                        if value:
+                            data[key] = str(Path(value).expanduser())
+        except Exception:
+            pass
+        return data
+
+    def _save_storage_paths(self, data: dict[str, str]) -> None:
+        AI_STATE_DIR.mkdir(parents=True, exist_ok=True)
+        STORAGE_PATHS_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    def _build_storage_tab(self) -> QWidget:
+        container = QWidget()
+        outer = QVBoxLayout(container)
+        outer.setContentsMargins(14, 14, 14, 14)
+        outer.setSpacing(10)
+        shell = SurfaceFrame(bg=rgba(THEME.background, 0.98), border=BORDER_SOFT, radius=24)
+        layout = QVBoxLayout(shell)
+        layout.setContentsMargins(18, 16, 18, 16)
+        layout.setSpacing(10)
+
+        title = QLabel("Storage & Cleanup")
+        title.setFont(QFont(self.ui_font, 13, QFont.Weight.DemiBold))
+        title.setStyleSheet(f"color: {UI_TEXT_STRONG}; border: none;")
+        layout.addWidget(title)
+        subtitle = QLabel("Choose where models/runtimes are installed and clean old files to free disk space.")
+        subtitle.setWordWrap(True)
+        subtitle.setStyleSheet(f"color: {UI_ICON_DIM}; border: none;")
+        layout.addWidget(subtitle)
+
+        paths = self._load_storage_paths()
+        self.storage_asr_input = ClickableLineEdit()
+        self.storage_tts_input = ClickableLineEdit()
+        self.storage_runtime_input = ClickableLineEdit()
+        self.storage_asr_input.setPlaceholderText("ASR models folder")
+        self.storage_tts_input.setPlaceholderText("TTS models folder")
+        self.storage_runtime_input.setPlaceholderText("Runtime/tools folder")
+        self.storage_asr_input.setText(paths.get("asr_models_dir", ""))
+        self.storage_tts_input.setText(paths.get("tts_models_dir", ""))
+        self.storage_runtime_input.setText(paths.get("runtime_dir", ""))
+        self.storage_asr_input.clicked.connect(lambda: self._pick_storage_dir(self.storage_asr_input))
+        self.storage_tts_input.clicked.connect(lambda: self._pick_storage_dir(self.storage_tts_input))
+        self.storage_runtime_input.clicked.connect(lambda: self._pick_storage_dir(self.storage_runtime_input))
+        layout.addWidget(QLabel("ASR models"))
+        layout.addWidget(self.storage_asr_input)
+        layout.addWidget(QLabel("TTS models"))
+        layout.addWidget(self.storage_tts_input)
+        layout.addWidget(QLabel("Runtimes / CLIs / venvs"))
+        layout.addWidget(self.storage_runtime_input)
+
+        save_row = QHBoxLayout()
+        save_row.setContentsMargins(0, 0, 0, 0)
+        self.storage_save_btn = QPushButton("Save storage paths")
+        self.storage_save_btn.clicked.connect(self._save_storage_paths_clicked)
+        save_row.addWidget(self.storage_save_btn)
+        save_row.addStretch(1)
+        layout.addLayout(save_row)
+
+        self.storage_sizes_label = QLabel("")
+        self.storage_sizes_label.setWordWrap(True)
+        self.storage_sizes_label.setStyleSheet(f"color: {UI_TEXT_MUTED}; border: none;")
+        layout.addWidget(self.storage_sizes_label)
+
+        cleanup_row = QHBoxLayout()
+        cleanup_row.setContentsMargins(0, 0, 0, 0)
+        cleanup_row.setSpacing(8)
+        self.cleanup_asr_btn = QPushButton("Clean ASR models")
+        self.cleanup_tts_btn = QPushButton("Clean TTS models")
+        self.cleanup_runtime_btn = QPushButton("Clean runtimes")
+        self.cleanup_generated_btn = QPushButton("Clean generated files")
+        self.cleanup_all_btn = QPushButton("Clean all")
+        self.cleanup_asr_btn.clicked.connect(lambda: self._cleanup_storage_targets(["asr_models_dir"]))
+        self.cleanup_tts_btn.clicked.connect(lambda: self._cleanup_storage_targets(["tts_models_dir"]))
+        self.cleanup_runtime_btn.clicked.connect(lambda: self._cleanup_storage_targets(["runtime_dir"]))
+        self.cleanup_generated_btn.clicked.connect(self._cleanup_generated_files)
+        self.cleanup_all_btn.clicked.connect(lambda: self._cleanup_storage_targets(["asr_models_dir", "tts_models_dir", "runtime_dir"]))
+        cleanup_row.addWidget(self.cleanup_asr_btn)
+        cleanup_row.addWidget(self.cleanup_tts_btn)
+        cleanup_row.addWidget(self.cleanup_runtime_btn)
+        cleanup_row.addWidget(self.cleanup_generated_btn)
+        cleanup_row.addWidget(self.cleanup_all_btn)
+        layout.addLayout(cleanup_row)
+
+        outer.addWidget(shell)
+        outer.addStretch()
+        self._refresh_storage_sizes_label()
+        return container
+
+    def _pick_storage_dir(self, target: QLineEdit) -> None:
+        picked = self._pick_existing_dir("Select folder", target.text().strip())
+        if picked:
+            target.setText(picked)
+
+    def _save_storage_paths_clicked(self) -> None:
+        data = {
+            "asr_models_dir": str(Path(self.storage_asr_input.text().strip() or self._storage_defaults()["asr_models_dir"]).expanduser()),
+            "tts_models_dir": str(Path(self.storage_tts_input.text().strip() or self._storage_defaults()["tts_models_dir"]).expanduser()),
+            "runtime_dir": str(Path(self.storage_runtime_input.text().strip() or self._storage_defaults()["runtime_dir"]).expanduser()),
+        }
+        self._save_storage_paths(data)
+        self.storage_save_btn.setText("Saved ✓")
+        QTimer.singleShot(1800, lambda: self.storage_save_btn.setText("Save storage paths"))
+        self._refresh_storage_sizes_label()
+
+    def _refresh_storage_sizes_label(self) -> None:
+        data = self._load_storage_paths()
+        lines: list[str] = []
+        for key, label in (
+            ("asr_models_dir", "ASR"),
+            ("tts_models_dir", "TTS"),
+            ("runtime_dir", "Runtime"),
+        ):
+            path = Path(str(data.get(key, "")).strip()).expanduser()
+            size = _dir_size_bytes(path) if path.exists() and path.is_dir() else 0
+            lines.append(f"{label}: {path} • {_format_bytes(size)}")
+        self.storage_sizes_label.setText("\n".join(lines))
+
+    def _cleanup_storage_targets(self, keys: list[str]) -> None:
+        data = self._load_storage_paths()
+        for key in keys:
+            path = Path(str(data.get(key, "")).strip()).expanduser()
+            try:
+                if path.exists() and path.is_dir():
+                    shutil.rmtree(path, ignore_errors=True)
+                path.mkdir(parents=True, exist_ok=True)
+            except Exception as exc:
+                self.status_label.setText(f"Cleanup failed for {path.name}: {exc}")
+                self.status_label.setStyleSheet(f"color: {ACCENT_ALT};")
+                return
+        self._refresh_storage_sizes_label()
+        self.status_label.setText("Cleanup completed.")
+        self.status_label.setStyleSheet(f"color: {ACCENT};")
+
+    def _cleanup_generated_files(self) -> None:
+        generated_dirs = [
+            TTS_OUTPUT_DIR,
+            VOICE_RECORDINGS_DIR,
+            IMAGE_OUTPUT_DIR,
+            CHAT_ARCHIVES_DIR,
+        ]
+        removed_files = 0
+        for directory in generated_dirs:
+            try:
+                path = Path(directory).expanduser()
+                if not path.exists() or not path.is_dir():
+                    continue
+                for item in path.rglob("*"):
+                    if item.is_file():
+                        try:
+                            item.unlink(missing_ok=True)
+                            removed_files += 1
+                        except Exception:
+                            continue
+            except Exception:
+                continue
+        self.status_label.setText(f"Generated files cleanup completed. Removed {removed_files} files.")
+        self.status_label.setStyleSheet(f"color: {ACCENT};")
+
+    def _persist_benchmark_summary(
+        self,
+        *,
+        prompt: str,
+        whisper_audio: Path | None,
+        rows: list[dict[str, object]],
+    ) -> None:
+        AI_STATE_DIR.mkdir(parents=True, exist_ok=True)
+        ok_rows = [r for r in rows if bool(r.get("ok", False))]
+        fastest_overall = None
+        if ok_rows:
+            fastest_overall = min(ok_rows, key=lambda r: float(r.get("elapsed_ms", 0.0) or 0.0))
+        fastest_by_backend: dict[str, dict[str, object]] = {}
+        for row in ok_rows:
+            key = str(row.get("backend_key", "")).strip() or "unknown"
+            current = fastest_by_backend.get(key)
+            if current is None or float(row.get("elapsed_ms", 0.0) or 0.0) < float(current.get("elapsed_ms", 0.0) or 0.0):
+                fastest_by_backend[key] = dict(row)
+        payload = {
+            "updated_at_unix": float(time.time()),
+            "updated_at_iso": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+            "tts_prompt": prompt,
+            "asr_audio": str(whisper_audio) if whisper_audio is not None else "",
+            "results": rows,
+            "fastest_overall": fastest_overall or {},
+            "fastest_by_backend": fastest_by_backend,
+        }
+        BENCHMARK_STATE_FILE.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+        settings_summary = dict(self.settings.get("_benchmarking", {}))
+        settings_summary.update(
+            {
+                "updated_at_unix": payload["updated_at_unix"],
+                "fastest_overall": payload["fastest_overall"],
+                "fastest_by_backend": payload["fastest_by_backend"],
+                "state_file": str(BENCHMARK_STATE_FILE),
+            }
+        )
+        self.settings["_benchmarking"] = settings_summary
+        save_backend_settings(self.settings)
 
     def _refresh_kobold_status(self, payload: dict[str, object]) -> None:
         active, message = _koboldcpp_status(payload)

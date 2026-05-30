@@ -4,6 +4,7 @@ import hashlib
 import importlib
 import json
 import os
+import platform
 import shlex
 import shutil
 import signal
@@ -12,6 +13,7 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+import tarfile
 import time
 import wave
 import zipfile
@@ -91,6 +93,49 @@ LOGGER = logging.getLogger("hanauta.ai_popup")
 
 _KOKORO_RUNTIME_READY = False
 _WAVEFORM_CACHE: dict[str, list[int]] = {}
+_STORAGE_PATHS_FILE = AI_STATE_DIR / "storage_paths.json"
+
+
+def _storage_defaults() -> dict[str, str]:
+    base = Path.home() / ".cache" / "hanauta-ai-popup"
+    return {
+        "asr_models_dir": str(base / "asr-models"),
+        "tts_models_dir": str(base / "tts-models"),
+        "runtime_dir": str(base / "runtimes"),
+    }
+
+
+def _load_storage_paths() -> dict[str, str]:
+    data = _storage_defaults()
+    try:
+        if _STORAGE_PATHS_FILE.exists():
+            raw = json.loads(_STORAGE_PATHS_FILE.read_text(encoding="utf-8"))
+            if isinstance(raw, dict):
+                for key in ("asr_models_dir", "tts_models_dir", "runtime_dir"):
+                    value = str(raw.get(key, "")).strip()
+                    if value:
+                        data[key] = str(Path(value).expanduser())
+    except Exception:
+        pass
+    return data
+
+
+def _asr_models_root() -> Path:
+    p = Path(_load_storage_paths().get("asr_models_dir", "")).expanduser()
+    p.mkdir(parents=True, exist_ok=True)
+    return p
+
+
+def _tts_models_root() -> Path:
+    p = Path(_load_storage_paths().get("tts_models_dir", "")).expanduser()
+    p.mkdir(parents=True, exist_ok=True)
+    return p
+
+
+def _runtime_root() -> Path:
+    p = Path(_load_storage_paths().get("runtime_dir", "")).expanduser()
+    p.mkdir(parents=True, exist_ok=True)
+    return p
 
 
 def _ansi(text: str, code: str) -> str:
@@ -188,6 +233,8 @@ def _voice_mode_defaults() -> dict[str, object]:
         # Optional WhisperLive server (collabora/WhisperLive) using its OpenAI REST interface.
         "stt_whisperlive_host": "127.0.0.1:9090",
         "stt_whisperlive_model": "small",
+        "stt_parakeet_repo": "cstr/parakeet-tdt-0.6b-v3-GGUF",
+        "stt_parakeet_gguf_path": "",
         "stt_external_api": False,
         "stt_host": "api.openai.com",
         "stt_remote_model": "whisper-1",
@@ -279,8 +326,12 @@ def _canonical_whisper_model(value: object) -> str:
         "medium": "medium",
         "whisper large": "large",
         "whisper large v3": "large",
+        "whisper large v3 turbo": "large-v3-turbo",
         "faster whisper large": "large",
         "faster whisper large v3": "large",
+        "faster whisper large v3 turbo": "large-v3-turbo",
+        "large v3 turbo": "large-v3-turbo",
+        "large-v3-turbo": "large-v3-turbo",
         "large": "large",
         "large v3": "large",
     }
@@ -574,7 +625,7 @@ def _voice_venv_dir(engine: str, model_name: str, device: str) -> Path:
     engine_slug = _safe_slug(engine.strip().lower() or "voice")
     model_slug = _safe_slug(model_name.strip().lower() or "model")
     device_slug = _safe_slug(device.strip().lower() or "cpu")
-    return AI_STATE_DIR / "voice-venvs" / engine_slug / model_slug / device_slug
+    return _runtime_root() / "voice-venvs" / engine_slug / model_slug / device_slug
 
 
 def _voice_venv_python(engine: str, model_name: str, device: str) -> Path:
@@ -635,7 +686,7 @@ def _ensure_voice_venv(
 
 
 def _voice_whisper_script_path() -> Path:
-    return AI_STATE_DIR / "voice-runtime" / "faster_whisper_transcribe.py"
+    return _runtime_root() / "voice-runtime" / "faster_whisper_transcribe.py"
 
 
 def _ensure_voice_whisper_script() -> Path:
@@ -659,6 +710,7 @@ MODEL_REPOS = {
     "small": "Systran/faster-whisper-small",
     "medium": "Systran/faster-whisper-medium",
     "large": "Systran/faster-whisper-large-v3",
+    "large-v3-turbo": "Systran/faster-whisper-large-v3-turbo",
 }
 
 
@@ -749,7 +801,7 @@ if __name__ == "__main__":
 
 
 def _voice_whisper_stream_script_path() -> Path:
-    return AI_STATE_DIR / "voice-runtime" / "faster_whisper_stream.py"
+    return _runtime_root() / "voice-runtime" / "faster_whisper_stream.py"
 
 
 def _ensure_voice_whisper_stream_script() -> Path:
@@ -774,6 +826,7 @@ MODEL_REPOS = {
     "small": "Systran/faster-whisper-small",
     "medium": "Systran/faster-whisper-medium",
     "large": "Systran/faster-whisper-large-v3",
+    "large-v3-turbo": "Systran/faster-whisper-large-v3-turbo",
 }
 
 
@@ -888,7 +941,7 @@ if __name__ == "__main__":
 
 
 def _voice_vosk_script_path() -> Path:
-    return AI_STATE_DIR / "voice-runtime" / "vosk_transcribe.py"
+    return _runtime_root() / "voice-runtime" / "vosk_transcribe.py"
 
 
 def _ensure_voice_vosk_script() -> Path:
@@ -951,20 +1004,21 @@ def _transcribe_with_whisper(audio_path: Path, config: dict[str, object]) -> str
     python_bin = _ensure_voice_venv("whisper", model_name, device, ["faster-whisper", "huggingface-hub"], "faster_whisper")
     script_path = _ensure_voice_whisper_script()
     model_cache = _voice_venv_dir("whisper", model_name, device) / "model-cache"
-    cmd = [
-        str(python_bin),
-        str(script_path),
-        "--model",
-        model_name,
-        "--audio",
-        str(audio_path.expanduser()),
-        "--device",
-        device,
-        "--model-cache",
-        str(model_cache),
-    ]
+    def _build_cmd(cache_dir: Path) -> list[str]:
+        return [
+            str(python_bin),
+            str(script_path),
+            "--model",
+            model_name,
+            "--audio",
+            str(audio_path.expanduser()),
+            "--device",
+            device,
+            "--model-cache",
+            str(cache_dir),
+        ]
 
-    def _run_once() -> subprocess.CompletedProcess[str]:
+    def _run_once(cmd: list[str]) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
             cmd,
             capture_output=True,
@@ -977,22 +1031,20 @@ def _transcribe_with_whisper(audio_path: Path, config: dict[str, object]) -> str
         text = str(detail or "").lower()
         return "unable to open file 'model.bin'" in text or "model.bin" in text and "unable to open file" in text
 
-    result = _run_once()
+    result = _run_once(_build_cmd(model_cache))
     if result.returncode != 0:
         detail_text = (result.stderr or result.stdout or "").strip()
         if _missing_model_bin(detail_text):
             try:
-                model_cache.mkdir(parents=True, exist_ok=True)
-                broken_dir = model_cache / f"Systran--faster-whisper-{model_name}"
-                if broken_dir.exists():
-                    shutil.rmtree(broken_dir, ignore_errors=True)
+                fallback_cache = _voice_venv_dir("whisper", model_name, device) / "model-cache-fallback"
+                fallback_cache.mkdir(parents=True, exist_ok=True)
                 LOGGER.warning(
-                    "whisper cache missing model.bin; purged %s and retrying once",
-                    str(broken_dir),
+                    "whisper cache missing model.bin; retrying once with alternate cache dir %s",
+                    str(fallback_cache),
                 )
             except Exception:
-                pass
-            result = _run_once()
+                fallback_cache = model_cache
+            result = _run_once(_build_cmd(fallback_cache))
 
     if result.returncode != 0:
         detail = (result.stderr or result.stdout or "").strip().splitlines()[-12:]
@@ -1144,6 +1196,16 @@ def transcribe_voice_audio(
     backend = str(config.get("stt_backend", "whisper")).strip().lower()
     if backend == "llm_audio":
         return _transcribe_with_llm_audio(audio_path, config, profiles, backend_settings)
+    if backend == "parakeet":
+        payload = {
+            "parakeet_gguf_repo": str(config.get("stt_parakeet_repo", "cstr/parakeet-tdt-0.6b-v3-GGUF")).strip() or "cstr/parakeet-tdt-0.6b-v3-GGUF",
+            "parakeet_gguf_path": str(config.get("stt_parakeet_gguf_path", "")).strip(),
+        }
+        text, _engine = benchmark_parakeet_transcription(audio_path, payload, progress_cb=None)
+        resolved = str(payload.get("parakeet_gguf_path", "")).strip()
+        if resolved:
+            config["stt_parakeet_gguf_path"] = resolved
+        return text
     if backend == "vosk":
         return _transcribe_with_vosk(audio_path, config)
     if backend == "whisperlive":
@@ -1154,7 +1216,70 @@ def transcribe_voice_audio(
 def benchmark_whisper_transcription(
     audio_path: Path,
     payload: dict[str, object],
+    progress_cb: callable | None = None,
 ) -> tuple[str, str]:
+    def _emit(done: int, total: int, label: str) -> None:
+        if callable(progress_cb):
+            progress_cb(int(done), int(total), str(label))
+
+    def _ensure_whisper_cpp_cli() -> Path:
+        install_root = _runtime_root() / "whisper-cpp"
+        repo_dir = install_root / "src"
+        build_dir = repo_dir / "build"
+        cli_candidates = [
+            build_dir / "bin" / "whisper-cli",
+            build_dir / "bin" / "main",
+            repo_dir / "main",
+        ]
+        existing = next((p for p in cli_candidates if p.exists() and os.access(p, os.X_OK)), None)
+        if existing is not None:
+            return existing
+        install_root.mkdir(parents=True, exist_ok=True)
+        if shutil.which("git") is None:
+            raise RuntimeError("git is required to auto-install whisper.cpp CLI.")
+        if shutil.which("cmake") is None:
+            raise RuntimeError("cmake is required to auto-install whisper.cpp CLI.")
+        if not repo_dir.exists():
+            _emit(0, 1, "Installing whisper.cpp CLI: cloning repository")
+            subprocess.run(
+                ["git", "clone", "--depth", "1", "https://github.com/ggerganov/whisper.cpp.git", str(repo_dir)],
+                capture_output=True,
+                text=True,
+                check=True,
+                timeout=1800,
+            )
+        else:
+            _emit(0, 1, "Installing whisper.cpp CLI: updating repository")
+            subprocess.run(
+                ["git", "-C", str(repo_dir), "pull", "--ff-only"],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=600,
+            )
+        _emit(0, 1, "Installing whisper.cpp CLI: configuring build")
+        subprocess.run(
+            ["cmake", "-S", str(repo_dir), "-B", str(build_dir), "-DCMAKE_BUILD_TYPE=Release"],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=1200,
+        )
+        jobs = str(max(1, (os.cpu_count() or 2) // 2))
+        _emit(0, 1, f"Installing whisper.cpp CLI: building (jobs={jobs})")
+        subprocess.run(
+            ["cmake", "--build", str(build_dir), "--config", "Release", "-j", jobs],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=3600,
+        )
+        installed = next((p for p in cli_candidates if p.exists() and os.access(p, os.X_OK)), None)
+        if installed is None:
+            raise RuntimeError("whisper.cpp build finished but CLI binary was not found.")
+        _emit(1, 1, f"Installed whisper.cpp CLI: {installed.name}")
+        return installed
+
     path = Path(audio_path).expanduser()
     if not path.exists():
         raise RuntimeError(f"Benchmark audio not found: {path}")
@@ -1168,53 +1293,117 @@ def benchmark_whisper_transcription(
         }
         return _transcribe_with_whisper(path, cfg), "onnx/faster-whisper"
 
-    gguf_path = _existing_path(payload.get("gguf_path"))
-    if gguf_path is None:
-        raise RuntimeError("Select a GGUF model path for Whisper benchmark.")
-    cli_candidates: list[Path] = []
-    binary_hint = _existing_path(payload.get("binary_path"))
-    if binary_hint is not None:
-        if binary_hint.is_file():
-            cli_candidates.append(binary_hint)
-        else:
-            cli_candidates.extend(
-                [
-                    binary_hint / "whisper-cli",
-                    binary_hint / "main",
-                    binary_hint / "build/bin/whisper-cli",
-                    binary_hint / "build/bin/main",
-                ]
-            )
-    for name in ("whisper-cli", "whisper-cpp", "main"):
-        resolved = shutil.which(name)
-        if resolved:
-            cli_candidates.append(Path(resolved))
-    cli = next((c for c in cli_candidates if c.exists()), None)
-    if cli is None:
-        raise RuntimeError("Whisper GGUF benchmark needs whisper.cpp CLI (set binary path or install whisper-cli in PATH).")
+    def _is_bad_magic(detail: str) -> bool:
+        text = str(detail or "").lower()
+        return "invalid model data (bad magic)" in text or "failed to initialize whisper context" in text
+
+    repo_id = str(payload.get("whisper_gguf_repo", "oxide-lab/whisper-small-GGUF")).strip() or "oxide-lab/whisper-small-GGUF"
+    target_dir = _asr_models_root() / "whisper-benchmark-models"
+    target_dir.mkdir(parents=True, exist_ok=True)
+    repo_dir = target_dir / repo_id.replace("/", "--")
+    repo_dir.mkdir(parents=True, exist_ok=True)
+    candidates = [p for p in repo_dir.rglob("*.gguf") if p.is_file() and p.stat().st_size > 0 and "whisper.cpp" in str(p).lower()]
+    if not candidates:
+        LOGGER.info("[WhisperBenchmark] resolving GGUF files for repo=%s", repo_id)
+        model_meta = _http_json(f"https://huggingface.co/api/models/{repo_id}", timeout=30.0)
+        siblings = model_meta.get("siblings", []) if isinstance(model_meta, dict) else []
+        files: list[str] = []
+        for row in siblings:
+            if isinstance(row, dict):
+                name = str(row.get("rfilename", "")).strip()
+                if name.lower().endswith(".gguf") and name.lower().startswith("whisper.cpp/"):
+                    files.append(name)
+        if not files:
+            raise RuntimeError(f"No whisper.cpp GGUF files found in repository: {repo_id}")
+        preferred_order = (
+            "q4_k.gguf",
+            "q5_k.gguf",
+            "q6_k.gguf",
+            "q8_0.gguf",
+            "q4_0.gguf",
+        )
+        chosen_name = ""
+        for suffix in preferred_order:
+            hit = next((f for f in files if f.lower().endswith(suffix)), None)
+            if hit:
+                chosen_name = hit
+                break
+        if not chosen_name:
+            chosen_name = sorted(files)[0]
+        destination = repo_dir / chosen_name
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        LOGGER.info("[WhisperBenchmark] downloading file=%s", chosen_name)
+        if callable(progress_cb):
+            progress_cb(0, 1, f"Downloading {chosen_name}")
+
+        def _progress(done: int, total: int) -> None:
+            if callable(progress_cb):
+                progress_cb(int(done), int(total), f"Downloading {chosen_name}")
+
+        _download_file(_hf_resolve_url(repo_id, chosen_name), destination, timeout=1800.0, progress_cb=_progress)
+        if callable(progress_cb):
+            progress_cb(1, 1, f"Downloaded {chosen_name}")
+        candidates = [p for p in repo_dir.rglob("*.gguf") if p.is_file() and p.stat().st_size > 0 and "whisper.cpp" in str(p).lower()]
+    if not candidates:
+        raise RuntimeError("Unable to download Whisper GGUF model automatically.")
+    preferred = None
+    for suffix in ("q4_k.gguf", "q5_k.gguf", "q6_k.gguf", "q8_0.gguf", "q4_0.gguf"):
+        preferred = next((p for p in candidates if p.name.lower().endswith(suffix)), None)
+        if preferred is not None:
+            break
+    gguf_path = preferred or sorted(candidates, key=lambda p: p.stat().st_size)[0]
+    payload["gguf_path"] = str(gguf_path)
+    # Always use the plugin-managed whisper.cpp CLI to avoid incompatible/old binaries from PATH.
+    _emit(0, 1, "Ensuring managed whisper.cpp CLI is installed and up-to-date")
+    cli = _ensure_whisper_cpp_cli()
+    payload["binary_path"] = str(cli)
 
     with tempfile.TemporaryDirectory(prefix="hanauta-whisper-bench-") as tmp:
         out_base = Path(tmp) / "bench_out"
-        cmd = [
-            str(cli),
-            "-m",
-            str(gguf_path),
-            "-f",
-            str(path),
-            "-otxt",
-            "-of",
-            str(out_base),
-        ]
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=1800,
-        )
-        if result.returncode != 0:
-            detail = (result.stderr or result.stdout or "").strip().splitlines()[-12:]
-            raise RuntimeError("Whisper GGUF benchmark failed:\n" + "\n".join(detail))
+        attempted: list[Path] = []
+        pool = [gguf_path]
+        parent = gguf_path.parent
+        if parent.exists():
+            siblings = [p for p in parent.glob("*.gguf") if p.is_file() and p != gguf_path]
+            pool.extend(sorted(siblings, key=lambda p: p.stat().st_size))
+        last_detail = ""
+        ran_ok = False
+        for candidate_model in pool:
+            if candidate_model in attempted:
+                continue
+            attempted.append(candidate_model)
+            cmd = [
+                str(cli),
+                "-m",
+                str(candidate_model),
+                "-f",
+                str(path),
+                "-otxt",
+                "-of",
+                str(out_base),
+            ]
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=1800,
+            )
+            if result.returncode == 0:
+                payload["gguf_path"] = str(candidate_model)
+                gguf_path = candidate_model
+                ran_ok = True
+                break
+            detail_text = (result.stderr or result.stdout or "").strip()
+            last_detail = "\n".join(detail_text.splitlines()[-12:])
+            if not _is_bad_magic(detail_text):
+                break
+            LOGGER.warning(
+                "[WhisperBenchmark] model incompatible (bad magic): %s; trying next candidate",
+                str(candidate_model),
+            )
+        if not ran_ok:
+            raise RuntimeError("Whisper GGUF benchmark failed:\n" + last_detail.strip())
         txt_path = out_base.with_suffix(".txt")
         if not txt_path.exists():
             txt_path = Path(str(out_base) + ".txt")
@@ -1227,6 +1416,215 @@ def benchmark_whisper_transcription(
         if not text:
             raise RuntimeError("Whisper GGUF benchmark produced empty transcript.")
         return text, "gguf/whisper.cpp"
+
+
+def benchmark_parakeet_transcription(
+    audio_path: Path,
+    payload: dict[str, object],
+    progress_cb: callable | None = None,
+) -> tuple[str, str]:
+    def _emit(done: int, total: int, label: str) -> None:
+        if callable(progress_cb):
+            progress_cb(int(done), int(total), str(label))
+
+    def _ensure_crispasr_cli() -> Path:
+        install_root = _runtime_root() / "crispasr"
+        dist_dir = install_root / "dist"
+        repo_dir = install_root / "src"
+        build_dir = repo_dir / "build"
+        cli_candidates = [
+            install_root / "bin" / "crispasr",
+            install_root / "bin" / "parakeet-main",
+            dist_dir / "bin" / "crispasr",
+            dist_dir / "bin" / "parakeet-main",
+            build_dir / "bin" / "crispasr",
+            build_dir / "bin" / "parakeet-main",
+        ]
+        existing = next((p for p in cli_candidates if p.exists() and os.access(p, os.X_OK)), None)
+        if existing is not None:
+            return existing
+
+        def _release_asset_name() -> str:
+            sys_name = platform.system().lower()
+            machine = platform.machine().lower()
+            if sys_name == "linux":
+                if machine in {"x86_64", "amd64"}:
+                    return "crispasr-linux-x86_64.tar.gz"
+                if machine in {"aarch64", "arm64"}:
+                    return "crispasr-linux-arm64.tar.gz"
+            if sys_name == "darwin":
+                return "crispasr-macos.tar.gz"
+            if sys_name == "windows":
+                return "crispasr-windows-x86_64-cpu.zip"
+            raise RuntimeError(f"Unsupported platform for CrispASR auto-download: {sys_name}/{machine}")
+
+        def _try_release_binary() -> Path | None:
+            try:
+                install_root.mkdir(parents=True, exist_ok=True)
+                dist_dir.mkdir(parents=True, exist_ok=True)
+                asset = _release_asset_name()
+                url = f"https://github.com/CrispStrobe/CrispASR/releases/latest/download/{asset}"
+                archive_path = install_root / asset
+                _emit(0, 1, f"Downloading CrispASR CLI release: {asset}")
+                _download_file(
+                    url,
+                    archive_path,
+                    timeout=1800.0,
+                    progress_cb=lambda d, t: _emit(d, t, f"Downloading CrispASR CLI release: {asset}"),
+                )
+                _emit(0, 1, "Extracting CrispASR CLI release")
+                if asset.endswith(".zip"):
+                    with zipfile.ZipFile(archive_path, "r") as zip_ref:
+                        zip_ref.extractall(dist_dir)
+                else:
+                    with tarfile.open(archive_path, "r:gz") as tar_ref:
+                        tar_ref.extractall(dist_dir)
+                for cand in dist_dir.rglob("*"):
+                    if not cand.is_file():
+                        continue
+                    name = cand.name.lower()
+                    if name in {"crispasr", "crispasr.exe", "parakeet-main", "parakeet-main.exe"}:
+                        try:
+                            cand.chmod(cand.stat().st_mode | 0o111)
+                        except Exception:
+                            pass
+                        target_bin_dir = install_root / "bin"
+                        target_bin_dir.mkdir(parents=True, exist_ok=True)
+                        target = target_bin_dir / cand.name
+                        try:
+                            shutil.copy2(cand, target)
+                            target.chmod(target.stat().st_mode | 0o111)
+                        except Exception:
+                            target = cand
+                        _emit(1, 1, f"Installed CrispASR CLI release binary: {target.name}")
+                        return target
+            except Exception as exc:
+                _emit(0, 1, f"CrispASR prebuilt download failed, falling back to source build: {exc}")
+            return None
+
+        released = _try_release_binary()
+        if released is not None and released.exists() and os.access(released, os.X_OK):
+            return released
+
+        install_root.mkdir(parents=True, exist_ok=True)
+        if shutil.which("git") is None or shutil.which("cmake") is None:
+            raise RuntimeError("git and cmake are required to auto-install CrispASR CLI.")
+        if not repo_dir.exists():
+            _emit(0, 1, "Installing CrispASR CLI: cloning repository")
+            subprocess.run(
+                ["git", "clone", "--depth", "1", "https://github.com/CrispStrobe/CrispASR.git", str(repo_dir)],
+                capture_output=True,
+                text=True,
+                check=True,
+                timeout=1800,
+            )
+        _emit(0, 1, "Installing CrispASR CLI: configuring build")
+        subprocess.run(
+            ["cmake", "-S", str(repo_dir), "-B", str(build_dir), "-DCMAKE_BUILD_TYPE=Release"],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=1200,
+        )
+        jobs = str(max(1, (os.cpu_count() or 2) // 2))
+        _emit(0, 1, f"Installing CrispASR CLI: building (jobs={jobs})")
+        subprocess.run(
+            ["cmake", "--build", str(build_dir), "--config", "Release", "-j", jobs],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=3600,
+        )
+        installed = next((p for p in cli_candidates if p.exists() and os.access(p, os.X_OK)), None)
+        if installed is None:
+            raise RuntimeError("CrispASR build finished but binary was not found.")
+        _emit(1, 1, f"Installed CrispASR CLI: {installed.name}")
+        return installed
+
+    path = Path(audio_path).expanduser()
+    if not path.exists():
+        raise RuntimeError(f"Benchmark audio not found: {path}")
+
+    repo_id = str(payload.get("parakeet_gguf_repo", "cstr/parakeet-tdt-0.6b-v3-GGUF")).strip() or "cstr/parakeet-tdt-0.6b-v3-GGUF"
+    configured_model = str(payload.get("parakeet_gguf_path", "")).strip()
+    model_path: Path | None = None
+    if configured_model:
+        configured = Path(configured_model).expanduser()
+        if configured.exists() and configured.is_file() and configured.suffix.lower() == ".gguf":
+            model_path = configured
+            payload["parakeet_gguf_path"] = str(configured)
+    target_dir = _asr_models_root() / "parakeet-benchmark-models"
+    target_dir.mkdir(parents=True, exist_ok=True)
+    repo_dir = target_dir / repo_id.replace("/", "--")
+    repo_dir.mkdir(parents=True, exist_ok=True)
+    candidates: list[Path] = []
+    if model_path is None:
+        # Reuse any Parakeet GGUF already present in shared ASR storage (downloaded by chat or benchmark).
+        shared = [
+            p for p in _asr_models_root().rglob("*.gguf")
+            if p.is_file() and p.stat().st_size > 0 and "parakeet" in p.name.lower()
+        ]
+        if shared:
+            model_path = sorted(shared, key=lambda p: p.stat().st_size, reverse=True)[0]
+    if model_path is None:
+        candidates = [p for p in repo_dir.rglob("*.gguf") if p.is_file() and p.stat().st_size > 0]
+    else:
+        candidates = [model_path]
+    if not candidates:
+        meta = _http_json(f"https://huggingface.co/api/models/{repo_id}", timeout=30.0)
+        siblings = meta.get("siblings", []) if isinstance(meta, dict) else []
+        files: list[str] = []
+        for row in siblings:
+            if isinstance(row, dict):
+                name = str(row.get("rfilename", "")).strip()
+                if name.lower().endswith(".gguf"):
+                    files.append(name)
+        if not files:
+            raise RuntimeError(f"No GGUF files found in repository: {repo_id}")
+        preferred = next((f for f in files if f.lower().endswith("q4_k.gguf")), None) or sorted(files)[0]
+        destination = repo_dir / preferred
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        _emit(0, 1, f"Downloading {preferred}")
+        _download_file(_hf_resolve_url(repo_id, preferred), destination, timeout=1800.0, progress_cb=lambda d, t: _emit(d, t, f"Downloading {preferred}"))
+        _emit(1, 1, f"Downloaded {preferred}")
+        candidates = [p for p in repo_dir.rglob("*.gguf") if p.is_file() and p.stat().st_size > 0]
+    if not candidates:
+        raise RuntimeError("Unable to download Parakeet GGUF model automatically.")
+    if model_path is None:
+        model_path = sorted(candidates, key=lambda p: p.stat().st_size)[0]
+
+    _emit(0, 1, "Ensuring managed CrispASR CLI is installed and up-to-date")
+    cli = _ensure_crispasr_cli()
+    payload["parakeet_gguf_path"] = str(model_path)
+
+    with tempfile.TemporaryDirectory(prefix="hanauta-parakeet-bench-") as tmp:
+        out_base = Path(tmp) / "parakeet_out"
+        cmd = [
+            str(cli),
+            "-m",
+            str(model_path),
+            "-f",
+            str(path),
+            "-otxt",
+            "-of",
+            str(out_base),
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True, check=False, timeout=1800)
+        if result.returncode != 0:
+            detail = (result.stderr or result.stdout or "").strip().splitlines()[-14:]
+            raise RuntimeError("Parakeet GGUF benchmark failed:\n" + "\n".join(detail))
+        txt_path = out_base.with_suffix(".txt")
+        if not txt_path.exists():
+            txt_path = Path(str(out_base) + ".txt")
+        if not txt_path.exists():
+            text = (result.stdout or "").strip()
+            if not text:
+                raise RuntimeError("Parakeet GGUF benchmark returned no transcript output.")
+            return text, "gguf/parakeet"
+        text = txt_path.read_text(encoding="utf-8", errors="ignore").strip()
+        if not text:
+            raise RuntimeError("Parakeet GGUF benchmark produced empty transcript.")
+        return text, "gguf/parakeet"
 
 
 def _resolve_character_template(text: str, char_name: str, user_name: str) -> str:
@@ -2338,7 +2736,7 @@ def _default_tts_model_dir(profile: BackendProfile, payload: dict[str, object]) 
     configured = str(payload.get("binary_path", "")).strip()
     if configured:
         return Path(configured).expanduser()
-    return TTS_MODELS_DIR / profile.key
+    return _tts_models_root() / profile.key
 
 
 def _ensure_tts_assets(
@@ -3430,8 +3828,14 @@ def validate_backend(profile: BackendProfile, payload: dict[str, object]) -> tup
     binary_path = _existing_path(payload.get("binary_path"))
     gguf_path = _existing_path(payload.get("gguf_path"))
 
-    if profile.provider == "stt_local" or profile.key == "whisper":
+    if profile.provider == "stt_local" or profile.key in {"whisper", "parakeet"}:
         runtime = str(payload.get("runtime", "onnx")).strip().lower() or "onnx"
+        if profile.key == "parakeet":
+            if not str(payload.get("parakeet_gguf_repo", "")).strip():
+                payload["parakeet_gguf_repo"] = "cstr/parakeet-tdt-0.6b-v3-GGUF"
+            return True, "Parakeet GGUF configuration looks valid."
+        if runtime == "parakeet_gguf":
+            return True, "Parakeet GGUF configuration looks valid."
         if runtime == "gguf":
             if gguf_path is None:
                 return False, "Select a GGUF model path for Whisper."

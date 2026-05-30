@@ -181,6 +181,18 @@ class PopupWebBridge(QObject):
             pass
         self.owner._web_stop_voice_models()
 
+    @pyqtSlot(str)
+    def stopVoiceModelsWithSelection(self, selection_json: str) -> None:
+        try:
+            LOGGER.info(
+                "[VoiceModels] web.stopVoiceModelsWithSelection(selection_json_len=%s preview=%r)",
+                len(selection_json or ""),
+                (selection_json or "")[:200],
+            )
+        except Exception:
+            pass
+        self.owner._web_stop_voice_models(selection_json)
+
     @pyqtSlot()
     def transcribeOnce(self) -> None:
         self.owner._web_transcribe_once()
@@ -1209,15 +1221,18 @@ class VoiceModelsWarmupWorker(QThread):
     def _warm_stt(self) -> dict[str, dict[str, object]]:
         logging.info("[VoiceModels] _warm_stt: enter")
         updates: dict[str, dict[str, object]] = {}
+        self._emit("STT", "Resolving STT backend configuration")
         if bool(self.config.get("stt_external_api", False)):
             host = str(self.config.get("stt_host", "")).strip()
             if not host:
                 raise RuntimeError("STT external API host is not configured.")
+            self._emit("STT", f"Checking external STT host: {_normalize_host_url(host)}")
             if not _host_reachable(host):
                 raise RuntimeError(f"Unable to reach STT host: {_normalize_host_url(host)}")
             return updates
         backend = str(self.config.get("stt_backend", "whisper")).strip().lower()
         logging.info(f"[VoiceModels] _warm_stt: backend={backend}")
+        self._emit("STT", f"Backend selected: {backend}")
         if backend == "llm_audio":
             # If LLM is also being started, let the LLM warmup own the startup.
             if bool(self.selection.get("llm", False)):
@@ -1255,8 +1270,11 @@ class VoiceModelsWarmupWorker(QThread):
         model_name = _canonical_whisper_model(self.config.get("stt_model", "small"))
         device = "gpu" if str(self.config.get("stt_device", "cpu")).lower() == "gpu" else "cpu"
         logging.info(f"[VoiceModels] _warm_stt: whisper model={model_name} device={device}")
+        self._emit("Whisper", f"Preparing runtime (model={model_name}, device={device})")
         _ensure_voice_venv("whisper", model_name, device, ["faster-whisper", "huggingface-hub"], "faster_whisper")
+        self._emit("Whisper", "Runtime dependencies ready")
         _ensure_voice_whisper_script()
+        self._emit("Whisper", "Warmup script ready")
 
         try:
             import wave
@@ -1273,6 +1291,7 @@ class VoiceModelsWarmupWorker(QThread):
             wav.setframerate(sample_rate)
             wav.writeframes(struct.pack("<" + "h" * frames, *([0] * frames)))
         logging.info("[VoiceModels] _warm_stt: running whisper transcribe on warmup wav")
+        self._emit("Whisper", f"Running warmup transcription on {warmup_wav.name}")
         try:
             _transcribe_with_whisper(warmup_wav, self.config)
         except RuntimeError as exc:
@@ -1283,9 +1302,11 @@ class VoiceModelsWarmupWorker(QThread):
                 logging.info(
                     "[VoiceModels] _warm_stt: whisper warmup returned no text on silence; treating as ready"
                 )
+                self._emit("Whisper", "Warmup silence produced no text (expected), backend is ready")
             else:
                 raise
         logging.info("[VoiceModels] _warm_stt: whisper transcribe done")
+        self._emit("Whisper", "Warmup completed successfully")
         return updates
 
     def _warm_llm(self) -> dict[str, dict[str, object]]:

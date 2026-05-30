@@ -3,6 +3,8 @@ from __future__ import annotations
 import os
 import signal
 import subprocess
+import time
+import shutil
 from pathlib import Path
 from typing import TYPE_CHECKING
 from urllib.parse import urlparse
@@ -84,6 +86,83 @@ def _is_pgid_alive(pgid: int) -> bool:
         return False
 
 
+def _safe_read_text(path: Path) -> str:
+    try:
+        return path.read_text(encoding="utf-8", errors="ignore")
+    except Exception:
+        return ""
+
+
+def _find_pids_by_binary(binary_path: Path) -> list[int]:
+    """Find running process ids whose /proc/<pid>/exe points to binary_path."""
+    target = str(binary_path.expanduser().resolve())
+    pids: list[int] = []
+    proc_dir = Path("/proc")
+    if not proc_dir.exists():
+        return pids
+    for entry in proc_dir.iterdir():
+        name = entry.name
+        if not name.isdigit():
+            continue
+        pid = int(name)
+        exe_link = entry / "exe"
+        try:
+            resolved = str(exe_link.resolve())
+        except Exception:
+            continue
+        if resolved == target:
+            pids.append(pid)
+    return pids
+
+
+def _try_graceful_stop_pid(pid: int, timeout_s: float = 2.0) -> tuple[bool, str]:
+    if pid <= 0:
+        return False, "invalid pid"
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except OSError as exc:
+        return False, str(exc)
+    deadline = time.time() + max(0.1, timeout_s)
+    while time.time() < deadline:
+        if not _is_pid_alive(pid):
+            return True, "stopped"
+        time.sleep(0.05)
+    try:
+        os.kill(pid, signal.SIGKILL)
+    except OSError as exc:
+        return False, str(exc)
+    return (not _is_pid_alive(pid)), "killed"
+
+
+def _try_pkexec_kill(pid: int) -> tuple[bool, str]:
+    """Attempt privileged kill via polkit prompt (desktop environments)."""
+    if pid <= 0:
+        return False, "invalid pid"
+    pkexec = shutil.which("pkexec")
+    if not pkexec:
+        return False, "pkexec not available"
+    # First try TERM, then KILL if still alive.
+    for sig in ("-TERM", "-KILL"):
+        try:
+            res = subprocess.run(
+                [pkexec, "/bin/kill", sig, str(pid)],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=30,
+            )
+        except Exception as exc:
+            return False, str(exc)
+        if res.returncode == 0:
+            time.sleep(0.08)
+            if not _is_pid_alive(pid):
+                return True, "stopped with pkexec"
+        err = (res.stderr or "").strip()
+        if "not authorized" in err.lower():
+            return False, err or "not authorized"
+    return (not _is_pid_alive(pid)), "pkexec attempted"
+
+
 def koboldcpp_status(payload: dict[str, object]) -> tuple[bool, str]:
     host = str(payload.get("host", "")).strip()
     if host and _openai_compat_alive(host):
@@ -135,20 +214,48 @@ def start_koboldcpp(payload: dict[str, object]) -> tuple[bool, str]:
 def stop_koboldcpp(payload: dict[str, object]) -> tuple[bool, str]:
     pid = int(payload.get("koboldcpp_pid", 0) or 0)
     pgid = int(payload.get("koboldcpp_pgid", 0) or 0)
+    binary_path = _existing_path(payload.get("binary_path"))
+
+    # If tracked process handles are stale, try discovering by configured binary path.
+    discovered_pids: list[int] = []
     if not _is_pid_alive(pid) and not _is_pgid_alive(pgid):
-        payload["koboldcpp_pid"] = 0
-        payload["koboldcpp_pgid"] = 0
-        return False, "No tracked KoboldCpp process is running."
+        if binary_path is not None:
+            discovered_pids = _find_pids_by_binary(binary_path)
+        if not discovered_pids:
+            payload["koboldcpp_pid"] = 0
+            payload["koboldcpp_pgid"] = 0
+            return False, "No tracked KoboldCpp process is running."
     try:
         if _is_pgid_alive(pgid):
             os.killpg(pgid, signal.SIGTERM)
         else:
-            try:
-                os.killpg(pid, signal.SIGTERM)
-            except Exception:
-                os.kill(pid, signal.SIGTERM)
+            if _is_pid_alive(pid):
+                try:
+                    os.killpg(pid, signal.SIGTERM)
+                except Exception:
+                    os.kill(pid, signal.SIGTERM)
+            elif discovered_pids:
+                stopped = 0
+                errors: list[str] = []
+                for found_pid in discovered_pids:
+                    ok, detail = _try_graceful_stop_pid(found_pid)
+                    if ok:
+                        stopped += 1
+                        continue
+                    if "operation not permitted" in detail.lower() or "permission denied" in detail.lower():
+                        pk_ok, pk_detail = _try_pkexec_kill(found_pid)
+                        if pk_ok:
+                            stopped += 1
+                            continue
+                        errors.append(f"pid {found_pid}: {pk_detail}")
+                    else:
+                        errors.append(f"pid {found_pid}: {detail}")
+                if stopped <= 0:
+                    raise OSError("; ".join(errors) if errors else "unable to stop discovered KoboldCpp process")
     except OSError as exc:
         return False, f"Unable to stop KoboldCpp: {exc}"
     payload["koboldcpp_pid"] = 0
     payload["koboldcpp_pgid"] = 0
+    if discovered_pids and not _is_pid_alive(pid):
+        return True, f"Stopped KoboldCpp process(es): {', '.join(str(p) for p in discovered_pids)}."
     return True, f"Stopped KoboldCpp process {pid}."
