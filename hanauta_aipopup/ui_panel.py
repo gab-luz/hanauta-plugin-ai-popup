@@ -2936,7 +2936,7 @@ class SidebarPanel(QFrame):
             LOGGER.debug("command /say|/speak with payload")
             prefix = "/say " if command.startswith("/say ") else "/speak "
             speak_prompt = command[len(prefix):].strip()
-            if self.current_profile.provider != "tts_local":
+            if self.current_profile is None or self.current_profile.provider != "tts_local":
                 card_id = f"tts-pick-{int(time.time()*1000)}"
                 tts_profiles = [
                     p for p in self.profiles if p.provider == "tts_local"
