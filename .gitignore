@@ -74,6 +74,12 @@ tts-audio/
 generated-images/
 voice-recordings/
 chat-archives/
+# Active chat/conversation history snapshots
+chat-history.json
+chat_history.json
+conversation-history.json
+conversation_history.json
+history.json
 tts-models/
 gguf-gallery/
 
