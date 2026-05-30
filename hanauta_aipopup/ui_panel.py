@@ -454,9 +454,14 @@ class SidebarPanel(QFrame):
 
     def _refresh_backend_hint(self) -> None:
         if self.current_profile is None:
-            supertonic_ok, supertonic_host, _profile = self._configured_supertonic_reachable_state()
-            if supertonic_ok:
-                self.header_status.setText(f"Supertonic 3  •  active  •  {supertonic_host}")
+            supertonic_ok, supertonic_host, supertonic_profile = self._configured_supertonic_reachable_state()
+            supertonic_started = False
+            if supertonic_profile is not None:
+                spayload = dict(self.backend_settings.get(supertonic_profile.key, {}))
+                supertonic_started, _detail = _supertonic_server_status(spayload)
+            if supertonic_ok or supertonic_started:
+                host_text = supertonic_host or "runtime process"
+                self.header_status.setText(f"Supertonic 3  •  active  •  {host_text}")
             else:
                 self.header_status.setText("No active backend.")
             self._sync_web_ui()
@@ -626,10 +631,15 @@ class SidebarPanel(QFrame):
 
     def _refresh_available_backends(self) -> None:
         available: list[BackendProfile] = []
+        runtime_tts_active = False
         for profile in self.profiles:
             payload = self.backend_settings.get(profile.key, {})
             button = self.backend_buttons.get(profile.key)
             ready = bool(payload.get("enabled", True) and payload.get("tested", False))
+            if profile.key == "supertonic3":
+                started, _detail = _supertonic_server_status(dict(payload))
+                if started:
+                    runtime_tts_active = True
             if button is not None:
                 button.setEnabled(ready)
                 button.setChecked(False)
@@ -651,7 +661,10 @@ class SidebarPanel(QFrame):
                 )
             )
         else:
-            self.composer.provider_label.setText("No tested backend configured")
+            if runtime_tts_active:
+                self.composer.provider_label.setText("Supertonic 3 active (TTS runtime)")
+            else:
+                self.composer.provider_label.setText("No tested backend configured")
             self.composer.entry.setEnabled(False)
             self.composer.entry.setPlaceholderText(
                 tr(
