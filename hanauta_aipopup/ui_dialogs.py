@@ -175,10 +175,18 @@ class CharacterLibraryDialog(QDialog):
         voice_sample_button = QPushButton("\U0001f3a4 Set voice sample")
         voice_sample_button.setToolTip(
             "Set a WAV/MP3 voice sample for this character.\n"
-            "Used by KokoClone to clone the character's voice."
+            "Used by PocketTTS voice cloning and other sample-based engines."
         )
         voice_sample_button.clicked.connect(self._set_voice_sample)
         row.addWidget(voice_sample_button)
+
+        supertonic_json_button = QPushButton("\U0001f4c4 Set Supertonic JSON")
+        supertonic_json_button.setToolTip(
+            "Select a Supertonic3 voice/style JSON file for this character.\n"
+            "This file is used only when Supertonic 3 speaks."
+        )
+        supertonic_json_button.clicked.connect(self._set_supertonic_voice_json)
+        row.addWidget(supertonic_json_button)
 
         edit_button = QPushButton("\u270f\ufe0f Edit prompt")
         edit_button.setToolTip("Edit character name, prompt, and description")
@@ -403,17 +411,38 @@ class CharacterLibraryDialog(QDialog):
         if not path:
             return
         card.voice_sample_path = str(Path(path).expanduser())
-        try:
-            from .tts import ensure_supertonic_voice_json_for_character
-            generated = ensure_supertonic_voice_json_for_character(card.id, Path(path))
-            card.supertonic_voice_json_path = str(generated)
-        except Exception as exc:
-            send_desktop_notification("Supertonic voice JSON", f"Could not generate JSON: {exc}")
         from .characters import save_character_library
         save_character_library(self.cards, self.selected_id)
+        self._refresh_preview()
         send_desktop_notification(
             "Voice sample set",
             f"{card.name}: {Path(path).name}",
+        )
+
+    def _set_supertonic_voice_json(self) -> None:
+        card = self._current_card()
+        if card is None:
+            send_desktop_notification("Supertonic JSON", "Select a character first.")
+            return
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            f"Supertonic JSON for {card.name}",
+            str(Path.home()),
+            "JSON files (*.json);;All files (*)",
+        )
+        if not path:
+            return
+        selected = Path(path).expanduser()
+        if selected.suffix.lower() != ".json":
+            send_desktop_notification("Supertonic JSON", "Please select a .json file.")
+            return
+        card.supertonic_voice_json_path = str(selected)
+        from .characters import save_character_library
+        save_character_library(self.cards, self.selected_id)
+        self._refresh_preview()
+        send_desktop_notification(
+            "Supertonic JSON set",
+            f"{card.name}: {selected.name}",
         )
 
     def _edit_character(self) -> None:
