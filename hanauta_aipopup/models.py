@@ -26,6 +26,7 @@ class ChatItemData:
     role: str
     title: str
     body: str
+    id: str = ""
     meta: str = ""
     created_at: float = field(default_factory=time.time)
     chips: list[SourceChipData] = field(default_factory=list)

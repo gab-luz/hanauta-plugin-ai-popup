@@ -1268,16 +1268,31 @@ def _qt_render_message(
     allow_message_html: bool,
 ) -> str:
     is_user = item.role == "user"
-    bubble_bg = USER_BG if is_user else ASSISTANT_BG
-    bubble_border = rgba(BORDER_ACCENT, 0.95) if is_user else rgba(BORDER_SOFT, 0.92)
-    title_color = ACCENT_ALT if is_user else ACCENT
-    avatar = _qt_avatar_badge("Y" if is_user else "AI", is_user=is_user)
+    meta_l = str(item.meta or "").strip().lower()
+    title_l = str(item.title or "").strip().lower()
+    is_system = (not is_user) and (
+        title_l in {"runtime", "voice mode"}
+        or "runtime" in meta_l
+        or "model status" in meta_l
+        or "backend offline" in meta_l
+        or "error" in meta_l
+        or "failed" in meta_l
+        or "loading" in meta_l
+        or "voice session" in meta_l
+        or "dictation" in meta_l
+    )
+    bubble_bg = USER_BG if is_user else (rgba("#ffd966", 0.18) if is_system else ASSISTANT_BG)
+    bubble_border = rgba(BORDER_ACCENT, 0.95) if is_user else (rgba("#ffd966", 0.48) if is_system else rgba(BORDER_SOFT, 0.92))
+    title_color = ACCENT_ALT if is_user else (rgba("#ffe6a6", 0.98) if is_system else ACCENT)
+    avatar = _qt_avatar_badge("Y" if is_user else ("SYS" if is_system else "AI"), is_user=is_user)
 
     safe_body = sanitize_message_html(item.body, allow_html=allow_message_html)
     if not safe_body.strip() and item.pending:
         safe_body = f'<p style="margin:0;color:{TEXT_DIM};">Thinking…</p>'
 
     title = html.escape(str(item.title or "").strip() or ("You" if is_user else "Hanauta AI"))
+    if is_system:
+        title = "Hanauta AI"
     meta = html.escape(str(item.meta or "").strip())
     header = (
         f'<div style="margin:0 0 8px 0;">'

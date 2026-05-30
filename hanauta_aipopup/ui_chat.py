@@ -818,6 +818,7 @@ class TextReplyWorker(QThread):
                 _generate_openai_style_reply,
                 _load_skills,
                 _api_url_from_host,
+                _compress_voice_prompt,
             )
             from .http import _http_post_json
             from .storage import secure_load_secret
@@ -833,8 +834,16 @@ class TextReplyWorker(QThread):
             user_profile = load_ai_popup_user_profile()
             user_info = user_profile.get("about", "") if user_profile.get("enabled", False) else ""
 
+            typed_text = str(self.text or "")
+            compressed_text = _compress_voice_prompt(typed_text, {})
+            LOGGER.info(
+                "[Chat] user_typed=%r | sent_to_llm(compressed)=%r",
+                typed_text[:500],
+                compressed_text[:500],
+            )
+
             messages = _chat_messages_with_memory(
-                self.text,
+                compressed_text,
                 self.character,
                 tools=tools or None,
                 user_name=user_name,

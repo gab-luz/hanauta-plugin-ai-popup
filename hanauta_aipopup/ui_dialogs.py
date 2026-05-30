@@ -92,12 +92,43 @@ class CharacterLibraryDialog(QDialog):
                 background: {PANEL_BG_FLOAT};
                 color: {TEXT};
             }}
-            QPlainTextEdit {{
+            QLineEdit, QPlainTextEdit {{
                 background: {INPUT_BG};
                 color: {TEXT};
                 border: 1px solid {rgba(BORDER_SOFT, 0.95)};
                 border-radius: 12px;
                 padding: 8px 10px;
+            }}
+            QLineEdit::placeholder, QPlainTextEdit::placeholder {{
+                color: {TEXT_DIM};
+            }}
+            QTabWidget::pane {{
+                background: {rgba(PANEL_BG, 0.70)};
+                border: 1px solid {rgba(BORDER_SOFT, 0.95)};
+                border-radius: 14px;
+                top: -1px;
+            }}
+            QTabBar::tab {{
+                background: {rgba(CARD_BG_SOFT, 0.92)};
+                color: {TEXT_MID};
+                border: 1px solid {rgba(BORDER_SOFT, 0.95)};
+                border-bottom: none;
+                border-top-left-radius: 10px;
+                border-top-right-radius: 10px;
+                padding: 8px 14px;
+                font-weight: 600;
+                margin-right: 4px;
+            }}
+            QTabBar::tab:selected {{
+                background: {rgba(ACCENT_SOFT, 0.68)};
+                color: {UI_TEXT_STRONG};
+                border: 1px solid {rgba(BORDER_ACCENT, 0.95)};
+                border-bottom: none;
+            }}
+            QTabBar::tab:hover {{
+                color: {UI_TEXT_STRONG};
+                border: 1px solid {BORDER_ACCENT};
+                border-bottom: none;
             }}
             QListWidget {{
                 background: {rgba(PANEL_BG, 0.92)};
@@ -934,6 +965,12 @@ class VoiceModeDialog(QDialog):
         self.memory_check.setChecked(bool(self.config.get("memory_enabled", False)))
         self.memory_check.toggled.connect(self._refresh_visibility)
         form.addWidget(self.memory_check)
+        self.memory_store_combo = QComboBox()
+        self.memory_store_combo.addItem("SQLite (local, built-in)", "sqlite")
+        self.memory_store_combo.addItem("Qdrant (vector index)", "qdrant")
+        self._set_combo_selected(self.memory_store_combo, str(self.config.get("memory_store", "sqlite")))
+        self.memory_store_combo.currentIndexChanged.connect(self._refresh_visibility)
+        form.addWidget(self._labeled("Memory storage backend", self.memory_store_combo))
         self.memory_host_input = QLineEdit(str(self.config.get("memory_host", "127.0.0.1:1234")))
         self.memory_host_input.setPlaceholderText("Embeddings host (OpenAI-compatible), e.g. 127.0.0.1:1234")
         form.addWidget(self._labeled("Embeddings host", self.memory_host_input))
@@ -950,6 +987,16 @@ class VoiceModeDialog(QDialog):
         self.memory_max_chars_input = QLineEdit(str(self.config.get("memory_max_chars", "1100")))
         self.memory_max_chars_input.setPlaceholderText("e.g. 1100")
         form.addWidget(self._labeled("Memory max chars", self.memory_max_chars_input))
+        self.memory_qdrant_url_input = QLineEdit(str(self.config.get("memory_qdrant_url", "http://127.0.0.1:6333")))
+        self.memory_qdrant_url_input.setPlaceholderText("Qdrant URL, e.g. http://127.0.0.1:6333")
+        form.addWidget(self._labeled("Qdrant URL", self.memory_qdrant_url_input))
+        self.memory_qdrant_collection_input = QLineEdit(str(self.config.get("memory_qdrant_collection", "hanauta_voice_memory")))
+        self.memory_qdrant_collection_input.setPlaceholderText("Collection name, e.g. hanauta_voice_memory")
+        form.addWidget(self._labeled("Qdrant collection", self.memory_qdrant_collection_input))
+        self.memory_qdrant_api_key_input = QLineEdit(secure_load_secret("voice_mode:memory_qdrant_api_key"))
+        self.memory_qdrant_api_key_input.setPlaceholderText("Qdrant API key (optional)")
+        self.memory_qdrant_api_key_input.setEchoMode(QLineEdit.EchoMode.Password)
+        form.addWidget(self._labeled("Qdrant API key", self.memory_qdrant_api_key_input))
 
         form.addWidget(self._section_label("Speech output"))
         self.tts_profile_combo = QComboBox()
@@ -1114,16 +1161,26 @@ class VoiceModeDialog(QDialog):
                 wrapper.setVisible(llm_external)
 
         memory_enabled = self.memory_check.isChecked()
+        memory_store = str(self.memory_store_combo.currentData() or "sqlite")
         for widget in (
+            self.memory_store_combo,
             self.memory_host_input,
             self.memory_model_input,
             self.memory_api_key_input,
             self.memory_top_k_input,
             self.memory_max_chars_input,
+            self.memory_qdrant_url_input,
+            self.memory_qdrant_collection_input,
+            self.memory_qdrant_api_key_input,
         ):
             wrapper = widget.parentWidget()
             if wrapper is not None:
                 wrapper.setVisible(memory_enabled)
+        qdrant_visible = memory_enabled and memory_store == "qdrant"
+        for widget in (self.memory_qdrant_url_input, self.memory_qdrant_collection_input, self.memory_qdrant_api_key_input):
+            wrapper = widget.parentWidget()
+            if wrapper is not None:
+                wrapper.setVisible(qdrant_visible)
 
     def _vosk_models_dir(self) -> Path:
         path = AI_STATE_DIR / "voice-models" / "vosk"
@@ -1256,10 +1313,13 @@ class VoiceModeDialog(QDialog):
                 "emotion_tags_enabled": bool(self.emotion_tags_check.isChecked()),
                 "token_saver_enabled": bool(self.token_saver_check.isChecked()),
                 "memory_enabled": bool(self.memory_check.isChecked()),
+                "memory_store": str(self.memory_store_combo.currentData() or "sqlite"),
                 "memory_host": self.memory_host_input.text().strip(),
                 "memory_model": self.memory_model_input.text().strip() or "nomic-embed-text-v2-moe",
                 "memory_top_k": self.memory_top_k_input.text().strip() or "4",
                 "memory_max_chars": self.memory_max_chars_input.text().strip() or "1100",
+                "memory_qdrant_url": self.memory_qdrant_url_input.text().strip() or "http://127.0.0.1:6333",
+                "memory_qdrant_collection": self.memory_qdrant_collection_input.text().strip() or "hanauta_voice_memory",
                 "stop_phrases_enabled": bool(self.stop_phrases_check.isChecked()),
                 "stop_phrases_language": str(self.stop_lang_combo.currentData() or "en-us"),
                 "stop_phrases_allow_single_word": bool(self.stop_single_check.isChecked()),
@@ -1277,6 +1337,7 @@ class VoiceModeDialog(QDialog):
         secure_store_secret("voice_mode:stt_api_key", self.stt_api_key_input.text().strip())
         secure_store_secret("voice_mode:llm_api_key", self.llm_api_key_input.text().strip())
         secure_store_secret("voice_mode:memory_api_key", self.memory_api_key_input.text().strip())
+        secure_store_secret("voice_mode:memory_qdrant_api_key", self.memory_qdrant_api_key_input.text().strip())
         save_backend_settings(self.settings)
         _write_privacy_codebook(config)
         self.config = config

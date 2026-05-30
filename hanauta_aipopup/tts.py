@@ -264,10 +264,13 @@ def _voice_mode_defaults() -> dict[str, object]:
         "privacy_words": "",
         # Embedding memory: optional retrieval snippets injected into the prompt.
         "memory_enabled": False,
+        "memory_store": "sqlite",
         "memory_host": "127.0.0.1:1234",
         "memory_model": "nomic-embed-text-v2-moe",
         "memory_top_k": "4",
         "memory_max_chars": "1100",
+        "memory_qdrant_url": "http://127.0.0.1:6333",
+        "memory_qdrant_collection": "hanauta_voice_memory",
         "compaction_model_host": "",
         "compaction_model_name": "",
         "enable_character": True,
@@ -1830,6 +1833,10 @@ def _voice_memory_recall(config: dict[str, object], query: str) -> str:
     host = str(config.get("memory_host", "")).strip()
     model = str(config.get("memory_model", "")).strip() or "nomic-embed-text-v2-moe"
     api_key = secure_load_secret("voice_mode:memory_api_key").strip()
+    memory_store = str(config.get("memory_store", "sqlite")).strip().lower() or "sqlite"
+    qdrant_url = str(config.get("memory_qdrant_url", "http://127.0.0.1:6333")).strip()
+    qdrant_collection = str(config.get("memory_qdrant_collection", "hanauta_voice_memory")).strip() or "hanauta_voice_memory"
+    qdrant_api_key = secure_load_secret("voice_mode:memory_qdrant_api_key").strip()
     try:
         top_k = int(str(config.get("memory_top_k", "4")).strip() or "4")
     except Exception:
@@ -1838,6 +1845,21 @@ def _voice_memory_recall(config: dict[str, object], query: str) -> str:
         max_chars = int(str(config.get("memory_max_chars", "1100")).strip() or "1100")
     except Exception:
         max_chars = 1100
+    if memory_store == "qdrant":
+        try:
+            return _PROMPT_SMARTNESS.memory_recall_qdrant(
+                embeddings_host=host,
+                embeddings_model=model,
+                embeddings_api_key=api_key,
+                qdrant_url=qdrant_url,
+                qdrant_collection=qdrant_collection,
+                qdrant_api_key=qdrant_api_key,
+                query=query,
+                top_k=top_k,
+                max_chars=max_chars,
+            )
+        except Exception:
+            LOGGER.exception("qdrant recall failed, falling back to sqlite memory")
     return _PROMPT_SMARTNESS.memory_recall(host, model, api_key, query, top_k, max_chars)
 
 
@@ -1847,6 +1869,10 @@ def _voice_memory_store_pair(config: dict[str, object], user_text: str, assistan
     host = str(config.get("memory_host", "")).strip()
     model = str(config.get("memory_model", "")).strip() or "nomic-embed-text-v2-moe"
     api_key = secure_load_secret("voice_mode:memory_api_key").strip()
+    memory_store = str(config.get("memory_store", "sqlite")).strip().lower() or "sqlite"
+    qdrant_url = str(config.get("memory_qdrant_url", "http://127.0.0.1:6333")).strip()
+    qdrant_collection = str(config.get("memory_qdrant_collection", "hanauta_voice_memory")).strip() or "hanauta_voice_memory"
+    qdrant_api_key = secure_load_secret("voice_mode:memory_qdrant_api_key").strip()
     user_clean = str(user_text or "").strip()
     assistant_clean = str(assistant_text or "").strip()
     if not user_clean and not assistant_clean:
@@ -1860,10 +1886,30 @@ def _voice_memory_store_pair(config: dict[str, object], user_text: str, assistan
     try:
         if user_clean:
             emb_u = _PROMPT_SMARTNESS.fetch_openai_style_embedding(host, model, user_clean, api_key)
-            _PROMPT_SMARTNESS.memory_add("user", user_clean, emb_u)
+            if memory_store == "qdrant":
+                _PROMPT_SMARTNESS.memory_add_qdrant(
+                    role="user",
+                    content=user_clean,
+                    embedding=emb_u,
+                    qdrant_url=qdrant_url,
+                    qdrant_collection=qdrant_collection,
+                    qdrant_api_key=qdrant_api_key,
+                )
+            else:
+                _PROMPT_SMARTNESS.memory_add("user", user_clean, emb_u)
         if assistant_clean:
             emb_a = _PROMPT_SMARTNESS.fetch_openai_style_embedding(host, model, assistant_clean, api_key)
-            _PROMPT_SMARTNESS.memory_add("assistant", assistant_clean, emb_a)
+            if memory_store == "qdrant":
+                _PROMPT_SMARTNESS.memory_add_qdrant(
+                    role="assistant",
+                    content=assistant_clean,
+                    embedding=emb_a,
+                    qdrant_url=qdrant_url,
+                    qdrant_collection=qdrant_collection,
+                    qdrant_api_key=qdrant_api_key,
+                )
+            else:
+                _PROMPT_SMARTNESS.memory_add("assistant", assistant_clean, emb_a)
     except Exception:
         # Memory is best-effort; never crash the conversation.
         return

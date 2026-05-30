@@ -187,6 +187,7 @@ class SidebarPanel(QFrame):
         self.current_profile: BackendProfile | None = None
         self._card_animations: list[QPropertyAnimation] = []
         self.chat_history = secure_load_chat_history()
+        self._ensure_history_ids()
         self.character_cards, self.active_character_id = load_character_library()
         self._sd_seen_outputs: dict[str, tuple[str, float]] = {}
         self._image_worker: SdImageWorker | None = None
@@ -644,22 +645,35 @@ class SidebarPanel(QFrame):
     def _refresh_available_backends(self) -> None:
         available: list[BackendProfile] = []
         runtime_tts_active = False
+        runtime_active_profiles: list[BackendProfile] = []
+        kobold_loaded, _kobold_model, _kobold_host, _kobold_profile = self._configured_kobold_loaded_state()
         for profile in self.profiles:
             payload = self.backend_settings.get(profile.key, {})
             button = self.backend_buttons.get(profile.key)
             ready = bool(payload.get("enabled", False) and payload.get("tested", False))
+            runtime_ready = False
+            if profile.key == "koboldcpp" and kobold_loaded:
+                runtime_ready = True
             if profile.key == "supertonic3":
                 started, _detail = _supertonic_server_status(dict(payload))
                 if started:
                     runtime_tts_active = True
+                    runtime_ready = True
             if button is not None:
-                button.setEnabled(ready)
+                button.setEnabled(ready or runtime_ready)
                 button.setChecked(False)
-                button.setToolTip(f"{profile.label} — {'ready' if ready else 'not tested'}")
-            if ready:
+                button.setToolTip(
+                    f"{profile.label} — {'runtime active' if runtime_ready else ('ready' if ready else 'not tested')}"
+                )
+            if ready or runtime_ready:
                 available.append(profile)
+            if runtime_ready:
+                runtime_active_profiles.append(profile)
 
-        self.current_profile = available[0] if available else None
+        preferred_runtime = next((p for p in runtime_active_profiles if p.key == "koboldcpp"), None)
+        if preferred_runtime is None:
+            preferred_runtime = runtime_active_profiles[0] if runtime_active_profiles else None
+        self.current_profile = preferred_runtime if preferred_runtime is not None else (available[0] if available else None)
         if self.current_profile is not None:
             active = self.backend_buttons.get(self.current_profile.key)
             if active is not None:
@@ -2694,8 +2708,9 @@ class SidebarPanel(QFrame):
             loaded = load_chat_archive(path)
             if loaded is not None:
                 self.chat_history = loaded
+                self._ensure_history_ids()
                 secure_clear_chat_history()
-                for item in loaded:
+                for item in self.chat_history:
                     secure_append_chat(item)
                 self._render_chat_history()
                 dialog.close()
@@ -2828,6 +2843,8 @@ class SidebarPanel(QFrame):
 
     def add_card(self, data: ChatItemData, animate: bool = True) -> None:
         del animate
+        if not str(getattr(data, "id", "") or "").strip():
+            data.id = f"msg-{int(time.time() * 1000)}-{len(self.chat_history)}"
         LOGGER.debug(
             "add_card: role=%s title=%r meta=%r body_len=%d",
             data.role,
@@ -2840,6 +2857,16 @@ class SidebarPanel(QFrame):
             secure_append_chat(data)
         self._render_chat_history()
         self._sync_web_ui()
+
+    def _ensure_history_ids(self) -> None:
+        changed = False
+        for idx, item in enumerate(self.chat_history):
+            if not str(getattr(item, "id", "") or "").strip():
+                ts = int(float(getattr(item, "created_at", time.time()) or time.time()) * 1000)
+                item.id = f"msg-{ts}-{idx}"
+                changed = True
+        if changed:
+            self._rewrite_persisted_chat_history()
 
     def _is_contextual_chat_item(self, data: ChatItemData) -> bool:
         """Only user + character/assistant dialogue should enter long-term context."""

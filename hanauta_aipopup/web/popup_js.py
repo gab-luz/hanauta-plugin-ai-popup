@@ -65,12 +65,28 @@ POPUP_JS = r"""
       list.forEach((m) => {
         const outer = document.createElement('div');
         const isUser = (m.role === 'user');
-        const eligibleAssistant = (!isUser);
-        outer.className = 'message ' + (isUser ? 'you' : 'ai') + (m.pending ? ' pending' : '');
+        const metaRaw = String(m.meta || '').trim().toLowerCase();
+        const titleRaw = String(m.title || '').trim().toLowerCase();
+        const isSystem = (!isUser) && (
+          titleRaw === 'runtime' ||
+          titleRaw === 'voice mode' ||
+          metaRaw.includes('runtime') ||
+          metaRaw.includes('model status') ||
+          metaRaw.includes('backend offline') ||
+          metaRaw.includes('error') ||
+          metaRaw.includes('failed') ||
+          metaRaw.includes('loading') ||
+          metaRaw.includes('voice session') ||
+          metaRaw.includes('dictation')
+        );
+        const eligibleAssistant = (!isUser) && (!isSystem);
+        outer.className = 'message ' + (isUser ? 'you' : (isSystem ? 'system' : 'ai')) + (m.pending ? ' pending' : '');
         const avatar = document.createElement('div');
         avatar.className = 'avatar';
         if (isUser) {
           avatar.textContent = '__I18N_YOU_SHORT__';
+        } else if (isSystem) {
+          avatar.textContent = 'SYS';
         } else if (eligibleAssistant && assistantPhoto) {
           avatar.classList.add('has-photo');
           avatar.style.backgroundImage = `url("${esc(assistantPhoto)}")`;
@@ -80,15 +96,31 @@ POPUP_JS = r"""
           avatar.textContent = String(fallback || '__I18N_AI_SHORT__').trim().slice(0, 2).toUpperCase();
         }
         const bubble = document.createElement('div');
-        bubble.className = 'bubble ' + (isUser ? 'you' : 'ai');
+        bubble.className = 'bubble ' + (isUser ? 'you' : (isSystem ? 'system' : 'ai'));
         const meta = document.createElement('div');
         meta.className = 'meta';
         const name = document.createElement('div');
         name.className = 'name';
-        name.textContent = isUser ? '__I18N_YOU__' : (eligibleAssistant ? assistantName : (m.title || '__I18N_ASSISTANT_NAME__'));
+        name.textContent = isUser
+          ? '__I18N_YOU__'
+          : (isSystem ? '__I18N_ASSISTANT_NAME__' : (eligibleAssistant ? assistantName : (m.title || '__I18N_ASSISTANT_NAME__')));
         const time = document.createElement('div');
         time.className = 'time';
         time.textContent = m.timestamp_label || m.time || '';
+        if (m.id) {
+          const remove = document.createElement('button');
+          remove.className = 'msg-remove';
+          remove.type = 'button';
+          remove.title = 'Remove message';
+          remove.setAttribute('aria-label', 'Remove message');
+          remove.textContent = '×';
+          remove.addEventListener('click', (ev) => {
+            ev.preventDefault();
+            ev.stopPropagation();
+            if (bridge && bridge.dismissCard) bridge.dismissCard(String(m.id));
+          });
+          time.appendChild(remove);
+        }
         meta.appendChild(name);
         meta.appendChild(time);
         const body = document.createElement('div');

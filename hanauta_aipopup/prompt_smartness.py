@@ -7,6 +7,7 @@ import re
 import shutil
 import sqlite3
 import time
+import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
@@ -368,3 +369,136 @@ class PromptSmartness:
             used += len(line) + 1
         return "\n".join(lines).strip()
 
+    def _qdrant_headers(self, api_key: str) -> dict[str, str]:
+        headers = {"Content-Type": "application/json"}
+        if api_key.strip():
+            headers["api-key"] = api_key.strip()
+        return headers
+
+    def _qdrant_put_json(self, url: str, payload: dict[str, object], headers: dict[str, str]) -> dict[str, object]:
+        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        req = urllib.request.Request(url, data=body, headers=headers, method="PUT")
+        with urllib.request.urlopen(req, timeout=30.0) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        return data if isinstance(data, dict) else {}
+
+    def _qdrant_post_json(self, url: str, payload: dict[str, object], headers: dict[str, str]) -> dict[str, object]:
+        return self.http_post_json(url, payload, timeout=30.0, headers=headers)
+
+    def _ensure_qdrant_collection(
+        self,
+        qdrant_url: str,
+        qdrant_collection: str,
+        *,
+        dimension: int,
+        qdrant_api_key: str = "",
+    ) -> None:
+        base = str(qdrant_url or "").strip().rstrip("/")
+        name = str(qdrant_collection or "").strip()
+        if not base or not name or dimension <= 0:
+            raise RuntimeError("Qdrant configuration is incomplete.")
+        headers = self._qdrant_headers(qdrant_api_key)
+        payload: dict[str, object] = {
+            "vectors": {
+                "size": int(dimension),
+                "distance": "Cosine",
+            }
+        }
+        try:
+            self._qdrant_put_json(f"{base}/collections/{name}", payload, headers)
+        except Exception:
+            # Collection may already exist with compatible settings; continue.
+            pass
+
+    def memory_add_qdrant(
+        self,
+        *,
+        role: str,
+        content: str,
+        embedding: list[float],
+        qdrant_url: str,
+        qdrant_collection: str,
+        qdrant_api_key: str = "",
+    ) -> None:
+        clean = str(content or "").strip()
+        if not clean or not embedding:
+            return
+        emb = [float(x) for x in embedding]
+        self._ensure_qdrant_collection(
+            qdrant_url, qdrant_collection, dimension=len(emb), qdrant_api_key=qdrant_api_key
+        )
+        point_id = int(time.time() * 1000)
+        payload: dict[str, object] = {
+            "points": [
+                {
+                    "id": point_id,
+                    "vector": emb,
+                    "payload": {
+                        "role": str(role or "user"),
+                        "content": clean[:4000],
+                        "created_at": float(time.time()),
+                    },
+                }
+            ]
+        }
+        headers = self._qdrant_headers(qdrant_api_key)
+        base = str(qdrant_url).strip().rstrip("/")
+        name = str(qdrant_collection).strip()
+        self._qdrant_post_json(f"{base}/collections/{name}/points", payload, headers)
+
+    def memory_recall_qdrant(
+        self,
+        *,
+        embeddings_host: str,
+        embeddings_model: str,
+        embeddings_api_key: str,
+        qdrant_url: str,
+        qdrant_collection: str,
+        qdrant_api_key: str,
+        query: str,
+        top_k: int,
+        max_chars: int,
+    ) -> str:
+        q = str(query or "").strip()
+        if not q:
+            return ""
+        query_emb = self.fetch_openai_style_embedding(embeddings_host, embeddings_model, q, embeddings_api_key)
+        if not query_emb:
+            return ""
+        top_k = max(0, min(12, int(top_k)))
+        if top_k <= 0:
+            return ""
+        max_chars = max(200, min(4000, int(max_chars)))
+        headers = self._qdrant_headers(qdrant_api_key)
+        base = str(qdrant_url).strip().rstrip("/")
+        name = str(qdrant_collection).strip()
+        payload: dict[str, object] = {
+            "vector": [float(x) for x in query_emb],
+            "limit": int(top_k),
+            "with_payload": True,
+        }
+        result = self._qdrant_post_json(f"{base}/collections/{name}/points/search", payload, headers)
+        points = result.get("result", [])
+        if not isinstance(points, list):
+            return ""
+        lines: list[str] = []
+        used = 0
+        for item in points:
+            if not isinstance(item, dict):
+                continue
+            pl = item.get("payload", {})
+            if not isinstance(pl, dict):
+                continue
+            role = str(pl.get("role", "user"))
+            content = " ".join(str(pl.get("content", "")).split())
+            if not content:
+                continue
+            if len(content) > 420:
+                content = content[:420].rstrip() + "..."
+            prefix = "User" if role == "user" else "Assistant"
+            line = f"{prefix}: {content}"
+            if used + len(line) + 1 > max_chars:
+                break
+            lines.append(line)
+            used += len(line) + 1
+        return "\n".join(lines).strip()

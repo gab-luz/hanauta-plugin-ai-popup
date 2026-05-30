@@ -352,6 +352,7 @@ POPUP_CSS = r"""
     .message.you .avatar { order: 2; }
     .message.you .bubble { order: 1; }
     .message.ai { justify-content: flex-start; }
+    .message.system { justify-content: flex-start; }
     .avatar {
       width: 28px;
       height: 28px;
@@ -369,6 +370,11 @@ POPUP_CSS = r"""
       background: var(--you-bg);
       border-color: var(--you-border);
       color: var(--accent-2);
+    }
+    .message.system .avatar {
+      background: rgba(255, 217, 102, 0.20);
+      border-color: rgba(255, 217, 102, 0.42);
+      color: rgba(255, 230, 166, 0.98);
     }
     .avatar.has-photo {
       color: transparent;
@@ -388,6 +394,11 @@ POPUP_CSS = r"""
     }
     .bubble.ai {
       border-bottom-left-radius: 6px;
+    }
+    .bubble.system {
+      border-bottom-left-radius: 6px;
+      background: rgba(255, 217, 102, 0.16);
+      border-color: rgba(255, 217, 102, 0.45);
     }
     .bubble.you {
       background: var(--you-bg);
@@ -417,7 +428,30 @@ POPUP_CSS = r"""
       font-size: 11px;
     }
     .meta .name { color: rgba(255,255,255,0.78); }
+    .message.system .meta .name { color: rgba(255, 233, 166, 0.98); }
     .meta .time { color: rgba(255,255,255,0.48); font-weight: 750; }
+    .msg-remove {
+      margin-left: 8px;
+      width: 18px;
+      height: 18px;
+      border-radius: 999px;
+      border: 1px solid rgba(255,255,255,0.18);
+      background: rgba(255,255,255,0.06);
+      color: rgba(255,255,255,0.88);
+      font-size: 12px;
+      line-height: 14px;
+      font-weight: 900;
+      cursor: pointer;
+      padding: 0;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .msg-remove:hover {
+      background: rgba(255, 92, 130, 0.22);
+      border-color: rgba(255, 92, 130, 0.42);
+      color: rgba(255, 210, 220, 0.98);
+    }
     .body-text {
       font-size: 13px;
       line-height: 1.55;
