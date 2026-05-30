@@ -680,18 +680,18 @@ class BackendSettingsDialog(QDialog):
         shell_layout.setContentsMargins(18, 18, 18, 18)
         shell_layout.setSpacing(12)
         backends_root.addWidget(shell)
-        self._tabs.addTab(backends_widget, "Backends")
+        self._tabs.addTab(backends_widget, tr("backend_settings.tab.backends", "Backends"))
 
         header_row = QWidget()
         header_layout = QVBoxLayout(header_row)
         header_layout.setContentsMargins(0, 0, 0, 0)
         header_layout.setSpacing(4)
-        title = QLabel("Backend settings")
+        title = QLabel(tr("backend_settings.header.title", "Backend settings"))
         title.setFont(QFont(ui_font, 14, QFont.Weight.DemiBold))
         title.setStyleSheet(f"color: {UI_TEXT_STRONG}; border: none;")
         header_layout.addWidget(title)
 
-        subtitle = QLabel("Configure each backend and mark it Active to make it available in the popup.")
+        subtitle = QLabel(tr("backend_settings.header.subtitle", "Configure each backend and mark it Active to make it available in the popup."))
         subtitle.setFont(QFont(ui_font, 10))
         subtitle.setStyleSheet(f"color: {UI_ICON_DIM}; border: none;")
         header_layout.addWidget(subtitle)
@@ -703,7 +703,7 @@ class BackendSettingsDialog(QDialog):
         self.backend_combo.currentIndexChanged.connect(self._load_selected_backend)
         shell_layout.addWidget(self.backend_combo)
 
-        self.enabled_check = QCheckBox("Active")
+        self.enabled_check = QCheckBox(tr("backend_settings.active", "Active"))
         self.enabled_check.stateChanged.connect(lambda _state: self._refresh_enabled_checkbox_style())
         shell_layout.addWidget(self.enabled_check)
 
@@ -712,20 +712,20 @@ class BackendSettingsDialog(QDialog):
         url_binary_layout.setContentsMargins(0, 0, 0, 0)
         url_binary_layout.setSpacing(10)
         self.host_input = QLineEdit()
-        self.host_input.setPlaceholderText("Host")
+        self.host_input.setPlaceholderText(tr("backend_settings.host", "Host"))
         url_binary_layout.addWidget(self.host_input, 1)
         self.binary_path_input = ClickableLineEdit()
-        self.binary_path_input.setPlaceholderText("Local binary path")
-        self.binary_path_input.setToolTip("Click to browse for a local binary or model folder")
+        self.binary_path_input.setPlaceholderText(tr("backend_settings.binary_path", "Local binary path"))
+        self.binary_path_input.setToolTip(tr("backend_settings.binary_path.tooltip", "Click to browse for a local binary or model folder"))
         self.binary_path_input.clicked.connect(self._browse_binary_path)
         url_binary_layout.addWidget(self.binary_path_input, 1)
         shell_layout.addWidget(url_binary_row)
 
         self.sd_auth_user_input = QLineEdit()
-        self.sd_auth_user_input.setPlaceholderText("SD WebUI username (optional)")
+        self.sd_auth_user_input.setPlaceholderText(tr("backend_settings.sd.username", "SD WebUI username (optional)"))
         shell_layout.addWidget(self.sd_auth_user_input)
         self.sd_auth_pass_input = QLineEdit()
-        self.sd_auth_pass_input.setPlaceholderText("SD WebUI password (optional)")
+        self.sd_auth_pass_input.setPlaceholderText(tr("backend_settings.sd.password", "SD WebUI password (optional)"))
         self.sd_auth_pass_input.setEchoMode(QLineEdit.EchoMode.Password)
         shell_layout.addWidget(self.sd_auth_pass_input)
 
@@ -734,44 +734,44 @@ class BackendSettingsDialog(QDialog):
         model_device_layout.setContentsMargins(0, 0, 0, 0)
         model_device_layout.setSpacing(10)
         self.model_input = QLineEdit()
-        self.model_input.setPlaceholderText("Model")
+        self.model_input.setPlaceholderText(tr("backend_settings.model", "Model"))
         model_device_layout.addWidget(self.model_input, 1)
-        cpu_gpu_label = QLabel("CPU/GPU")
+        cpu_gpu_label = QLabel(tr("backend_settings.device", "CPU/GPU"))
         cpu_gpu_label.setStyleSheet("border: none;")
         model_device_layout.addWidget(cpu_gpu_label)
         self.device_combo = QComboBox()
-        self.device_combo.addItem("CPU", "cpu")
-        self.device_combo.addItem("GPU", "gpu")
-        self.device_combo.setToolTip("Execution device")
+        self.device_combo.addItem(tr("backend_settings.device.cpu", "CPU"), "cpu")
+        self.device_combo.addItem(tr("backend_settings.device.gpu", "GPU"), "gpu")
+        self.device_combo.setToolTip(tr("backend_settings.device.tooltip", "Execution device"))
         model_device_layout.addWidget(self.device_combo, 1)
         shell_layout.addWidget(model_device_row)
 
-        self.token_saver_check = QCheckBox("Token saver (compress voice prompts before LLM)")
-        self.token_saver_check.setToolTip("Voice mode only: reduces prompt tokens by compressing STT transcripts before sending to this backend.")
+        self.token_saver_check = QCheckBox(tr("backend_settings.token_saver", "Token saver (compress voice prompts before LLM)"))
+        self.token_saver_check.setToolTip(tr("backend_settings.token_saver.tooltip", "Voice mode only: reduces prompt tokens by compressing STT transcripts before sending to this backend."))
         shell_layout.addWidget(self.token_saver_check)
 
-        self.voice_barge_in_check = QCheckBox("Voice barge-in fadeout (interrupt TTS when you speak)")
-        self.voice_barge_in_check.setToolTip("Voice mode only: if you start talking during TTS, fade out speech and let you speak immediately.")
+        self.voice_barge_in_check = QCheckBox(tr("backend_settings.voice_barge_in", "Voice barge-in fadeout (interrupt TTS when you speak)"))
+        self.voice_barge_in_check.setToolTip(tr("backend_settings.voice_barge_in.tooltip", "Voice mode only: if you start talking during TTS, fade out speech and let you speak immediately."))
         shell_layout.addWidget(self.voice_barge_in_check)
 
         self.sd_model_combo = QComboBox()
         self.sd_model_combo.setEditable(True)
         if self.sd_model_combo.lineEdit() is not None:
-            self.sd_model_combo.lineEdit().setPlaceholderText("Checkpoint / model")
-        self.sd_model_combo.setToolTip("SD checkpoint")
+            self.sd_model_combo.lineEdit().setPlaceholderText(tr("backend_settings.sd.checkpoint_model", "Checkpoint / model"))
+        self.sd_model_combo.setToolTip(tr("backend_settings.sd.checkpoint", "SD checkpoint"))
         shell_layout.addWidget(self.sd_model_combo)
         self.kokoro_voice_combo = QComboBox()
-        self.kokoro_voice_combo.setToolTip("Kokoro voice")
+        self.kokoro_voice_combo.setToolTip(tr("backend_settings.kokoro_voice", "Kokoro voice"))
         shell_layout.addWidget(self.kokoro_voice_combo)
 
         self.api_key_input = QLineEdit()
-        self.api_key_input.setPlaceholderText("API key")
+        self.api_key_input.setPlaceholderText(tr("backend_settings.api_key", "API key"))
         self.api_key_input.setEchoMode(QLineEdit.EchoMode.Password)
         shell_layout.addWidget(self.api_key_input)
 
         self.tts_mode_combo = QComboBox()
-        self.tts_mode_combo.addItem("Local ONNX", "local_onnx")
-        self.tts_mode_combo.addItem("External API", "external_api")
+        self.tts_mode_combo.addItem(tr("backend_settings.tts_mode.local_onnx", "Local ONNX"), "local_onnx")
+        self.tts_mode_combo.addItem(tr("backend_settings.tts_mode.external_api", "External API"), "external_api")
         self.tts_mode_combo.currentIndexChanged.connect(self._on_tts_mode_changed)
         shell_layout.addWidget(self.tts_mode_combo)
 
@@ -779,10 +779,10 @@ class BackendSettingsDialog(QDialog):
         pocket_mode_layout = QHBoxLayout(self.pocket_mode_row)
         pocket_mode_layout.setContentsMargins(0, 0, 0, 0)
         pocket_mode_layout.setSpacing(10)
-        pocket_mode_layout.addWidget(QLabel("PocketTTS mode"))
+        pocket_mode_layout.addWidget(QLabel(tr("backend_settings.pocket.mode", "PocketTTS mode")))
         self.pocket_mode_combo = QComboBox()
-        self.pocket_mode_combo.addItem("Local PocketTTS", "local_onnx")
-        self.pocket_mode_combo.addItem("External API", "external_api")
+        self.pocket_mode_combo.addItem(tr("backend_settings.pocket.local", "Local PocketTTS"), "local_onnx")
+        self.pocket_mode_combo.addItem(tr("backend_settings.tts_mode.external_api", "External API"), "external_api")
         self.pocket_mode_combo.currentIndexChanged.connect(self._on_pocket_mode_changed)
         pocket_mode_layout.addWidget(self.pocket_mode_combo, 1)
         pocket_mode_layout.addStretch(1)
@@ -798,20 +798,20 @@ class BackendSettingsDialog(QDialog):
         tts_repo_bundle_layout.setContentsMargins(0, 0, 0, 0)
         tts_repo_bundle_layout.setSpacing(8)
         self.tts_repo_input = QLineEdit()
-        self.tts_repo_input.setPlaceholderText("Model repo (owner/repo)")
+        self.tts_repo_input.setPlaceholderText(tr("backend_settings.tts_repo", "Model repo (owner/repo)"))
         tts_repo_bundle_layout.addWidget(self.tts_repo_input, 1)
         self.tts_bundle_url_input = QLineEdit()
-        self.tts_bundle_url_input.setPlaceholderText("Optional ZIP bundle URL")
+        self.tts_bundle_url_input.setPlaceholderText(tr("backend_settings.tts_bundle", "Optional ZIP bundle URL"))
         tts_repo_bundle_layout.addWidget(self.tts_bundle_url_input, 1)
         shell_layout.addWidget(self.tts_repo_bundle_row)
 
         self.tts_server_command_input = QLineEdit()
-        self.tts_server_command_input.setPlaceholderText("Optional local TTS server command (OpenAI-compatible)")
+        self.tts_server_command_input.setPlaceholderText(tr("backend_settings.tts_server_command", "Optional local TTS server command (OpenAI-compatible)"))
         shell_layout.addWidget(self.tts_server_command_input)
         self.tts_server_row = QWidget()
         self.tts_server_row.hide()
         self.tts_server_status_label = QLabel("")
-        self.kokoro_autostart_check = QCheckBox("Auto-start local TTS server when Linux session boots")
+        self.kokoro_autostart_check = QCheckBox(tr("backend_settings.autostart_tts_server", "Auto-start local TTS server when Linux session boots"))
         self.kokoro_autostart_check.hide()
 
         self.kobold_server_row = QWidget()
@@ -820,19 +820,19 @@ class BackendSettingsDialog(QDialog):
 
         self.pocket_language_combo = QComboBox()
         self.pocket_language_combo.setToolTip(
-            "PocketTTS output language. Auto follows the user's input language when possible."
+            tr("backend_settings.pocket.language.tooltip", "PocketTTS output language. Auto follows the user's input language when possible.")
         )
         for label, code in POCKETTTS_LANGUAGES:
             self.pocket_language_combo.addItem(label, code)
         self.pocket_auto_pt_combo = QComboBox()
         self.pocket_auto_pt_combo.setToolTip(
-            "When Language is Auto and Portuguese is detected, choose which Portuguese variant to prefer."
+            tr("backend_settings.pocket.auto_pt.tooltip", "When Language is Auto and Portuguese is detected, choose which Portuguese variant to prefer.")
         )
-        self.pocket_auto_pt_combo.addItem("Brazil (pt-BR)", "ptbr")
-        self.pocket_auto_pt_combo.addItem("Portugal (pt-PT / 24L)", "ptpt")
+        self.pocket_auto_pt_combo.addItem(tr("backend_settings.pocket.auto_pt.br", "Brazil (pt-BR)"), "ptbr")
+        self.pocket_auto_pt_combo.addItem(tr("backend_settings.pocket.auto_pt.pt", "Portugal (pt-PT / 24L)"), "ptpt")
         self.pocket_preset_combo = QComboBox()
-        self.pocket_preset_combo.setToolTip("PocketTTS preset voices (downloaded from Kyutai voice repository)")
-        self.pocket_preset_combo.addItem("Voice cloning (custom reference)", "")
+        self.pocket_preset_combo.setToolTip(tr("backend_settings.pocket.voice_preset.tooltip", "PocketTTS preset voices (downloaded from Kyutai voice repository)"))
+        self.pocket_preset_combo.addItem(tr("backend_settings.pocket.voice_cloning", "Voice cloning (custom reference)"), "")
         for name, _rel in POCKETTTS_PRESET_VOICES:
             self.pocket_preset_combo.addItem(name, name)
         self.pocket_preset_combo.currentIndexChanged.connect(self._on_pocket_preset_changed)
@@ -841,49 +841,49 @@ class BackendSettingsDialog(QDialog):
         pocket_lang_layout = QHBoxLayout(self.pocket_lang_preset_row)
         pocket_lang_layout.setContentsMargins(0, 0, 0, 0)
         pocket_lang_layout.setSpacing(8)
-        self.pocket_language_label = QLabel("Language (Auto = user's language)")
+        self.pocket_language_label = QLabel(tr("backend_settings.pocket.language", "Language (Auto = user's language)"))
         pocket_lang_layout.addWidget(self.pocket_language_label)
         pocket_lang_layout.addWidget(self.pocket_language_combo, 1)
-        self.pocket_auto_pt_label = QLabel("Auto Portuguese default")
+        self.pocket_auto_pt_label = QLabel(tr("backend_settings.pocket.auto_pt", "Auto Portuguese default"))
         pocket_lang_layout.addWidget(self.pocket_auto_pt_label)
         pocket_lang_layout.addWidget(self.pocket_auto_pt_combo, 1)
-        self.pocket_preset_label = QLabel("Voice")
+        self.pocket_preset_label = QLabel(tr("backend_settings.voice", "Voice"))
         pocket_lang_layout.addWidget(self.pocket_preset_label)
         pocket_lang_layout.addWidget(self.pocket_preset_combo, 2)
         shell_layout.addWidget(self.pocket_lang_preset_row)
 
         self.supertonic_voice_combo = QComboBox()
-        self.supertonic_voice_combo.setToolTip("Supertonic 3 built-in voice")
+        self.supertonic_voice_combo.setToolTip(tr("backend_settings.supertonic.voice.tooltip", "Supertonic 3 built-in voice"))
         for label, code in SUPERTONIC_BUILTIN_VOICES:
             self.supertonic_voice_combo.addItem(label, code)
         shell_layout.addWidget(self.supertonic_voice_combo)
 
         self.supertonic_language_combo = QComboBox()
-        self.supertonic_language_combo.setToolTip("Supertonic 3 language")
+        self.supertonic_language_combo.setToolTip(tr("backend_settings.supertonic.language.tooltip", "Supertonic 3 language"))
         for label, code in SUPERTONIC_LANGUAGES:
             self.supertonic_language_combo.addItem(label, code)
         shell_layout.addWidget(self.supertonic_language_combo)
 
         self.pocket_voice_combo = QComboBox()
-        self.pocket_voice_combo.setToolTip("PocketTTS voice reference presets found in the model folder")
+        self.pocket_voice_combo.setToolTip(tr("backend_settings.pocket.voice_reference.tooltip", "PocketTTS voice reference presets found in the model folder"))
         self.pocket_voice_combo.currentIndexChanged.connect(self._on_pocket_voice_selected)
         self.tts_voice_ref_input = ClickableLineEdit()
-        self.tts_voice_ref_input.setPlaceholderText("Reference audio (click to browse)")
-        self.tts_voice_ref_input.setToolTip("Click to select an audio file (WAV/MP3/OGG/etc), or paste a path")
+        self.tts_voice_ref_input.setPlaceholderText(tr("backend_settings.reference_audio", "Reference audio (click to browse)"))
+        self.tts_voice_ref_input.setToolTip(tr("backend_settings.reference_audio.tooltip", "Click to select an audio file (WAV/MP3/OGG/etc), or paste a path"))
         self.tts_voice_ref_input.clicked.connect(self._browse_pocket_voice_reference)
 
         self.pocket_voice_ref_row = QWidget()
         pocket_ref_layout = QHBoxLayout(self.pocket_voice_ref_row)
         pocket_ref_layout.setContentsMargins(0, 0, 0, 0)
         pocket_ref_layout.setSpacing(8)
-        pocket_ref_layout.addWidget(QLabel("Reference"))
+        pocket_ref_layout.addWidget(QLabel(tr("backend_settings.reference", "Reference")))
         pocket_ref_layout.addWidget(self.pocket_voice_combo, 2)
         pocket_ref_layout.addWidget(self.tts_voice_ref_input, 3)
         shell_layout.addWidget(self.pocket_voice_ref_row)
 
-        self.tts_auto_download_check = QCheckBox("Auto-download ONNX model files when missing")
+        self.tts_auto_download_check = QCheckBox(tr("backend_settings.auto_download_onnx", "Auto-download ONNX model files when missing"))
         shell_layout.addWidget(self.tts_auto_download_check)
-        self.tts_test_label = QLabel("Text to be spoken")
+        self.tts_test_label = QLabel(tr("backend_settings.tts_test_text", "Text to be spoken"))
         self.tts_test_label.setStyleSheet(f"color: {UI_TEXT_MUTED};")
         shell_layout.addWidget(self.tts_test_label)
         self.tts_test_row = QWidget()
@@ -891,19 +891,19 @@ class BackendSettingsDialog(QDialog):
         tts_test_layout.setContentsMargins(0, 0, 0, 0)
         tts_test_layout.setSpacing(8)
         self.tts_test_input = QLineEdit()
-        self.tts_test_input.setPlaceholderText("Enter the exact text to speak")
+        self.tts_test_input.setPlaceholderText(tr("backend_settings.tts_test_text.placeholder", "Enter the exact text to speak"))
         tts_test_layout.addWidget(self.tts_test_input, 1)
         self.tts_test_button = QToolButton()
         self.tts_test_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MediaPlay))
-        self.tts_test_button.setToolTip("Speak test text")
+        self.tts_test_button.setToolTip(tr("backend_settings.tts_test_text.speak", "Speak test text"))
         self.tts_test_button.clicked.connect(self._test_tts_synthesis)
         self.tts_test_button.setFixedSize(44, 40)
         tts_test_layout.addWidget(self.tts_test_button)
         shell_layout.addWidget(self.tts_test_row)
 
         self.gguf_path_input = ClickableLineEdit()
-        self.gguf_path_input.setPlaceholderText("GGUF model path")
-        self.gguf_path_input.setToolTip("Click to browse for a GGUF model file")
+        self.gguf_path_input.setPlaceholderText(tr("backend_settings.gguf_path", "GGUF model path"))
+        self.gguf_path_input.setToolTip(tr("backend_settings.gguf_path.tooltip", "Click to browse for a GGUF model file"))
         self.gguf_path_input.clicked.connect(self._browse_gguf_path)
         shell_layout.addWidget(self.gguf_path_input)
 
@@ -922,7 +922,7 @@ class BackendSettingsDialog(QDialog):
         self.gguf_download_progress_label.hide()
         shell_layout.addWidget(self.gguf_download_progress_label)
 
-        self.gguf_gallery_title = QLabel("Curated model gallery (GGUF)")
+        self.gguf_gallery_title = QLabel(tr("backend_settings.gguf_gallery", "Curated model gallery (GGUF)"))
         self.gguf_gallery_title.setFont(QFont(ui_font, 11, QFont.Weight.DemiBold))
         self.gguf_gallery_title.setStyleSheet(f"color: {UI_TEXT_MUTED}; border: none;")
         shell_layout.addWidget(self.gguf_gallery_title)
@@ -969,52 +969,51 @@ class BackendSettingsDialog(QDialog):
         text_mmproj_layout.setContentsMargins(0, 0, 0, 0)
         text_mmproj_layout.setSpacing(10)
         self.text_model_path_input = ClickableLineEdit()
-        self.text_model_path_input.setPlaceholderText("Optional text model path")
-        self.text_model_path_input.setToolTip("Click to browse for an optional text model path")
+        self.text_model_path_input.setPlaceholderText(tr("backend_settings.text_model_path", "Optional text model path"))
+        self.text_model_path_input.setToolTip(tr("backend_settings.text_model_path.tooltip", "Click to browse for an optional text model path"))
         self.text_model_path_input.clicked.connect(self._browse_text_model_path)
         text_mmproj_layout.addWidget(self.text_model_path_input, 1)
         self.mmproj_path_input = ClickableLineEdit()
-        self.mmproj_path_input.setPlaceholderText("Optional mmproj path")
-        self.mmproj_path_input.setToolTip("Click to browse for an optional mmproj file")
+        self.mmproj_path_input.setPlaceholderText(tr("backend_settings.mmproj_path", "Optional mmproj path"))
+        self.mmproj_path_input.setToolTip(tr("backend_settings.mmproj_path.tooltip", "Click to browse for an optional mmproj file"))
         self.mmproj_path_input.clicked.connect(self._browse_mmproj_path)
         text_mmproj_layout.addWidget(self.mmproj_path_input, 1)
         shell_layout.addWidget(text_mmproj_row)
 
-        self.kobold_jinja_check = QCheckBox("Enable Jinja chat template support")
-        self.kobold_jinja_check.setToolTip("Useful for Gemma 4 and other chat templates that expect Jinja support in KoboldCpp.")
+        self.kobold_jinja_check = QCheckBox(tr("backend_settings.kobold_jinja", "Enable Jinja chat template support"))
+        self.kobold_jinja_check.setToolTip(tr("backend_settings.kobold_jinja.tooltip", "Useful for Gemma 4 and other chat templates that expect Jinja support in KoboldCpp."))
         shell_layout.addWidget(self.kobold_jinja_check)
-        self.kobold_gemma4_audio_stt_check = QCheckBox("Use Gemma 4 audio for STT (Whisper won't be used)")
+        self.kobold_gemma4_audio_stt_check = QCheckBox(tr("backend_settings.kobold_gemma4_audio", "Use Gemma 4 audio for STT (Whisper won't be used)"))
         self.kobold_gemma4_audio_stt_check.setToolTip(
-            "Voice mode only: when enabled and supported by your KoboldCpp build/model, STT runs through the same Gemma 4 model via audio input. "
-            "This avoids loading Whisper and can reduce VRAM usage."
+            tr("backend_settings.kobold_gemma4_audio.tooltip", "Voice mode only: when enabled and supported by your KoboldCpp build/model, STT runs through the same Gemma 4 model via audio input. This avoids loading Whisper and can reduce VRAM usage.")
         )
         shell_layout.addWidget(self.kobold_gemma4_audio_stt_check)
         self.kobold_test_prompt_input = QLineEdit()
-        self.kobold_test_prompt_input.setPlaceholderText("Test prompt for KoboldCpp")
-        self.kobold_test_prompt_input.setToolTip("This message is sent by the Test button to confirm the model is answering.")
+        self.kobold_test_prompt_input.setPlaceholderText(tr("backend_settings.kobold_test_prompt", "Test prompt for KoboldCpp"))
+        self.kobold_test_prompt_input.setToolTip(tr("backend_settings.kobold_test_prompt.tooltip", "This message is sent by the Test button to confirm the model is answering."))
         shell_layout.addWidget(self.kobold_test_prompt_input)
 
         self.negative_prompt_input = QLineEdit()
-        self.negative_prompt_input.setPlaceholderText("Default negative prompt")
+        self.negative_prompt_input.setPlaceholderText(tr("backend_settings.negative_prompt", "Default negative prompt"))
         shell_layout.addWidget(self.negative_prompt_input)
 
         self.sampler_combo = QComboBox()
         self.sampler_combo.setEditable(True)
         if self.sampler_combo.lineEdit() is not None:
-            self.sampler_combo.lineEdit().setPlaceholderText("Sampler")
+            self.sampler_combo.lineEdit().setPlaceholderText(tr("backend_settings.sampler", "Sampler"))
         shell_layout.addWidget(self.sampler_combo)
 
         self.cfg_steps_row = QWidget()
         self.cfg_steps_layout = QHBoxLayout(self.cfg_steps_row)
         self.cfg_steps_layout.setContentsMargins(0, 0, 0, 0)
         self.cfg_steps_layout.setSpacing(8)
-        self.cfg_label = QLabel("CFG")
+        self.cfg_label = QLabel(tr("backend_settings.cfg", "CFG"))
         self.cfg_steps_layout.addWidget(self.cfg_label)
         self.cfg_scale_input = QLineEdit()
         self.cfg_scale_input.setPlaceholderText("7.0")
         self.cfg_scale_input.setMaximumWidth(110)
         self.cfg_steps_layout.addWidget(self.cfg_scale_input)
-        self.steps_label = QLabel("Steps")
+        self.steps_label = QLabel(tr("backend_settings.steps", "Steps"))
         self.cfg_steps_layout.addWidget(self.steps_label)
         self.steps_input = QLineEdit()
         self.steps_input.setPlaceholderText("28")
@@ -1027,13 +1026,13 @@ class BackendSettingsDialog(QDialog):
         self.resolution_layout = QHBoxLayout(self.resolution_row)
         self.resolution_layout.setContentsMargins(0, 0, 0, 0)
         self.resolution_layout.setSpacing(8)
-        self.width_label = QLabel("Width")
+        self.width_label = QLabel(tr("backend_settings.width", "Width"))
         self.resolution_layout.addWidget(self.width_label)
         self.width_input = QLineEdit()
         self.width_input.setPlaceholderText("1024")
         self.width_input.setMaximumWidth(120)
         self.resolution_layout.addWidget(self.width_input)
-        self.height_label = QLabel("Height")
+        self.height_label = QLabel(tr("backend_settings.height", "Height"))
         self.resolution_layout.addWidget(self.height_label)
         self.height_input = QLineEdit()
         self.height_input.setPlaceholderText("1024")
@@ -1043,18 +1042,18 @@ class BackendSettingsDialog(QDialog):
         shell_layout.addWidget(self.resolution_row)
 
         self.output_dir_input = ClickableLineEdit()
-        self.output_dir_input.setPlaceholderText("SD output folder for monitor notifications")
-        self.output_dir_input.setToolTip("Click to browse for an output folder")
+        self.output_dir_input.setPlaceholderText(tr("backend_settings.sd_output_folder", "SD output folder for monitor notifications"))
+        self.output_dir_input.setToolTip(tr("backend_settings.sd_output_folder.tooltip", "Click to browse for an output folder"))
         self.output_dir_input.clicked.connect(self._browse_output_dir)
         shell_layout.addWidget(self.output_dir_input)
 
-        self.monitor_check = QCheckBox("Notify when new SD images appear in the output folder")
+        self.monitor_check = QCheckBox(tr("backend_settings.sd_notify_new_images", "Notify when new SD images appear in the output folder"))
         shell_layout.addWidget(self.monitor_check)
-        self.sd_options_refresh_button = QPushButton("Refresh SD samplers/checkpoints")
+        self.sd_options_refresh_button = QPushButton(tr("backend_settings.sd_refresh_options", "Refresh SD samplers/checkpoints"))
         self.sd_options_refresh_button.clicked.connect(self._refresh_sd_options_clicked)
         shell_layout.addWidget(self.sd_options_refresh_button)
 
-        self.status_label = QLabel("Configure um backend e clique em Test.")
+        self.status_label = QLabel(tr("backend_settings.status.configure_and_test", "Configure a backend and click Test."))
         self.status_label.setWordWrap(True)
         self.status_label.setStyleSheet(f"color: {UI_TEXT_MUTED}; border: none;")
         self.status_row = QWidget()
@@ -1087,12 +1086,12 @@ class BackendSettingsDialog(QDialog):
             btn.clicked.connect(callback)
             return btn
 
-        self.copy_status_button = _icon_button("\ue14d", "Copy status to clipboard", self._copy_backend_errors)
+        self.copy_status_button = _icon_button("\ue14d", tr("backend_settings.copy_status", "Copy status to clipboard"), self._copy_backend_errors)
         status_row_layout.addWidget(self.copy_status_button)
-        self.copy_log_button = _icon_button("\ueb50", "Copy error log", self._copy_error_log)
+        self.copy_log_button = _icon_button("\ueb50", tr("backend_settings.copy_error_log", "Copy error log"), self._copy_error_log)
         status_row_layout.addWidget(self.copy_log_button)
         shell_layout.addWidget(self.status_row)
-        self.validation_badge = QLabel("○ Not validated")
+        self.validation_badge = QLabel(tr("backend_settings.validation.not_validated", "○ Not validated"))
         self.validation_badge.setStyleSheet(f"color: {UI_TEXT_MUTED}; font-weight: 600; font-size: 11px; border: none;")
         shell_layout.addWidget(self.validation_badge)
 
@@ -1111,29 +1110,29 @@ class BackendSettingsDialog(QDialog):
         actions.setContentsMargins(0, 0, 0, 0)
         actions.setSpacing(8)
 
-        self.test_button = QPushButton("Test")
+        self.test_button = QPushButton(tr("backend_settings.test", "Test"))
         self.test_button.clicked.connect(self._test_current_backend)
         actions.addWidget(self.test_button)
 
-        self.download_tts_button = QPushButton("Download TTS model")
+        self.download_tts_button = QPushButton(tr("backend_settings.download_tts_model", "Download TTS model"))
         self.download_tts_button.clicked.connect(self._download_tts_assets)
         actions.addWidget(self.download_tts_button)
 
-        self.install_pocket_button = QPushButton("Install PocketTTS (server + models + runtime + voices)")
+        self.install_pocket_button = QPushButton(tr("backend_settings.install_pockettts", "Install PocketTTS (server + models + runtime + voices)"))
         self.install_pocket_button.clicked.connect(self._install_pockettts)
         actions.addWidget(self.install_pocket_button)
 
-        self.reinstall_pocket_lang_button = QPushButton("Reinstall current Pocket language bundle")
+        self.reinstall_pocket_lang_button = QPushButton(tr("backend_settings.reinstall_pocket_language", "Reinstall current Pocket language bundle"))
         self.reinstall_pocket_lang_button.clicked.connect(self._reinstall_current_pocket_language_bundle)
         actions.addWidget(self.reinstall_pocket_lang_button)
 
-        self.install_kokoclone_button = QPushButton("Install KokoClone + Seed-VC (voice cloning TTS)")
+        self.install_kokoclone_button = QPushButton(tr("backend_settings.install_kokoclone", "Install KokoClone + Seed-VC (voice cloning TTS)"))
         self.install_kokoclone_button.clicked.connect(self._install_kokoclone)
         actions.addWidget(self.install_kokoclone_button)
 
         actions.addStretch(1)
 
-        self.save_button = QPushButton("Save")
+        self.save_button = QPushButton(tr("common.save", "Save"))
         self.save_button.clicked.connect(self._save_current_backend)
         self.save_button.setStyleSheet(
             f"""
@@ -1156,7 +1155,7 @@ class BackendSettingsDialog(QDialog):
             """
         )
         actions.addWidget(self.save_button)
-        self.close_button = QPushButton("Close")
+        self.close_button = QPushButton(tr("common.close", "Close"))
         self.close_button.setStyleSheet(
             f"""
             QPushButton {{
@@ -1182,10 +1181,10 @@ class BackendSettingsDialog(QDialog):
         shell_layout.addLayout(actions)
 
         # --- Tokens tab ---
-        self._tabs.addTab(self._build_tokens_tab(), "Tokens")
+        self._tabs.addTab(self._build_tokens_tab(), tr("backend_settings.tab.tokens", "Tokens"))
 
         # --- Skills tab ---
-        self._tabs.addTab(self._build_skills_tab(), "Skills")
+        self._tabs.addTab(self._build_skills_tab(), tr("backend_settings.tab.skills", "Skills"))
 
         _apply_antialias_font(self)
         self._download_manager = get_tts_download_manager()
@@ -1216,12 +1215,12 @@ class BackendSettingsDialog(QDialog):
             self.enabled_check.setStyleSheet(
                 f"color: {ACCENT}; font-weight: 800; padding: 2px 0;"
             )
-            self.enabled_check.setText("Active (enabled)")
+            self.enabled_check.setText(tr("backend_settings.active.enabled", "Active (enabled)"))
         else:
             self.enabled_check.setStyleSheet(
                 f"color: {UI_TEXT_MUTED}; font-weight: 700; padding: 2px 0;"
             )
-            self.enabled_check.setText("Active (disabled)")
+            self.enabled_check.setText(tr("backend_settings.active.disabled", "Active (disabled)"))
 
     # ------------------------------------------------------------------ skills
 
@@ -1246,17 +1245,17 @@ class BackendSettingsDialog(QDialog):
         layout.setContentsMargins(18, 16, 18, 16)
         layout.setSpacing(10)
 
-        title = QLabel("Token settings")
+        title = QLabel(tr("backend_settings.tokens.title", "Token settings"))
         title.setFont(QFont(self.ui_font, 13, QFont.Weight.DemiBold))
         title.setStyleSheet(f"color: {UI_TEXT_STRONG}; border: none;")
         layout.addWidget(title)
 
-        subtitle = QLabel("Shared tokens used by all backends and model downloads.")
+        subtitle = QLabel(tr("backend_settings.tokens.subtitle", "Shared tokens used by all backends and model downloads."))
         subtitle.setStyleSheet(f"color: {UI_ICON_DIM}; border: none;")
         layout.addWidget(subtitle)
 
         self.hf_token_global_input = QLineEdit()
-        self.hf_token_global_input.setPlaceholderText("Hugging Face token")
+        self.hf_token_global_input.setPlaceholderText(tr("backend_settings.tokens.hf", "Hugging Face token"))
         self.hf_token_global_input.setEchoMode(QLineEdit.EchoMode.Password)
         self.hf_token_global_input.setText(
             secure_load_secret("global:hf_token")
@@ -1267,7 +1266,7 @@ class BackendSettingsDialog(QDialog):
 
         save_row = QHBoxLayout()
         save_row.addStretch()
-        save_btn = QPushButton("Save Tokens")
+        save_btn = QPushButton(tr("backend_settings.tokens.save", "Save Tokens"))
         save_btn.setStyleSheet(
             f"""
             QPushButton {{
@@ -1287,8 +1286,8 @@ class BackendSettingsDialog(QDialog):
             secure_store_secret("global:hf_token", token)
             secure_store_secret("tts:hf_token", token)
             secure_store_secret("pockettts:hf_token", token)
-            save_btn.setText("Saved ✓")
-            QTimer.singleShot(1800, lambda: save_btn.setText("Save Tokens"))
+            save_btn.setText(tr("backend_settings.tokens.saved", "Saved ✓"))
+            QTimer.singleShot(1800, lambda: save_btn.setText(tr("backend_settings.tokens.save", "Save Tokens")))
 
         save_btn.clicked.connect(_save_tokens)
         outer.addWidget(shell)
@@ -1315,7 +1314,7 @@ class BackendSettingsDialog(QDialog):
         outer.addWidget(scroll)
 
         # Global toggle
-        global_check = QCheckBox("Enable skills (tool calling) for AI responses")
+        global_check = QCheckBox(tr("backend_settings.skills.enable", "Enable skills (tool calling) for AI responses"))
         global_check.setChecked(bool(settings.get("skills_enabled", True)))
         global_check.setStyleSheet(f"color: {UI_TEXT_STRONG};")
         layout.addWidget(global_check)
@@ -1333,27 +1332,29 @@ class BackendSettingsDialog(QDialog):
         apprise_layout.setSpacing(8)
 
         apprise_header = QHBoxLayout()
-        apprise_title = QLabel("Apprise — Notifications")
+        apprise_title = QLabel(tr("backend_settings.skills.apprise.title", "Apprise — Notifications"))
         apprise_title.setFont(QFont(self.ui_font, 11, QFont.Weight.DemiBold))
         apprise_title.setStyleSheet(f"color: {UI_TEXT_STRONG}; border: none;")
         apprise_header.addWidget(apprise_title)
         apprise_header.addStretch()
-        apprise_enabled = QCheckBox("Enabled")
+        apprise_enabled = QCheckBox(tr("backend_settings.skills.enabled", "Enabled"))
         apprise_enabled.setChecked(bool(apprise_cfg.get("enabled", True)))
         apprise_enabled.setStyleSheet(f"color: {UI_TEXT_STRONG};")
         apprise_header.addWidget(apprise_enabled)
         apprise_layout.addLayout(apprise_header)
 
         apprise_desc = QLabel(
-            "One URL per line. Supports Telegram, Discord, Slack, email, Pushover, ntfy, and 100+ more.\n"
-            "Format: tgram://bottoken/chatid  •  discord://webhook_id/token  •  ntfy://topic"
+            tr(
+                "backend_settings.skills.apprise.desc",
+                "One URL per line. Supports Telegram, Discord, Slack, email, Pushover, ntfy, and 100+ more.\nFormat: tgram://bottoken/chatid  •  discord://webhook_id/token  •  ntfy://topic",
+            )
         )
         apprise_desc.setWordWrap(True)
         apprise_desc.setStyleSheet(f"color: {UI_ICON_DIM}; border: none; font-size: 11px;")
         apprise_layout.addWidget(apprise_desc)
 
         apprise_urls_edit = QTextEdit()
-        apprise_urls_edit.setPlaceholderText("tgram://bottoken/chatid\ndiscord://webhook_id/token")
+        apprise_urls_edit.setPlaceholderText(tr("backend_settings.skills.apprise.placeholder", "tgram://bottoken/chatid\ndiscord://webhook_id/token"))
         apprise_urls_edit.setFixedHeight(90)
         raw_urls = apprise_cfg.get("urls", [])
         if isinstance(raw_urls, list):
@@ -1373,17 +1374,17 @@ class BackendSettingsDialog(QDialog):
         docker_layout.setContentsMargins(14, 12, 14, 12)
         docker_layout.setSpacing(6)
         docker_header = QHBoxLayout()
-        docker_title = QLabel("Docker")
+        docker_title = QLabel(tr("backend_settings.skills.docker.title", "Docker"))
         docker_title.setFont(QFont(self.ui_font, 11, QFont.Weight.DemiBold))
         docker_title.setStyleSheet(f"color: {UI_TEXT_STRONG}; border: none;")
         docker_header.addWidget(docker_title)
         docker_header.addStretch()
-        docker_enabled = QCheckBox("Enabled")
+        docker_enabled = QCheckBox(tr("backend_settings.skills.enabled", "Enabled"))
         docker_enabled.setChecked(bool(settings.get("docker", {}).get("enabled", True)))
         docker_enabled.setStyleSheet(f"color: {UI_TEXT_STRONG};")
         docker_header.addWidget(docker_enabled)
         docker_layout.addLayout(docker_header)
-        docker_desc = QLabel("Requires docker CLI in PATH. No credentials needed for local socket.")
+        docker_desc = QLabel(tr("backend_settings.skills.docker.desc", "Requires docker CLI in PATH. No credentials needed for local socket."))
         docker_desc.setStyleSheet(f"color: {UI_ICON_DIM}; border: none; font-size: 11px;")
         docker_layout.addWidget(docker_desc)
         layout.addWidget(docker_frame)
@@ -1394,17 +1395,17 @@ class BackendSettingsDialog(QDialog):
         mail_layout.setContentsMargins(14, 12, 14, 12)
         mail_layout.setSpacing(6)
         mail_header = QHBoxLayout()
-        mail_title = QLabel("Mail (notmuch + msmtp)")
+        mail_title = QLabel(tr("backend_settings.skills.mail.title", "Mail (notmuch + msmtp)"))
         mail_title.setFont(QFont(self.ui_font, 11, QFont.Weight.DemiBold))
         mail_title.setStyleSheet(f"color: {UI_TEXT_STRONG}; border: none;")
         mail_header.addWidget(mail_title)
         mail_header.addStretch()
-        mail_enabled = QCheckBox("Enabled")
+        mail_enabled = QCheckBox(tr("backend_settings.skills.enabled", "Enabled"))
         mail_enabled.setChecked(bool(settings.get("mail", {}).get("enabled", True)))
         mail_enabled.setStyleSheet(f"color: {UI_TEXT_STRONG};")
         mail_header.addWidget(mail_enabled)
         mail_layout.addLayout(mail_header)
-        mail_desc = QLabel("Requires notmuch (read/search) and msmtp (send) in PATH.")
+        mail_desc = QLabel(tr("backend_settings.skills.mail.desc", "Requires notmuch (read/search) and msmtp (send) in PATH."))
         mail_desc.setStyleSheet(f"color: {UI_ICON_DIM}; border: none; font-size: 11px;")
         mail_layout.addWidget(mail_desc)
         layout.addWidget(mail_frame)
@@ -1415,17 +1416,17 @@ class BackendSettingsDialog(QDialog):
         kde_layout.setContentsMargins(14, 12, 14, 12)
         kde_layout.setSpacing(6)
         kde_header = QHBoxLayout()
-        kde_title = QLabel("KDE Connect")
+        kde_title = QLabel(tr("backend_settings.skills.kdeconnect.title", "KDE Connect"))
         kde_title.setFont(QFont(self.ui_font, 11, QFont.Weight.DemiBold))
         kde_title.setStyleSheet(f"color: {UI_TEXT_STRONG}; border: none;")
         kde_header.addWidget(kde_title)
         kde_header.addStretch()
-        kde_enabled = QCheckBox("Enabled")
+        kde_enabled = QCheckBox(tr("backend_settings.skills.enabled", "Enabled"))
         kde_enabled.setChecked(bool(settings.get("kdeconnect", {}).get("enabled", True)))
         kde_enabled.setStyleSheet(f"color: {UI_TEXT_STRONG};")
         kde_header.addWidget(kde_enabled)
         kde_layout.addLayout(kde_header)
-        kde_desc = QLabel("Requires kdeconnect-cli in PATH and a paired device.")
+        kde_desc = QLabel(tr("backend_settings.skills.kdeconnect.desc", "Requires kdeconnect-cli in PATH and a paired device."))
         kde_desc.setStyleSheet(f"color: {UI_ICON_DIM}; border: none; font-size: 11px;")
         kde_layout.addWidget(kde_desc)
         layout.addWidget(kde_frame)
@@ -1436,17 +1437,17 @@ class BackendSettingsDialog(QDialog):
         sensors_layout.setContentsMargins(14, 12, 14, 12)
         sensors_layout.setSpacing(6)
         sensors_header = QHBoxLayout()
-        sensors_title = QLabel("PC Sensors")
+        sensors_title = QLabel(tr("backend_settings.skills.sensors.title", "PC Sensors"))
         sensors_title.setFont(QFont(self.ui_font, 11, QFont.Weight.DemiBold))
         sensors_title.setStyleSheet(f"color: {UI_TEXT_STRONG}; border: none;")
         sensors_header.addWidget(sensors_title)
         sensors_header.addStretch()
-        sensors_enabled = QCheckBox("Enabled")
+        sensors_enabled = QCheckBox(tr("backend_settings.skills.enabled", "Enabled"))
         sensors_enabled.setChecked(bool(settings.get("pc_sensors", {}).get("enabled", True)))
         sensors_enabled.setStyleSheet(f"color: {UI_TEXT_STRONG};")
         sensors_header.addWidget(sensors_enabled)
         sensors_layout.addLayout(sensors_header)
-        sensors_desc = QLabel("Requires psutil (pip install psutil). GPU needs nvidia-smi. Temps need lm-sensors.")
+        sensors_desc = QLabel(tr("backend_settings.skills.sensors.desc", "Requires psutil (pip install psutil). GPU needs nvidia-smi. Temps need lm-sensors."))
         sensors_desc.setStyleSheet(f"color: {UI_ICON_DIM}; border: none; font-size: 11px;")
         sensors_layout.addWidget(sensors_desc)
         layout.addWidget(sensors_frame)
@@ -1457,17 +1458,17 @@ class BackendSettingsDialog(QDialog):
         desktop_layout.setContentsMargins(14, 12, 14, 12)
         desktop_layout.setSpacing(6)
         desktop_header = QHBoxLayout()
-        desktop_title = QLabel("Hanauta Desktop (i3)")
+        desktop_title = QLabel(tr("backend_settings.skills.desktop.title", "Hanauta Desktop (i3)"))
         desktop_title.setFont(QFont(self.ui_font, 11, QFont.Weight.DemiBold))
         desktop_title.setStyleSheet(f"color: {UI_TEXT_STRONG}; border: none;")
         desktop_header.addWidget(desktop_title)
         desktop_header.addStretch()
-        desktop_enabled = QCheckBox("Enabled")
+        desktop_enabled = QCheckBox(tr("backend_settings.skills.enabled", "Enabled"))
         desktop_enabled.setChecked(bool(settings.get("hanauta_desktop", {}).get("enabled", True)))
         desktop_enabled.setStyleSheet(f"color: {UI_TEXT_STRONG};")
         desktop_header.addWidget(desktop_enabled)
         desktop_layout.addLayout(desktop_header)
-        desktop_desc = QLabel("Requires i3-msg in PATH. Controls workspaces, windows, wallpaper, notifications.")
+        desktop_desc = QLabel(tr("backend_settings.skills.desktop.desc", "Requires i3-msg in PATH. Controls workspaces, windows, wallpaper, notifications."))
         desktop_desc.setStyleSheet(f"color: {UI_ICON_DIM}; border: none; font-size: 11px;")
         desktop_layout.addWidget(desktop_desc)
         layout.addWidget(desktop_frame)
@@ -1478,19 +1479,21 @@ class BackendSettingsDialog(QDialog):
         emotion_layout.setContentsMargins(14, 12, 14, 12)
         emotion_layout.setSpacing(6)
         emotion_header = QHBoxLayout()
-        emotion_title = QLabel("Emotion Engine")
+        emotion_title = QLabel(tr("backend_settings.skills.emotion.title", "Emotion Engine"))
         emotion_title.setFont(QFont(self.ui_font, 11, QFont.Weight.DemiBold))
         emotion_title.setStyleSheet(f"color: {UI_TEXT_STRONG}; border: none;")
         emotion_header.addWidget(emotion_title)
         emotion_header.addStretch()
-        emotion_enabled = QCheckBox("Enabled")
+        emotion_enabled = QCheckBox(tr("backend_settings.skills.enabled", "Enabled"))
         emotion_enabled.setChecked(bool(settings.get("emotion_engine", {}).get("enabled", True)))
         emotion_enabled.setStyleSheet(f"color: {UI_TEXT_STRONG};")
         emotion_header.addWidget(emotion_enabled)
         emotion_layout.addLayout(emotion_header)
         emotion_desc = QLabel(
-            "Tracks the user's emotional state across the conversation. "
-            "All skills and the AI's tone adapt automatically. No external dependencies."
+            tr(
+                "backend_settings.skills.emotion.desc",
+                "Tracks the user's emotional state across the conversation. All skills and the AI's tone adapt automatically. No external dependencies.",
+            )
         )
         emotion_desc.setWordWrap(True)
         emotion_desc.setStyleSheet(f"color: {UI_ICON_DIM}; border: none; font-size: 11px;")
@@ -1505,20 +1508,19 @@ class BackendSettingsDialog(QDialog):
         ha_layout.setSpacing(8)
 
         ha_header = QHBoxLayout()
-        ha_title = QLabel("Home Assistant")
+        ha_title = QLabel(tr("backend_settings.skills.ha.title", "Home Assistant"))
         ha_title.setFont(QFont(self.ui_font, 11, QFont.Weight.DemiBold))
         ha_title.setStyleSheet(f"color: {TEXT}; border: none;")
         ha_header.addWidget(ha_title)
         ha_header.addStretch()
-        ha_enabled = QCheckBox("Enabled")
+        ha_enabled = QCheckBox(tr("backend_settings.skills.enabled", "Enabled"))
         ha_enabled.setChecked(bool(ha_cfg.get("enabled", True)))
         ha_enabled.setStyleSheet(f"color: {TEXT};")
         ha_header.addWidget(ha_enabled)
         ha_layout.addLayout(ha_header)
 
         ha_desc = QLabel(
-            "Control lights, switches, climate, covers, automations and more "
-            "via the Home Assistant REST API."
+            tr("backend_settings.skills.ha.desc", "Control lights, switches, climate, covers, automations and more via the Home Assistant REST API.")
         )
         ha_desc.setWordWrap(True)
         ha_desc.setStyleSheet(f"color: {TEXT_DIM}; border: none; font-size: 11px;")
@@ -1528,7 +1530,7 @@ class BackendSettingsDialog(QDialog):
         ha_url_row = QHBoxLayout()
         ha_url_row.setSpacing(8)
         ha_url_input = QLineEdit()
-        ha_url_input.setPlaceholderText("http://homeassistant.local")
+        ha_url_input.setPlaceholderText(tr("backend_settings.skills.ha.url", "http://homeassistant.local"))
         ha_url_input.setText(str(ha_cfg.get("url", "")).strip())
         ha_url_input.setStyleSheet(
             f"background: {INPUT_BG}; color: {TEXT}; border: 1px solid {BORDER_SOFT};"
@@ -1548,7 +1550,7 @@ class BackendSettingsDialog(QDialog):
 
         # Token
         ha_token_input = QLineEdit()
-        ha_token_input.setPlaceholderText("Long-lived access token (stored encrypted)")
+        ha_token_input.setPlaceholderText(tr("backend_settings.skills.ha.token", "Long-lived access token (stored encrypted)"))
         ha_token_input.setEchoMode(QLineEdit.EchoMode.Password)
         _ha_stored_token = secure_load_secret("skills:homeassistant:token")
         ha_token_input.setText(_ha_stored_token)
@@ -1560,7 +1562,7 @@ class BackendSettingsDialog(QDialog):
 
         # Test connection button
         ha_test_row = QHBoxLayout()
-        ha_test_btn = QPushButton("Test connection")
+        ha_test_btn = QPushButton(tr("backend_settings.skills.ha.test", "Test connection"))
         ha_test_btn.setStyleSheet(
             f"background: {CARD_BG_SOFT}; color: {TEXT}; border: 1px solid {BORDER_SOFT};"
             f"border-radius: 18px; padding: 6px 14px;"
@@ -1577,7 +1579,7 @@ class BackendSettingsDialog(QDialog):
                 parsed = urlparse(url if "://" in url else f"http://{url}")
                 url = f"{parsed.scheme}://{parsed.hostname}:{port}"
             if not url or not token:
-                ha_status_label.setText("Set URL and token first.")
+                ha_status_label.setText(tr("backend_settings.skills.ha.set_url_token", "Set URL and token first."))
                 return
             try:
                 from urllib import request as _req
@@ -1587,7 +1589,7 @@ class BackendSettingsDialog(QDialog):
                 )
                 with _req.urlopen(req, timeout=5) as resp:
                     data = __import__('json').loads(resp.read())
-                msg = data.get("message", "Connected")
+                msg = data.get("message", tr("backend_settings.skills.ha.connected", "Connected"))
                 ha_status_label.setText(f"✓ {msg}")
                 ha_status_label.setStyleSheet(f"color: #7dff9a; border: none; font-size: 11px;")
             except Exception as exc:
@@ -1608,20 +1610,19 @@ class BackendSettingsDialog(QDialog):
         cal_layout.setSpacing(8)
 
         cal_header = QHBoxLayout()
-        cal_title = QLabel("Calendar")
+        cal_title = QLabel(tr("backend_settings.skills.calendar.title", "Calendar"))
         cal_title.setFont(QFont(self.ui_font, 11, QFont.Weight.DemiBold))
         cal_title.setStyleSheet(f"color: {TEXT}; border: none;")
         cal_header.addWidget(cal_title)
         cal_header.addStretch()
-        cal_enabled = QCheckBox("Enabled")
+        cal_enabled = QCheckBox(tr("backend_settings.skills.enabled", "Enabled"))
         cal_enabled.setChecked(bool(cal_cfg.get("enabled", True)))
         cal_enabled.setStyleSheet(f"color: {TEXT};")
         cal_header.addWidget(cal_enabled)
         cal_layout.addLayout(cal_header)
 
         cal_desc = QLabel(
-            "Read and create events via CalDAV (Nextcloud, Radicale, Google, iCloud) "
-            "or a local ICS file."
+            tr("backend_settings.skills.calendar.desc", "Read and create events via CalDAV (Nextcloud, Radicale, Google, iCloud) or a local ICS file.")
         )
         cal_desc.setWordWrap(True)
         cal_desc.setStyleSheet(f"color: {TEXT_DIM}; border: none; font-size: 11px;")
@@ -1630,12 +1631,12 @@ class BackendSettingsDialog(QDialog):
         # Backend selector
         cal_backend_row = QHBoxLayout()
         cal_backend_row.setSpacing(8)
-        cal_backend_label = QLabel("Backend")
+        cal_backend_label = QLabel(tr("backend_settings.skills.calendar.backend", "Backend"))
         cal_backend_label.setStyleSheet(f"color: {TEXT_MID}; border: none;")
         cal_backend_row.addWidget(cal_backend_label)
         cal_backend_combo = QComboBox()
-        cal_backend_combo.addItem("CalDAV", "caldav")
-        cal_backend_combo.addItem("Local ICS file", "ics")
+        cal_backend_combo.addItem(tr("backend_settings.skills.calendar.backend.caldav", "CalDAV"), "caldav")
+        cal_backend_combo.addItem(tr("backend_settings.skills.calendar.backend.ics", "Local ICS file"), "ics")
         stored_backend = str(cal_cfg.get("backend", "caldav"))
         cal_backend_combo.setCurrentIndex(0 if stored_backend == "caldav" else 1)
         cal_backend_combo.setStyleSheet(
@@ -1647,7 +1648,7 @@ class BackendSettingsDialog(QDialog):
 
         # CalDAV URL
         cal_url_input = QLineEdit()
-        cal_url_input.setPlaceholderText("CalDAV URL, e.g. https://nextcloud.example.com/remote.php/dav/calendars/user/")
+        cal_url_input.setPlaceholderText(tr("backend_settings.skills.calendar.url", "CalDAV URL, e.g. https://nextcloud.example.com/remote.php/dav/calendars/user/"))
         cal_url_input.setText(str(cal_cfg.get("url", "")).strip())
         cal_url_input.setStyleSheet(
             f"background: {INPUT_BG}; color: {TEXT}; border: 1px solid {BORDER_SOFT};"
@@ -1659,7 +1660,7 @@ class BackendSettingsDialog(QDialog):
         cal_creds_row = QHBoxLayout()
         cal_creds_row.setSpacing(8)
         cal_user_input = QLineEdit()
-        cal_user_input.setPlaceholderText("Username")
+        cal_user_input.setPlaceholderText(tr("backend_settings.skills.calendar.username", "Username"))
         cal_user_input.setText(str(cal_cfg.get("username", "")).strip())
         cal_user_input.setStyleSheet(
             f"background: {INPUT_BG}; color: {TEXT}; border: 1px solid {BORDER_SOFT};"
@@ -1667,7 +1668,7 @@ class BackendSettingsDialog(QDialog):
         )
         cal_creds_row.addWidget(cal_user_input, 1)
         cal_pass_input = QLineEdit()
-        cal_pass_input.setPlaceholderText("Password (stored encrypted)")
+        cal_pass_input.setPlaceholderText(tr("backend_settings.skills.calendar.password", "Password (stored encrypted)"))
         cal_pass_input.setEchoMode(QLineEdit.EchoMode.Password)
         cal_pass_input.setText(secure_load_secret("skills:calendar:password"))
         cal_pass_input.setStyleSheet(
@@ -1679,7 +1680,7 @@ class BackendSettingsDialog(QDialog):
 
         # ICS file path
         cal_ics_input = ClickableLineEdit()
-        cal_ics_input.setPlaceholderText("Local ICS file path (click to browse)")
+        cal_ics_input.setPlaceholderText(tr("backend_settings.skills.calendar.ics_path", "Local ICS file path (click to browse)"))
         cal_ics_input.setText(str(cal_cfg.get("ics_path", "")).strip())
         cal_ics_input.setStyleSheet(
             f"background: {INPUT_BG}; color: {TEXT}; border: 1px solid {BORDER_SOFT};"
@@ -1687,7 +1688,7 @@ class BackendSettingsDialog(QDialog):
         )
         cal_ics_input.clicked.connect(
             lambda: cal_ics_input.setText(
-                QFileDialog.getOpenFileName(None, "Select ICS file", str(Path.home()), "Calendar files (*.ics)")[0]
+                QFileDialog.getOpenFileName(None, tr("backend_settings.skills.calendar.select_ics", "Select ICS file"), str(Path.home()), tr("backend_settings.skills.calendar.ics_filter", "Calendar files (*.ics)"))[0]
                 or cal_ics_input.text()
             )
         )
@@ -1707,7 +1708,7 @@ class BackendSettingsDialog(QDialog):
 
         # Test button
         cal_test_row = QHBoxLayout()
-        cal_test_btn = QPushButton("Test connection")
+        cal_test_btn = QPushButton(tr("backend_settings.skills.calendar.test", "Test connection"))
         cal_test_btn.setStyleSheet(
             f"background: {CARD_BG_SOFT}; color: {TEXT}; border: 1px solid {BORDER_SOFT};"
             f"border-radius: 18px; padding: 6px 14px;"
@@ -1735,12 +1736,12 @@ class BackendSettingsDialog(QDialog):
                 if test_cfg["backend"] == "ics":
                     p = Path(test_cfg["ics_path"]).expanduser()
                     if not p.exists():
-                        raise FileNotFoundError(f"File not found: {p}")
+                        raise FileNotFoundError(tr("backend_settings.skills.calendar.file_not_found", "File not found: {path}").format(path=p))
                     events = _mod._read_ics_file(test_cfg)
-                    cal_status_label.setText(f"✓ {len(events)} events found in ICS file")
+                    cal_status_label.setText(tr("backend_settings.skills.calendar.events_found", "✓ {count} events found in ICS file").format(count=len(events)))
                 else:
                     cals = _mod._caldav_list_calendars(test_cfg)
-                    cal_status_label.setText(f"✓ Connected — {len(cals)} calendar(s)")
+                    cal_status_label.setText(tr("backend_settings.skills.calendar.connected", "✓ Connected — {count} calendar(s)").format(count=len(cals)))
                 cal_status_label.setStyleSheet("color: #7dff9a; border: none; font-size: 11px;")
             except Exception as exc:
                 cal_status_label.setText(f"✗ {exc}")
@@ -1760,24 +1761,24 @@ class BackendSettingsDialog(QDialog):
         jf_layout.setSpacing(8)
 
         jf_header = QHBoxLayout()
-        jf_title = QLabel("🎬 Jellyfin")
+        jf_title = QLabel(tr("backend_settings.skills.jellyfin.title", "🎬 Jellyfin"))
         jf_title.setFont(QFont(self.ui_font, 11, QFont.Weight.DemiBold))
         jf_title.setStyleSheet(f"color: {TEXT}; border: none;")
         jf_header.addWidget(jf_title)
         jf_header.addStretch()
-        jf_enabled = QCheckBox("Enabled")
+        jf_enabled = QCheckBox(tr("backend_settings.skills.enabled", "Enabled"))
         jf_enabled.setChecked(bool(jf_cfg.get("enabled", True)))
         jf_enabled.setStyleSheet(f"color: {TEXT};")
         jf_header.addWidget(jf_enabled)
         jf_layout.addLayout(jf_header)
 
-        jf_desc = QLabel("Control playback, search library, browse recently added, and manage sessions.")
+        jf_desc = QLabel(tr("backend_settings.skills.jellyfin.desc", "Control playback, search library, browse recently added, and manage sessions."))
         jf_desc.setWordWrap(True)
         jf_desc.setStyleSheet(f"color: {TEXT_DIM}; border: none; font-size: 11px;")
         jf_layout.addWidget(jf_desc)
 
         jf_url_input = QLineEdit()
-        jf_url_input.setPlaceholderText("Jellyfin URL, e.g. http://jellyfin.local:8096")
+        jf_url_input.setPlaceholderText(tr("backend_settings.skills.jellyfin.url", "Jellyfin URL, e.g. http://jellyfin.local:8096"))
         jf_url_input.setText(str(jf_cfg.get("url", "")).strip())
         jf_url_input.setStyleSheet(
             f"background: {INPUT_BG}; color: {TEXT}; border: 1px solid {BORDER_SOFT};"
@@ -1786,7 +1787,7 @@ class BackendSettingsDialog(QDialog):
         jf_layout.addWidget(jf_url_input)
 
         jf_key_input = QLineEdit()
-        jf_key_input.setPlaceholderText("API key (Dashboard → Administration → API Keys, stored encrypted)")
+        jf_key_input.setPlaceholderText(tr("backend_settings.skills.jellyfin.api_key", "API key (Dashboard → Administration → API Keys, stored encrypted)"))
         jf_key_input.setEchoMode(QLineEdit.EchoMode.Password)
         jf_key_input.setText(secure_load_secret("skills:jellyfin:api_key"))
         jf_key_input.setStyleSheet(
@@ -1796,7 +1797,7 @@ class BackendSettingsDialog(QDialog):
         jf_layout.addWidget(jf_key_input)
 
         jf_test_row = QHBoxLayout()
-        jf_test_btn = QPushButton("Test connection")
+        jf_test_btn = QPushButton(tr("backend_settings.skills.jellyfin.test", "Test connection"))
         jf_test_btn.setStyleSheet(
             f"background: {CARD_BG_SOFT}; color: {TEXT}; border: 1px solid {BORDER_SOFT};"
             f"border-radius: 18px; padding: 6px 14px;"
@@ -1808,7 +1809,7 @@ class BackendSettingsDialog(QDialog):
             url = jf_url_input.text().strip().rstrip("/")
             key = jf_key_input.text().strip()
             if not url or not key:
-                jf_status_label.setText("Set URL and API key first.")
+                jf_status_label.setText(tr("backend_settings.skills.jellyfin.set_url_key", "Set URL and API key first."))
                 return
             try:
                 from urllib import request as _req
@@ -1818,7 +1819,7 @@ class BackendSettingsDialog(QDialog):
                 )
                 with _req.urlopen(req, timeout=5) as resp:
                     data = __import__("json").loads(resp.read())
-                server_name = data.get("ServerName", "Jellyfin")
+                server_name = data.get("ServerName", tr("backend_settings.skills.jellyfin.server_name", "Jellyfin"))
                 version = data.get("Version", "?")
                 jf_status_label.setText(f"✓ {server_name} v{version}")
                 jf_status_label.setStyleSheet("color: #7dff9a; border: none; font-size: 11px;")
@@ -1837,7 +1838,7 @@ class BackendSettingsDialog(QDialog):
         # Save button
         save_row = QHBoxLayout()
         save_row.addStretch()
-        save_skills_btn = QPushButton("Save Skills Settings")
+        save_skills_btn = QPushButton(tr("backend_settings.skills.save", "Save Skills Settings"))
         save_skills_btn.setStyleSheet(
             f"""
             QPushButton {{
@@ -1896,8 +1897,8 @@ class BackendSettingsDialog(QDialog):
                 "url": jf_url_input.text().strip(),
             }
             self._save_skills_settings(data)
-            save_skills_btn.setText("Saved ✓")
-            QTimer.singleShot(2000, lambda: save_skills_btn.setText("Save Skills Settings"))
+            save_skills_btn.setText(tr("backend_settings.skills.saved", "Saved ✓"))
+            QTimer.singleShot(2000, lambda: save_skills_btn.setText(tr("backend_settings.skills.save", "Save Skills Settings")))
 
         save_skills_btn.clicked.connect(_save_skills)
         save_row.addWidget(save_skills_btn)
@@ -1911,27 +1912,43 @@ class BackendSettingsDialog(QDialog):
             return
         setattr(self, "_did_center", True)
         parent = self.parentWidget()
-        center = None
+        anchor = None
+        target_screen = None
         if parent is not None and parent.isVisible():
             try:
-                center = parent.frameGeometry().center()
+                geom = parent.frameGeometry()
+                anchor = geom.center()
+                target_screen = QGuiApplication.screenAt(anchor)
             except Exception:
-                center = None
-        if center is None:
-            screen = None
+                anchor = None
+                target_screen = None
+        if target_screen is None:
             try:
-                if parent is not None and parent.windowHandle() is not None:
-                    screen = parent.windowHandle().screen()
+                target_screen = QGuiApplication.screenAt(QCursor.pos())
             except Exception:
-                screen = None
-            if screen is None:
-                screen = QGuiApplication.primaryScreen()
-            if screen is not None:
-                center = screen.availableGeometry().center()
-        if center is None:
+                target_screen = None
+        if target_screen is None and parent is not None:
+            try:
+                if parent.windowHandle() is not None:
+                    target_screen = parent.windowHandle().screen()
+            except Exception:
+                target_screen = None
+        if target_screen is None:
+            target_screen = QGuiApplication.primaryScreen()
+        if target_screen is None:
             return
+        avail = target_screen.availableGeometry()
+        center = avail.center() if anchor is None else anchor
         frame = self.frameGeometry()
         frame.moveCenter(center)
+        if frame.left() < avail.left():
+            frame.moveLeft(avail.left())
+        if frame.top() < avail.top():
+            frame.moveTop(avail.top())
+        if frame.right() > avail.right():
+            frame.moveRight(avail.right())
+        if frame.bottom() > avail.bottom():
+            frame.moveBottom(avail.bottom())
         self.move(frame.topLeft())
 
     def paintEvent(self, event) -> None:  # type: ignore[override]
@@ -2146,19 +2163,19 @@ class BackendSettingsDialog(QDialog):
         self.monitor_check.setVisible(is_sd)
         self.sd_options_refresh_button.setVisible(is_sd)
         if is_sd:
-            self.model_input.setPlaceholderText("Checkpoint / model")
+            self.model_input.setPlaceholderText(tr("backend_settings.sd.checkpoint_model", "Checkpoint / model"))
         elif is_tts:
             if profile.key == "pockettts":
-                self.binary_path_input.setPlaceholderText("Local model folder (optional)")
-                self.model_input.setPlaceholderText("Voice label (metadata)")
+                self.binary_path_input.setPlaceholderText(tr("backend_settings.local_model_folder_optional", "Local model folder (optional)"))
+                self.model_input.setPlaceholderText(tr("backend_settings.voice_label_metadata", "Voice label (metadata)"))
             elif profile.key == "supertonic3":
-                self.binary_path_input.setPlaceholderText("Local model folder (optional)")
-                self.model_input.setPlaceholderText("Supertonic voice")
+                self.binary_path_input.setPlaceholderText(tr("backend_settings.local_model_folder_optional", "Local model folder (optional)"))
+                self.model_input.setPlaceholderText(tr("backend_settings.supertonic.voice", "Supertonic voice"))
             else:
-                self.binary_path_input.setPlaceholderText("Local ONNX model folder (optional)")
-                self.model_input.setPlaceholderText("Kokoro voice")
+                self.binary_path_input.setPlaceholderText(tr("backend_settings.local_onnx_model_folder_optional", "Local ONNX model folder (optional)"))
+                self.model_input.setPlaceholderText(tr("backend_settings.kokoro_voice", "Kokoro voice"))
         else:
-            self.model_input.setPlaceholderText("Model")
+            self.model_input.setPlaceholderText(tr("backend_settings.model", "Model"))
         self.model_input.setVisible(not (is_tts and profile.key in {"kokorotts", "supertonic3"}) and not is_sd)
         self.token_saver_check.setVisible(is_text)
         self.voice_barge_in_check.setVisible(is_tts)
@@ -3043,7 +3060,7 @@ class BackendSettingsDialog(QDialog):
         if not is_gemma4:
             self.kobold_gemma4_audio_stt_check.setChecked(False)
             self.kobold_gemma4_audio_stt_check.setEnabled(False)
-            self.kobold_gemma4_audio_stt_check.setToolTip("Select a Gemma 4 GGUF to enable Gemma 4 audio STT.")
+            self.kobold_gemma4_audio_stt_check.setToolTip(tr("backend_settings.kobold.gemma4_select", "Select a Gemma 4 GGUF to enable Gemma 4 audio STT."))
             return
 
         supported = False
@@ -3063,15 +3080,15 @@ class BackendSettingsDialog(QDialog):
         self.kobold_gemma4_audio_stt_check.setEnabled(True)
         hint = ""
         if supported:
-            hint = "Audio input verified."
+            hint = tr("backend_settings.kobold.gemma4.audio_verified", "Audio input verified.")
         elif checked_at > 0:
-            hint = "Audio input not supported on this build/model."
+            hint = tr("backend_settings.kobold.gemma4.audio_not_supported", "Audio input not supported on this build/model.")
         else:
-            hint = "Click Test to verify audio input support."
+            hint = tr("backend_settings.kobold.gemma4.click_test", "Click Test to verify audio input support.")
         if _looks_like_gemma4_audio_variant(gguf_name):
-            variant_hint = "Gemma 4 audio variant detected."
+            variant_hint = tr("backend_settings.kobold.gemma4.variant_detected", "Gemma 4 audio variant detected.")
         else:
-            variant_hint = "Gemma 4 variant unknown (audio may or may not work)."
+            variant_hint = tr("backend_settings.kobold.gemma4.variant_unknown", "Gemma 4 variant unknown (audio may or may not work).")
         self.kobold_gemma4_audio_stt_check.setToolTip(f"{variant_hint} {hint}")
 
     def _populate_gguf_gallery(self) -> None:
@@ -3084,7 +3101,7 @@ class BackendSettingsDialog(QDialog):
                 widget.deleteLater()
         entries = MODEL_CATALOG.get("llm_gguf", [])
         if not isinstance(entries, list) or not entries:
-            empty = QLabel("No bundled models found. (model_catalog.json missing?)")
+            empty = QLabel(tr("backend_settings.gguf.none_found", "No bundled models found. (model_catalog.json missing?)"))
             empty.setStyleSheet(f"color: {UI_ICON_DIM};")
             self.gguf_gallery_grid.addWidget(empty, 0, 0)
             return
@@ -3096,7 +3113,7 @@ class BackendSettingsDialog(QDialog):
             lay = QVBoxLayout(card)
             lay.setContentsMargins(12, 10, 12, 10)
             lay.setSpacing(6)
-            title = QLabel(str(entry.get("title", "")).strip() or str(entry.get("id", "")).strip() or "Model")
+            title = QLabel(str(entry.get("title", "")).strip() or str(entry.get("id", "")).strip() or tr("backend_settings.model", "Model"))
             title.setWordWrap(True)
             title.setStyleSheet(f"color: {UI_TEXT_STRONG}; font-weight: 700;")
             lay.addWidget(title)
@@ -3132,7 +3149,7 @@ class BackendSettingsDialog(QDialog):
             actions.setSpacing(8)
             download_btn = QToolButton()
             download_btn.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_ArrowDown))
-            download_btn.setToolTip("Download this GGUF into Hanauta cache and select it")
+            download_btn.setToolTip(tr("backend_settings.gguf.download_and_select", "Download this GGUF into Hanauta cache and select it"))
             download_btn.setFixedSize(44, 38)
 
             def _clicked(_checked: bool = False, payload: dict[str, object] = dict(entry)) -> None:
