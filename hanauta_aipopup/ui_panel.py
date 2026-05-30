@@ -1248,16 +1248,28 @@ class SidebarPanel(QFrame):
         provider_label = self.composer.provider_label.text().strip() if hasattr(self, "composer") else ""
         available_backends = []
         kobold_loaded, _kobold_model, _kobold_host, _kobold_profile = self._configured_kobold_loaded_state()
-        supertonic_reachable, _supertonic_host, _supertonic_profile = self._configured_supertonic_reachable_state()
+        supertonic_reachable, supertonic_host, supertonic_profile = self._configured_supertonic_reachable_state()
+        supertonic_running = False
+        if supertonic_profile is not None:
+            spayload = dict(self.backend_settings.get(supertonic_profile.key, {}))
+            supertonic_running, _detail = _supertonic_server_status(spayload)
+            if not supertonic_host:
+                supertonic_host = str(spayload.get("host", supertonic_profile.host)).strip()
+        supertonic_active_runtime = bool(supertonic_reachable or supertonic_running)
+        if supertonic_active_runtime:
+            if self.current_profile is None or header_status in {"", "No active backend."}:
+                header_status = f"Supertonic 3  •  active  •  {supertonic_host or 'runtime process'}"
+            if provider_label in {"", "No tested backend configured"}:
+                provider_label = "Supertonic 3 active (TTS runtime)"
         for profile in self.profiles:
             payload = self.backend_settings.get(profile.key, {})
             is_enabled = bool(payload.get("enabled", True))
             ready = bool(is_enabled and payload.get("tested", False))
-            supertonic_running = False
+            runtime_supertonic = False
             if profile.key == "supertonic3":
-                supertonic_running, _detail = _supertonic_server_status(dict(self.backend_settings.get(profile.key, {})))
+                runtime_supertonic, _detail = _supertonic_server_status(dict(self.backend_settings.get(profile.key, {})))
             runtime_ready = (is_enabled and profile.key == "koboldcpp" and kobold_loaded) or (
-                is_enabled and profile.key == "supertonic3" and (supertonic_reachable or supertonic_running)
+                is_enabled and profile.key == "supertonic3" and (supertonic_reachable or runtime_supertonic)
             )
             if ready or runtime_ready:
                 available_backends.append(
