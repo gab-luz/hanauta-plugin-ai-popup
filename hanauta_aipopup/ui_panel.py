@@ -2893,55 +2893,16 @@ class SidebarPanel(QFrame):
             self._open_backend_settings()
             return
         if command.startswith("/tts "):
-            LOGGER.debug("command /tts with payload")
-            speak_prompt = command[len("/tts "):].strip()
-            if not speak_prompt:
-                self._open_backend_settings()
-                return
-            tts_profile = self._resolve_tts_profile_for_command()
-            if tts_profile is None:
-                card_id = f"tts-pick-{int(time.time()*1000)}"
-                tts_profiles = [p for p in self.profiles if p.provider == "tts_local"]
-                if not tts_profiles:
-                    self.add_card(
-                        ChatItemData(
-                            role="assistant",
-                            title="Hanauta AI",
-                            body="<p>No TTS backend configured. Open settings with <code>/tts</code>.</p>",
-                            meta="tts command",
-                        )
-                    )
-                    return
-                btn_style = (
-                    "display:inline-block;margin:4px 6px 4px 0;"
-                    "padding:7px 16px;border-radius:20px;border:none;cursor:pointer;"
-                    "font-size:12px;font-weight:700;"
-                )
-                buttons_html = "".join(
-                    f'<button type="button" data-cmd="selectBackendAndSay" data-key="{html.escape(p.key)}" '
-                    f'data-text="{html.escape(speak_prompt)}" '
-                    f'style="{btn_style}background:var(--accent,#9b8fff);color:#fff">{html.escape(p.label)}</button>'
-                    for p in tts_profiles
-                )
-                dismiss_btn = (
-                    f'<button style="{btn_style}background:rgba(255,255,255,0.08);color:rgba(255,255,255,0.6)" '
-                    f'type="button" data-cmd="dismiss" data-card-id="{html.escape(card_id)}">Dismiss</button>'
-                )
-                body = (
-                    f"<p>Choose a TTS engine to speak this with:</p>"
-                    f"<p><code>{html.escape(speak_prompt[:80])}{'...' if len(speak_prompt)>80 else ''}</code></p>"
-                    f"<p>{buttons_html}{dismiss_btn}</p>"
-                )
-                item = ChatItemData(
+            LOGGER.debug("command /tts with payload -> open settings only")
+            self.add_card(
+                ChatItemData(
                     role="assistant",
                     title="Hanauta AI",
-                    body=body,
+                    body="<p><code>/tts</code> does not accept text. Use <code>/say your text</code> to synthesize speech.</p>",
                     meta="tts command",
                 )
-                item.id = card_id  # type: ignore[attr-defined]
-                self.add_card(item)
-                return
-            self._start_tts_generation(tts_profile, speak_prompt)
+            )
+            self._open_backend_settings()
             return
         if command == "/voice":
             LOGGER.debug("command /voice")
