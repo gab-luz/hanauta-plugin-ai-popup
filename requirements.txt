@@ -6,6 +6,9 @@
 
 # UI
 PyQt6>=6.6
+# The chat panel is a QWebEngineView; without this the popup falls back to a
+# "QtWebEngine is required" placeholder instead of the real chat UI.
+PyQt6-WebEngine>=6.6
 
 # Encrypted secret + chat storage (Fernet)
 cryptography>=42
