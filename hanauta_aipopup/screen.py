@@ -221,6 +221,13 @@ def capture_screenshot(config: dict[str, object], dest_dir: Path | None = None) 
     raise RuntimeError("Screen capture failed: " + ("; ".join(errors) or "no display detected"))
 
 
+def _frame_signature(config: dict[str, object]) -> str:
+    """Identify the capture settings, so changed settings invalidate the cache."""
+    width, height = screen_resolution(config)
+    crop = bool(config.get("screen_crop_focused", SCREEN_DEFAULTS["screen_crop_focused"]))
+    return f"{width}x{height}|crop={crop}|{screen_display(config)}"
+
+
 def screen_frame_data_url(config: dict[str, object], *, force: bool = False, turn_id: str = "") -> list[str]:
     """Return ``[data_url]`` for the current screenshot, honouring the interval.
 
@@ -237,11 +244,19 @@ def screen_frame_data_url(config: dict[str, object], *, force: bool = False, tur
             return [encode_image_data_url(Path(cached_turn_path))]
 
     interval = screen_interval(config)
+    signature = _frame_signature(config)
     now = time.time()
     last_ts = float(_FRAME_CACHE.get("ts", 0.0) or 0.0)
     cached_path = str(_FRAME_CACHE.get("path", "") or "")
+    cached_sig = str(_FRAME_CACHE.get("sig", "") or "")
 
-    if not force and cached_path and (now - last_ts) < interval and Path(cached_path).exists():
+    if (
+        not force
+        and cached_path
+        and cached_sig == signature
+        and (now - last_ts) < interval
+        and Path(cached_path).exists()
+    ):
         if turn:
             _TURN_CACHE["turn"] = turn
             _TURN_CACHE["path"] = cached_path
@@ -254,6 +269,7 @@ def screen_frame_data_url(config: dict[str, object], *, force: bool = False, tur
         return []
     _FRAME_CACHE["ts"] = now
     _FRAME_CACHE["path"] = str(frame)
+    _FRAME_CACHE["sig"] = signature
     if turn:
         _TURN_CACHE["turn"] = turn
         _TURN_CACHE["path"] = str(frame)
