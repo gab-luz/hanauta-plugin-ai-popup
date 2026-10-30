@@ -41,6 +41,35 @@ _OFFSET_STATE = 80
 _OFFSET_KEYCODE = 84
 _EVENT_BUFFER = 192
 
+# Offsets inside XErrorEvent, and the codes we care about.
+_OFFSET_ERROR_CODE = 32
+_OFFSET_REQUEST_CODE = 33
+_BAD_ACCESS = 10
+_X_GRAB_KEY_REQUEST = 33
+
+# X errors are asynchronous: record them so a failed grab can be attributed.
+_ERROR_SINK: list[tuple[int, int]] = []
+_CONFLICTS: dict[str, str] = {}
+
+
+def record_conflicts(conflicts: dict[str, str]) -> None:
+    """Remember which bindings the last attempt could not grab (for the UI)."""
+    global _CONFLICTS
+    _CONFLICTS = dict(conflicts)
+
+
+def known_conflicts() -> dict[str, str]:
+    """Return ``action -> binding`` for hotkeys another client already owns."""
+    return dict(_CONFLICTS)
+
+
+def describe_conflicts(conflicts: dict[str, str]) -> str:
+    """Human-readable conflict summary (empty string when there is none)."""
+    if not conflicts:
+        return ""
+    parts = [f"{action} ({spec})" for action, spec in sorted(conflicts.items())]
+    return "Hotkey already in use by another application: " + ", ".join(parts)
+
 
 def parse_binding(binding: str) -> tuple[int, str] | None:
     """Parse ``"<ctrl>+<alt>+c"`` into ``(modifier_mask, key_name)``."""
@@ -71,6 +100,7 @@ class GlobalHotkeys(QObject):
         self._notifier: QSocketNotifier | None = None
         self._grabs: dict[tuple[int, int], str] = {}
         self._error_handler = None
+        self.conflicts: dict[str, str] = {}
 
     @property
     def bindings(self) -> dict[str, str]:
@@ -109,16 +139,24 @@ class GlobalHotkeys(QObject):
         display = lib.XOpenDisplay(None)
         if not display:
             return False, "could not open the X display"
-        # Grab conflicts raise BadAccess; swallow it instead of letting the
-        # default handler terminate the app.
-        self._error_handler = ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_void_p, ctypes.c_void_p)(
-            lambda _dpy, _event: 0
-        )
+        # Grab conflicts raise BadAccess. The default handler would terminate the
+        # app, so swallow the error but record it, which is how a conflicting
+        # hotkey is attributed to the binding that lost.
+        def _on_x_error(_dpy, event) -> int:
+            try:
+                codes = ctypes.cast(event, ctypes.POINTER(ctypes.c_ubyte))
+                _ERROR_SINK.append((int(codes[_OFFSET_REQUEST_CODE]), int(codes[_OFFSET_ERROR_CODE])))
+            except Exception:
+                pass
+            return 0
+
+        self._error_handler = ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_void_p, ctypes.c_void_p)(_on_x_error)
         lib.XSetErrorHandler.argtypes = [ctypes.c_void_p]
         lib.XSetErrorHandler(self._error_handler)
 
         root = lib.XDefaultRootWindow(display)
         grabbed = 0
+        conflicts: dict[str, str] = {}
         skipped: list[str] = []
         for action, spec in self._bindings.items():
             parsed = parse_binding(spec)
@@ -134,21 +172,33 @@ class GlobalHotkeys(QObject):
             if not keycode:
                 skipped.append(spec)
                 continue
+            _ERROR_SINK.clear()
             for extra in (0, _LOCK_MASK, _NUM_LOCK_MASK, _LOCK_MASK | _NUM_LOCK_MASK):
                 lib.XGrabKey(display, keycode, mask | extra, root, False, _GRAB_MODE_ASYNC, _GRAB_MODE_ASYNC)
+            # XSync flushes and processes the errors, so a conflict is visible here.
+            lib.XSync(display, False)
+            if any(request == _X_GRAB_KEY_REQUEST and code == _BAD_ACCESS for request, code in _ERROR_SINK):
+                conflicts[action] = spec
+                continue
             self._grabs[(int(keycode), int(mask))] = action
             grabbed += 1
-        lib.XSync(display, False)
 
         self._lib = lib
         self._display = display
         self._notifier = QSocketNotifier(int(lib.XConnectionNumber(display)), QSocketNotifier.Type.Read, self)
         self._notifier.activated.connect(self._drain)
 
+        record_conflicts(conflicts)
+        self.conflicts = dict(conflicts)
         if not grabbed:
-            detail = f" (could not bind {', '.join(skipped)})" if skipped else ""
-            return False, f"no hotkey could be bound{detail}"
-        return True, f"{grabbed} capture hotkey(s) active" + (f"; skipped {', '.join(skipped)}" if skipped else "")
+            detail = describe_conflicts(conflicts)
+            if not detail:
+                detail = f"could not bind {', '.join(skipped)}" if skipped else "no hotkey could be bound"
+            return False, detail
+        message = f"{grabbed} capture hotkey(s) active"
+        if conflicts:
+            message += "; " + describe_conflicts(conflicts)
+        return True, message
 
     def stop(self) -> None:
         if self._lib is None or self._display is None:
@@ -182,4 +232,10 @@ class GlobalHotkeys(QObject):
                 self.triggered.emit(action)
 
 
-__all__ = ["GlobalHotkeys", "parse_binding"]
+__all__ = [
+    "GlobalHotkeys",
+    "describe_conflicts",
+    "known_conflicts",
+    "parse_binding",
+    "record_conflicts",
+]

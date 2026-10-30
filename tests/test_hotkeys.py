@@ -4,7 +4,13 @@ import sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
-from hanauta_aipopup.hotkeys import GlobalHotkeys, parse_binding  # noqa: E402
+from hanauta_aipopup.hotkeys import (  # noqa: E402
+    GlobalHotkeys,
+    describe_conflicts,
+    known_conflicts,
+    parse_binding,
+    record_conflicts,
+)
 
 
 def test_parses_ctrl_alt_combinations():
@@ -38,6 +44,17 @@ def test_start_without_display_is_graceful(monkeypatch):
     ok, message = GlobalHotkeys({"screen": "<ctrl>+<alt>+s"}).start()
     assert ok is False
     assert "X display" in message
+
+
+def test_conflicts_are_recorded_and_described():
+    record_conflicts({"screen": "<ctrl>+<alt>+s"})
+    assert known_conflicts() == {"screen": "<ctrl>+<alt>+s"}
+    text = describe_conflicts(known_conflicts())
+    assert "already in use" in text
+    assert "<ctrl>+<alt>+s" in text
+    record_conflicts({})
+    assert known_conflicts() == {}
+    assert describe_conflicts({}) == ""
 
 
 def test_stop_is_safe_before_start():

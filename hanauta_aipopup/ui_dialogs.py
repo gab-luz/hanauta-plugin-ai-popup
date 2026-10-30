@@ -952,6 +952,14 @@ class VoiceModeDialog(QDialog):
         self.hotkey_screen_input = QLineEdit(str(self.config.get("hotkey_toggle_screen", "<ctrl>+<alt>+s")))
         self.hotkey_screen_input.setPlaceholderText("<ctrl>+<alt>+s")
         form.addWidget(self._labeled("Toggle screen", self.hotkey_screen_input))
+        from .hotkeys import describe_conflicts, known_conflicts
+
+        conflicts = known_conflicts()
+        conflict_text = describe_conflicts(conflicts)
+        self.hotkey_status_label = QLabel(conflict_text or "Hotkeys registered.")
+        self.hotkey_status_label.setWordWrap(True)
+        self.hotkey_status_label.setStyleSheet(f"color: {TEXT_DIM};")
+        form.addWidget(self.hotkey_status_label)
         self.native_audio_check = QCheckBox("Send mic audio straight to the model (omni audio input)")
         self.native_audio_check.setToolTip(
             "Skips the separate speech-to-text step for models that accept audio directly, "
