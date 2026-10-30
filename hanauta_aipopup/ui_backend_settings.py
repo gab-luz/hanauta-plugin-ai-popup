@@ -1354,6 +1354,13 @@ class BackendSettingsDialog(QDialog):
         self.llama_download_lfm3_btn = QPushButton("Download LFM3 GGUF + mmproj")
         self.llama_download_lfm3_btn.clicked.connect(self._download_lfm3_bundle)
         self.llama_scroll_layout.addWidget(self.llama_download_lfm3_btn)
+        self.llama_auto_provision_check = QCheckBox("Auto-compile the LFM3 runtime when no binary is set")
+        self.llama_auto_provision_check.setToolTip(
+            "Uses a runtime shipped in vendor/llama-lfm3 first; otherwise builds the pinned "
+            "llama.cpp and fills the binary path when it finishes."
+        )
+        self.llama_auto_provision_check.setChecked(True)
+        self.llama_scroll_layout.addWidget(self.llama_auto_provision_check)
         self.llama_build_card = SurfaceFrame(bg=rgba(CARD_BG, 0.64), border=BORDER_SOFT, radius=14)
         self.llama_build_card.setStyleSheet(
             f"""
@@ -1690,6 +1697,8 @@ class BackendSettingsDialog(QDialog):
         # Curated GGUF gallery was removed from local LLM backend settings
         # (koboldcpp/llama.cpp). Keep only manual path/file-picker workflow.
         self._load_selected_backend()
+        # Compile or locate the LFM3 runtime and fill the binary field automatically.
+        QTimer.singleShot(400, self._maybe_auto_provision_lfm3_binary)
 
     def _refresh_enabled_checkbox_style(self) -> None:
         if bool(self.enabled_check.isChecked()):
@@ -2601,6 +2610,7 @@ class BackendSettingsDialog(QDialog):
                 "llama_verify_after_build": bool(self.llama_verify_after_build_check.isChecked()),
                 "llama_auto_configure_lfm3": bool(self.llama_auto_lfm3_check.isChecked()),
                 "llama_context": self.llama_context_input.text().strip(),
+                "llama_auto_provision": bool(self.llama_auto_provision_check.isChecked()),
                 "llama_source_dir": self.llama_source_dir_input.text().strip(),
                 "llama_build_dir": self.llama_build_dir_input.text().strip(),
                 "gemma4_audio_stt_enabled": bool(self.kobold_gemma4_audio_stt_check.isChecked()) if hasattr(self, "kobold_gemma4_audio_stt_check") else False,
@@ -2708,6 +2718,7 @@ class BackendSettingsDialog(QDialog):
         self.llama_model_path_input.setText(str(payload.get("gguf_path", "")))
         self.llama_mmproj_path_input.setText(str(payload.get("mmproj_path", "")))
         self.llama_context_input.setText(str(payload.get("llama_context", "")))
+        self.llama_auto_provision_check.setChecked(bool(payload.get("llama_auto_provision", True)))
         if profile.key == "lfm3" and not self.llama_context_input.text().strip():
             # The Omni card's requirements, so the dedicated entry works untouched.
             self.llama_context_input.setText("32768")
@@ -3172,6 +3183,29 @@ class BackendSettingsDialog(QDialog):
             return
         QGuiApplication.clipboard().setText(payload)
         send_desktop_notification("Clipboard", "Copied backend errors/status text.")
+
+    def _maybe_auto_provision_lfm3_binary(self) -> None:
+        """Point the binary field at an existing LFM3 runtime, or compile one."""
+        profile = self._selected_profile()
+        if profile.key != "lfm3":
+            return
+        if str(self.binary_path_input.text()).strip():
+            return
+        payload = self._current_payload()
+        if not bool(payload.get("llama_auto_provision", True)):
+            return
+        prebuilt = _prebuilt_llama_server(payload)
+        if prebuilt is not None:
+            self.binary_path_input.setText(str(prebuilt))
+            self.status_label.setText(f"Using existing LFM3 runtime: {prebuilt.name}")
+            self.status_label.setStyleSheet(f"color: {ACCENT};")
+            self._save_backend()
+            return
+        if getattr(self, "_lfm3_auto_build_started", False):
+            return
+        self._lfm3_auto_build_started = True
+        self.llama_build_status_label.setText("No LFM3 runtime found — compiling it now…")
+        self._compile_llama_runtime()
 
     def _lfm3_entry(self) -> dict[str, object]:
         entry = find_entry("lfm3_omni_2b_abliter8")

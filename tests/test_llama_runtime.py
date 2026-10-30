@@ -3,6 +3,8 @@ import os
 import sys
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from hanauta_aipopup import backends  # noqa: E402
@@ -82,3 +84,11 @@ def test_non_executable_explicit_path_is_ignored(tmp_path):
         {"llama_runtime_flavor": "lfm3", "runtime_dir": str(tmp_path), "llama_server_binary": str(binary)}
     ) is None
     assert os.access(binary, os.X_OK) is False
+
+
+@pytest.fixture(autouse=True)
+def _ignore_vendored_runtime(monkeypatch, tmp_path):
+    """Keep prebuilt detection isolated from the binary shipped in vendor/."""
+    from hanauta_aipopup import backends
+
+    monkeypatch.setattr(backends, "_VENDOR_LLAMA_DIR", tmp_path / "no-vendor")

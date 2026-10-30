@@ -136,6 +136,91 @@ def lfm3_build_env(plan: dict[str, object], payload: dict[str, object]) -> dict[
     return env
 
 
+def llama_supports_flag(binary: Path, flag: str) -> bool:
+    """True when this llama-server build advertises ``flag`` in ``--help``."""
+    try:
+        result = subprocess.run(
+            [str(binary), "--help"], capture_output=True, text=True, timeout=15, check=False
+        )
+    except Exception:
+        return False
+    return flag in f"{result.stdout or ''}{result.stderr or ''}"
+
+
+_GPU_DEVICE_MARKERS = ("cuda", "vulkan", "metal", "hip", "rocm", "sycl", "opencl")
+
+
+def llama_gpu_devices(binary: Path) -> list[str]:
+    """GPU backends this build can actually use (empty for a CPU-only build)."""
+    try:
+        result = subprocess.run(
+            [str(binary), "--list-devices"], capture_output=True, text=True, timeout=15, check=False
+        )
+    except Exception:
+        return []
+    devices: list[str] = []
+    for line in f"{result.stdout or ''}{result.stderr or ''}".splitlines():
+        lowered = line.lower()
+        if "device" not in lowered and "backend" not in lowered:
+            continue
+        if any(marker in lowered for marker in _GPU_DEVICE_MARKERS):
+            devices.append(line.strip())
+    return devices
+
+
+def auto_tune_payload(payload: dict[str, object]) -> dict[str, object]:
+    """Fill acceleration flags from detected hardware when the user has not chosen.
+
+    Only flags that were never saved are touched, so an explicit off stays off.
+    A flag is also dropped when the built server does not advertise it, which
+    keeps a CPU-only build from failing to start.
+    """
+    from ..hardware import acceleration_defaults
+
+    tuned = dict(payload)
+    if not bool(tuned.get("llama_auto_accelerate", True)):
+        return tuned
+    defaults = acceleration_defaults(tuned)
+    if "llama_flash_attn" not in tuned and defaults["flash_attn"]:
+        tuned["llama_flash_attn"] = True
+    if "llama_mtp_enabled" not in tuned and defaults["mtp"]:
+        tuned["llama_mtp_enabled"] = True
+    wanted = {"llama_flash_attn": "--flash-attn", "llama_mtp_enabled": "--model-draft"}
+    if any(tuned.get(key) for key in wanted):
+        binary = _prebuilt_llama_server(tuned)
+        if binary is not None:
+            notes = list(tuned.get("llama_autotune_notes") or [])  # type: ignore[arg-type]
+            if not llama_gpu_devices(binary):
+                # A CPU-only build never benefits from GPU flags, even when
+                # --help still advertises them.
+                for key in wanted:
+                    if tuned.get(key):
+                        tuned[key] = False
+                        notes.append(f"{key} disabled: this llama.cpp build has no GPU backend")
+            else:
+                for key, flag in wanted.items():
+                    if tuned.get(key) and not llama_supports_flag(binary, flag):
+                        tuned[key] = False
+                        notes.append(f"{key} disabled: this llama.cpp build lacks {flag}")
+            if notes:
+                tuned["llama_autotune_notes"] = notes
+    return tuned
+
+
+def _server_env(binary: Path | None) -> dict[str, str]:
+    """Environment for the server, exposing shared libraries next to the binary.
+
+    A vendored runtime ships its ``.so`` files beside ``llama-server``, and the
+    linker does not search there unless told to.
+    """
+    env = dict(os.environ)
+    if binary is not None:
+        lib_dir = str(binary.parent)
+        existing = env.get("LD_LIBRARY_PATH", "").strip()
+        env["LD_LIBRARY_PATH"] = f"{lib_dir}:{existing}" if existing else lib_dir
+    return env
+
+
 def _lfm3_build_script() -> Path | None:
     script = Path(__file__).resolve().parents[2] / "scripts" / "build_llama_lfm3.sh"
     return script if script.is_file() else None
@@ -529,6 +614,8 @@ def llamacpp_status(payload: dict[str, object]) -> tuple[bool, str]:
 
 
 def start_llamacpp(payload: dict[str, object]) -> tuple[bool, str]:
+    # Hardware-derived defaults (Flash Attention / MTP) before anything reads them.
+    payload = auto_tune_payload(payload)
     binary_path = _existing_path(payload.get("binary_path"))
     bootstrap_note = ""
     if binary_path is None:
@@ -649,6 +736,7 @@ def start_llamacpp(payload: dict[str, object]) -> tuple[bool, str]:
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             start_new_session=True,
+            env=_server_env(binary_path),
         )
     except Exception as exc:
         return False, f"Unable to start llama.cpp: {exc}"

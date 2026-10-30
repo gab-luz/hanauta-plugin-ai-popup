@@ -657,6 +657,28 @@ class SidebarPanel(QFrame):
         model = str(payload.get("model", profile.model)).strip() or profile.model
         self.composer.set_profile(profile, model)
         self._sync_web_ui()
+        if profile.key == "lfm3":
+            self._maybe_autostart_lfm3()
+
+    def _maybe_autostart_lfm3(self) -> None:
+        """Start the pinned LFM3 runtime the first time its backend is selected."""
+        if getattr(self, "_lfm3_autostart_attempted", False):
+            return
+        self._lfm3_autostart_attempted = True
+        payload = dict(self.backend_settings.get("lfm3", {}) or {})
+        if not bool(payload.get("llama_autostart", True)):
+            return
+        running, _detail = _llamacpp_status(payload)
+        if running:
+            return
+        from .backends import _existing_path as _local_path
+        if _local_path(payload.get("binary_path")) is None or _local_path(payload.get("gguf_path")) is None:
+            return
+        try:
+            ok, message = _start_llamacpp(payload)
+            LOGGER.info("LFM3 autostart: ok=%s %s", ok, message)
+        except Exception as exc:
+            LOGGER.warning("LFM3 autostart failed: %s", exc)
 
     def _refresh_available_backends(self) -> None:
         available: list[BackendProfile] = []
