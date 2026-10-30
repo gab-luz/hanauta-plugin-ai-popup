@@ -889,7 +889,7 @@ class TextReplyWorker(QThread):
                     tools=tools or None,
                 )
 
-            if profile.key in {"koboldcpp", "llamacpp"}:
+            if profile.key in {"koboldcpp", "llamacpp", "lfm3"}:
                 from .backends import _existing_path
                 gguf = _existing_path(payload.get("gguf_path"))
                 if gguf:
@@ -1374,7 +1374,7 @@ class VoiceModelsWarmupWorker(QThread):
                 raise RuntimeError(message)
             updates[profile.key] = payload
             return updates
-        if profile.key == "llamacpp":
+        if profile.key in {"llamacpp", "lfm3"}:
             host = str(payload.get("host", profile.host)).strip()
             loaded, model_name = _llamacpp_model_loaded(host) if host else (False, "")
             if loaded:

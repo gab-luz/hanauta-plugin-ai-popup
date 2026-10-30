@@ -4000,7 +4000,7 @@ def validate_backend(profile: BackendProfile, payload: dict[str, object]) -> tup
             return True, "KoboldCpp is reachable."
         return True, "Launch config saved. Click the KoboldCpp icon to start it."
 
-    if profile.key == "llamacpp":
+    if profile.key in {"llamacpp", "lfm3"}:
         if binary_path is None:
             return False, "llama.cpp binary path is required."
         hf_repo = str(payload.get("llama_hf_repo", "")).strip()

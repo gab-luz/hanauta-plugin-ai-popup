@@ -2620,7 +2620,7 @@ class BackendSettingsDialog(QDialog):
                 "monitor_enabled": bool(self.monitor_check.isChecked()),
             }
         )
-        if profile.key == "llamacpp":
+        if profile.key in {"llamacpp", "lfm3"}:
             if not str(existing.get("llama_extra_args", "")).strip():
                 existing["llama_extra_args"] = LLAMACPP_SPEED_ARGS_DEFAULT
             if not str(existing.get("llama_n_batch", "")).strip():
@@ -2708,6 +2708,9 @@ class BackendSettingsDialog(QDialog):
         self.llama_model_path_input.setText(str(payload.get("gguf_path", "")))
         self.llama_mmproj_path_input.setText(str(payload.get("mmproj_path", "")))
         self.llama_context_input.setText(str(payload.get("llama_context", "")))
+        if profile.key == "lfm3" and not self.llama_context_input.text().strip():
+            # The Omni card's requirements, so the dedicated entry works untouched.
+            self.llama_context_input.setText("32768")
         self._set_combo_selected(self.llama_compute_backend_combo, str(payload.get("llama_compute_backend", "cpu")).strip() or "cpu")
         self.llama_verify_after_build_check.setChecked(bool(payload.get("llama_verify_after_build", False)))
         self.llama_auto_lfm3_check.setChecked(bool(payload.get("llama_auto_configure_lfm3", True)))
@@ -2720,7 +2723,7 @@ class BackendSettingsDialog(QDialog):
         self.llama_n_batch_input.setText(str(payload.get("llama_n_batch", "1024")))
         self.llama_gpu_layers_input.setText(str(payload.get("llama_gpu_layers", "99")))
         llama_extra_args = str(payload.get("llama_extra_args", "")).strip()
-        if not llama_extra_args and profile.key == "llamacpp":
+        if not llama_extra_args and profile.key in {"llamacpp", "lfm3"}:
             llama_extra_args = LLAMACPP_SPEED_ARGS_DEFAULT
         self.llama_extra_args_input.setText(llama_extra_args)
         self.llama_hf_repo_input.setText(str(payload.get("llama_hf_repo", "")))
@@ -2728,13 +2731,19 @@ class BackendSettingsDialog(QDialog):
         self.llama_hf_draft_repo_input.setText(str(payload.get("llama_hf_draft_repo", "")))
         self.llama_hf_draft_file_input.setText(str(payload.get("llama_hf_draft_file", "")))
         self.llama_hf_cache_dir_input.setText(str(payload.get("llama_hf_cache_dir", "")))
-        self._set_combo_selected(self.llama_runtime_flavor_combo, str(payload.get("llama_runtime_flavor", "auto")).strip().lower() or "auto")
+        # The dedicated LFM3 entry defaults to the pinned LFM3 runtime; an explicit
+        # saved flavor always wins.
+        flavor_default = "lfm3" if profile.key == "lfm3" else "auto"
+        self._set_combo_selected(
+            self.llama_runtime_flavor_combo,
+            str(payload.get("llama_runtime_flavor", flavor_default)).strip().lower() or flavor_default,
+        )
         self.llama_git_url_input.setText(str(payload.get("llama_git_url", "")))
         self.llama_git_ref_input.setText(str(payload.get("llama_git_ref", "")))
         self.llama_patch_url_input.setText(str(payload.get("llama_patch_url", "")))
         self.llama_source_dir_input.setText(str(payload.get("llama_source_dir", "")))
         self.llama_build_dir_input.setText(str(payload.get("llama_build_dir", "")))
-        if profile.key == "llamacpp":
+        if profile.key in {"llamacpp", "lfm3"}:
             bin_path = str(payload.get("binary_path", "")).strip()
             if bin_path and Path(bin_path).exists():
                 self.llama_build_status_label.setText(f"Runtime binary ready: {Path(bin_path).name}")
@@ -2771,7 +2780,7 @@ class BackendSettingsDialog(QDialog):
         self.api_key_input.setVisible(profile.needs_api_key or (profile.provider == "tts_local" and mode == "external_api"))
         is_sd = profile.provider == "sdwebui"
         is_kobold = profile.key == "koboldcpp"
-        is_llamacpp = profile.key == "llamacpp"
+        is_llamacpp = profile.key in {"llamacpp", "lfm3"}
         is_local_llm_cpp = is_kobold or is_llamacpp
         is_tts = profile.provider == "tts_local"
         is_whisper = profile.key == "whisper"
@@ -3216,7 +3225,7 @@ class BackendSettingsDialog(QDialog):
             self.status_label.setText("LFM3-Omni is not in the bundled model gallery.")
             self.status_label.setStyleSheet(f"color: {UI_TEXT_MUTED};")
             return
-        if self._selected_profile().key != "llamacpp":
+        if self._selected_profile().key not in {"llamacpp", "lfm3"}:
             self.status_label.setText("Select the llama.cpp backend first, then download LFM3-Omni.")
             self.status_label.setStyleSheet(f"color: {UI_TEXT_MUTED};")
             return
@@ -3316,7 +3325,7 @@ class BackendSettingsDialog(QDialog):
     def _browse_binary_path(self) -> None:
         profile = self._selected_profile()
         current = self.binary_path_input.text().strip()
-        if profile.key in {"koboldcpp", "llamacpp"}:
+        if profile.key in {"koboldcpp", "llamacpp", "lfm3"}:
             picked = self._pick_existing_file(
                 "Select local LLM server binary",
                 current,
@@ -3436,7 +3445,7 @@ class BackendSettingsDialog(QDialog):
 
     def _start_llama_build_worker(self, install_deps: bool, compile_runtime: bool) -> None:
         profile = self._selected_profile()
-        if profile.key != "llamacpp":
+        if profile.key not in {"llamacpp", "lfm3"}:
             self.status_label.setText("Select llama.cpp backend first.")
             self.status_label.setStyleSheet(f"color: {ACCENT_ALT};")
             return
@@ -4014,7 +4023,7 @@ class BackendSettingsDialog(QDialog):
 
     def _refresh_kobold_status(self, payload: dict[str, object]) -> None:
         profile = self._selected_profile()
-        if profile.key == "llamacpp":
+        if profile.key in {"llamacpp", "lfm3"}:
             active, message = _llamacpp_status(payload)
         else:
             active, message = _koboldcpp_status(payload)
@@ -4058,18 +4067,18 @@ class BackendSettingsDialog(QDialog):
 
     def _start_kobold_clicked(self) -> None:
         profile = self._selected_profile()
-        if profile.key not in {"koboldcpp", "llamacpp"}:
+        if profile.key not in {"koboldcpp", "llamacpp", "lfm3"}:
             return
         payload = self._current_payload()
         # Guard: don't spawn if already alive
         host = str(payload.get("host", profile.host)).strip()
         alive = (host and _openai_compat_alive(host))
-        status_active = _llamacpp_status(payload)[0] if profile.key == "llamacpp" else _koboldcpp_status(payload)[0]
+        status_active = _llamacpp_status(payload)[0] if profile.key in {"llamacpp", "lfm3"} else _koboldcpp_status(payload)[0]
         if alive or status_active:
             self.status_label.setText(f"{profile.label} is already running.")
             self.status_label.setStyleSheet(f"color: {ACCENT};")
             return
-        ok, message = _start_llamacpp(payload) if profile.key == "llamacpp" else _start_koboldcpp(payload)
+        ok, message = _start_llamacpp(payload) if profile.key in {"llamacpp", "lfm3"} else _start_koboldcpp(payload)
         self._persist_selected_backend_payload(payload)
         self._refresh_kobold_status(payload)
         if ok:
@@ -4080,10 +4089,10 @@ class BackendSettingsDialog(QDialog):
 
     def _stop_kobold_clicked(self) -> None:
         profile = self._selected_profile()
-        if profile.key not in {"koboldcpp", "llamacpp"}:
+        if profile.key not in {"koboldcpp", "llamacpp", "lfm3"}:
             return
         payload = self._current_payload()
-        ok, message = _stop_llamacpp(payload) if profile.key == "llamacpp" else _stop_koboldcpp(payload)
+        ok, message = _stop_llamacpp(payload) if profile.key in {"llamacpp", "lfm3"} else _stop_koboldcpp(payload)
         self._persist_selected_backend_payload(payload)
         self._refresh_kobold_status(payload)
         self.status_label.setText(message)
@@ -4091,10 +4100,10 @@ class BackendSettingsDialog(QDialog):
 
     def _restart_kobold_clicked(self) -> None:
         profile = self._selected_profile()
-        if profile.key not in {"koboldcpp", "llamacpp"}:
+        if profile.key not in {"koboldcpp", "llamacpp", "lfm3"}:
             return
         payload = self._current_payload()
-        if profile.key == "llamacpp":
+        if profile.key in {"llamacpp", "lfm3"}:
             _stop_llamacpp(payload)
             ok, message = _start_llamacpp(payload)
         else:
@@ -4591,7 +4600,7 @@ class BackendSettingsDialog(QDialog):
 
     def _download_gguf(self, entry: dict[str, object]) -> None:
         profile = self._selected_profile()
-        if profile.key not in {"koboldcpp", "llamacpp"}:
+        if profile.key not in {"koboldcpp", "llamacpp", "lfm3"}:
             self.status_label.setText("GGUF gallery is only available for local GGUF LLM backends.")
             self.status_label.setStyleSheet(f"color: {UI_TEXT_MUTED};")
             return
@@ -4646,7 +4655,7 @@ class BackendSettingsDialog(QDialog):
                 detail += " (+ vision projector)"
             self.status_label.setText(detail)
             self.status_label.setStyleSheet(f"color: {ACCENT};")
-        if profile.key == "llamacpp" and model_path:
+        if profile.key in {"llamacpp", "lfm3"} and model_path:
             self.llama_model_path_input.setText(model_path)
             if mmproj_path:
                 self.llama_mmproj_path_input.setText(mmproj_path)

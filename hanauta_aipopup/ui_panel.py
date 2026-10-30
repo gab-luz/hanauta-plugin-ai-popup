@@ -183,6 +183,15 @@ class SidebarPanel(QFrame):
             BackendProfile("whisper", "Whisper", "stt_local", "small", "", "whisper", False, False),
             BackendProfile("parakeet", "Parakeet GGUF", "stt_local", "parakeet-tdt-0.6b-v3", "", "whisper", False, False),
         ]
+        # LFM3-Omni is served by the same llama.cpp runtime, but gets its own
+        # selectable backend so its pinned build, mmproj and 32K context come
+        # pre-configured instead of being retyped into the generic entry.
+        self.profiles.append(
+            BackendProfile(
+                "lfm3", "LFM3-Omni 2B", "openai_compat", "lfm3-omni-2b",
+                "127.0.0.1:8081", "koboldcpp", False, True,
+            )
+        )
         self.profile_by_key = {profile.key: profile for profile in self.profiles}
         self.backend_settings = load_backend_settings()
         _write_privacy_codebook(_voice_mode_settings(self.backend_settings))
@@ -662,7 +671,7 @@ class SidebarPanel(QFrame):
             runtime_ready = False
             if profile.key == "koboldcpp" and kobold_loaded:
                 runtime_ready = True
-            if profile.key == "llamacpp":
+            if profile.key in {"llamacpp", "lfm3"}:
                 llamacpp_loaded, _msg = _llamacpp_status(dict(payload))
                 if llamacpp_loaded:
                     runtime_ready = True
@@ -795,7 +804,7 @@ class SidebarPanel(QFrame):
             return "Unknown", "Unknown"
         payload = dict(self.backend_settings.get(profile.key, {}))
         model = str(payload.get("model", profile.model)).strip() or profile.model
-        if profile.key in {"koboldcpp", "llamacpp"}:
+        if profile.key in {"koboldcpp", "llamacpp", "lfm3"}:
             gguf_path = _existing_path(payload.get("gguf_path"))
             if gguf_path is not None:
                 model = gguf_path.name
@@ -1058,7 +1067,7 @@ class SidebarPanel(QFrame):
                 llm_ready = False
             else:
                 payload = dict(self.backend_settings.get(profile.key, {}))
-                if profile.key in {"koboldcpp", "llamacpp"}:
+                if profile.key in {"koboldcpp", "llamacpp", "lfm3"}:
                     llm_ready = _existing_path(payload.get("binary_path")) is not None and _existing_path(payload.get("gguf_path")) is not None
                 elif profile.provider == "ollama":
                     llm_ready = bool(str(payload.get("host", profile.host)).strip())
@@ -1101,7 +1110,7 @@ class SidebarPanel(QFrame):
                 kp = dict(self.backend_settings.get(profile.key, {}))
                 gguf_name = Path(str(kp.get("gguf_path", "")).strip()).name
                 description = f"LLM - {gguf_name}" if gguf_name else "LLM - Specify GGUF model on backend settings first"
-            elif profile.key == "llamacpp":
+            elif profile.key in {"llamacpp", "lfm3"}:
                 lp = dict(self.backend_settings.get(profile.key, {}))
                 loaded, _detail = _llamacpp_status(lp)
                 gguf_name = Path(str(lp.get("gguf_path", "")).strip()).name
@@ -1381,10 +1390,10 @@ class SidebarPanel(QFrame):
             if profile.key == "supertonic3":
                 runtime_supertonic, _detail = _supertonic_server_status(dict(self.backend_settings.get(profile.key, {})))
             runtime_llama = False
-            if profile.key == "llamacpp":
+            if profile.key in {"llamacpp", "lfm3"}:
                 runtime_llama, _detail = _llamacpp_status(dict(self.backend_settings.get(profile.key, {})))
             runtime_ready = (is_enabled and profile.key == "koboldcpp" and kobold_loaded) or (
-                is_enabled and profile.key == "llamacpp" and runtime_llama
+                is_enabled and profile.key in {"llamacpp", "lfm3"} and runtime_llama
             ) or (
                 is_enabled and profile.key == "supertonic3" and (supertonic_reachable or runtime_supertonic)
             )
@@ -1671,7 +1680,7 @@ class SidebarPanel(QFrame):
             message = ""
             if profile.key == "koboldcpp":
                 ok, message = _start_koboldcpp(payload)
-            elif profile.key == "llamacpp":
+            elif profile.key in {"llamacpp", "lfm3"}:
                 ok, message = _start_llamacpp(payload)
             elif profile.key == "kokorotts":
                 ok, message = _start_kokoro_server(payload)
@@ -1731,7 +1740,7 @@ class SidebarPanel(QFrame):
             message = ""
             if profile.key == "koboldcpp":
                 ok, message = _start_koboldcpp(payload)
-            elif profile.key == "llamacpp":
+            elif profile.key in {"llamacpp", "lfm3"}:
                 ok, message = _start_llamacpp(payload)
             elif profile.key == "kokorotts":
                 ok, message = _start_kokoro_server(payload)
@@ -1770,7 +1779,7 @@ class SidebarPanel(QFrame):
             message = ""
             if profile.key == "koboldcpp":
                 ok, message = _stop_koboldcpp(payload)
-            elif profile.key == "llamacpp":
+            elif profile.key in {"llamacpp", "lfm3"}:
                 ok, message = _stop_llamacpp(payload)
             elif profile.key == "kokorotts":
                 ok, message = _stop_kokoro_server(payload)
@@ -1807,7 +1816,7 @@ class SidebarPanel(QFrame):
             message = ""
             if profile.key == "koboldcpp":
                 ok, message = _stop_koboldcpp(payload)
-            elif profile.key == "llamacpp":
+            elif profile.key in {"llamacpp", "lfm3"}:
                 ok, message = _stop_llamacpp(payload)
             elif profile.key == "kokorotts":
                 ok, message = _stop_kokoro_server(payload)
@@ -2052,7 +2061,7 @@ class SidebarPanel(QFrame):
                             tr("chat.voice.backend.kobold.loading", "KoboldCpp process started but model is still loading…")
                         )
                     continue
-                if profile.key == "llamacpp":
+                if profile.key in {"llamacpp", "lfm3"}:
                     host = str(ppayload.get("host", profile.host)).strip()
                     from .backends import _llamacpp_model_loaded, llamacpp_status
                     lloaded, lmodel = _llamacpp_model_loaded(host)
