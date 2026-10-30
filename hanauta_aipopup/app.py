@@ -254,6 +254,9 @@ class DemoWindow(QMainWindow):
             active.append("screen")
         self.capture_overlay.set_active(active)
         self._refresh_capture_hotkeys()
+        recovered = self.hotkeys.retry_pending()
+        if recovered:
+            LOGGER.info("Capture hotkeys recovered: %s", ", ".join(sorted(recovered)))
 
     def _build_panel(self) -> None:
         if hasattr(self, "panel") and self.panel is not None:

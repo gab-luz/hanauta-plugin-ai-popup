@@ -154,37 +154,19 @@ class GlobalHotkeys(QObject):
         lib.XSetErrorHandler.argtypes = [ctypes.c_void_p]
         lib.XSetErrorHandler(self._error_handler)
 
-        root = lib.XDefaultRootWindow(display)
+        self._lib = lib
+        self._display = display
         grabbed = 0
         conflicts: dict[str, str] = {}
         skipped: list[str] = []
         for action, spec in self._bindings.items():
-            parsed = parse_binding(spec)
-            if parsed is None:
-                skipped.append(spec)
-                continue
-            mask, key_name = parsed
-            keysym = lib.XStringToKeysym(key_name.encode("utf-8"))
-            if not keysym:
-                skipped.append(spec)
-                continue
-            keycode = lib.XKeysymToKeycode(display, keysym)
-            if not keycode:
-                skipped.append(spec)
-                continue
-            _ERROR_SINK.clear()
-            for extra in (0, _LOCK_MASK, _NUM_LOCK_MASK, _LOCK_MASK | _NUM_LOCK_MASK):
-                lib.XGrabKey(display, keycode, mask | extra, root, False, _GRAB_MODE_ASYNC, _GRAB_MODE_ASYNC)
-            # XSync flushes and processes the errors, so a conflict is visible here.
-            lib.XSync(display, False)
-            if any(request == _X_GRAB_KEY_REQUEST and code == _BAD_ACCESS for request, code in _ERROR_SINK):
+            status = self._attempt_grab(action, spec)
+            if status == "ok":
+                grabbed += 1
+            elif status == "conflict":
                 conflicts[action] = spec
-                continue
-            self._grabs[(int(keycode), int(mask))] = action
-            grabbed += 1
-
-        self._lib = lib
-        self._display = display
+            else:
+                skipped.append(spec)
         self._notifier = QSocketNotifier(int(lib.XConnectionNumber(display)), QSocketNotifier.Type.Read, self)
         self._notifier.activated.connect(self._drain)
 
@@ -199,6 +181,45 @@ class GlobalHotkeys(QObject):
         if conflicts:
             message += "; " + describe_conflicts(conflicts)
         return True, message
+
+    def _attempt_grab(self, action: str, spec: str) -> str:
+        """Grab one binding. Returns ``ok``, ``conflict`` or ``bad``."""
+        lib, display = self._lib, self._display
+        if lib is None or display is None:
+            return "bad"
+        parsed = parse_binding(spec)
+        if parsed is None:
+            return "bad"
+        mask, key_name = parsed
+        keysym = lib.XStringToKeysym(key_name.encode("utf-8"))
+        if not keysym:
+            return "bad"
+        keycode = lib.XKeysymToKeycode(display, keysym)
+        if not keycode:
+            return "bad"
+        root = lib.XDefaultRootWindow(display)
+        _ERROR_SINK.clear()
+        for extra in (0, _LOCK_MASK, _NUM_LOCK_MASK, _LOCK_MASK | _NUM_LOCK_MASK):
+            lib.XGrabKey(display, keycode, mask | extra, root, False, _GRAB_MODE_ASYNC, _GRAB_MODE_ASYNC)
+        # XSync flushes and processes the errors, so a conflict is visible here.
+        lib.XSync(display, False)
+        if any(request == _X_GRAB_KEY_REQUEST and code == _BAD_ACCESS for request, code in _ERROR_SINK):
+            return "conflict"
+        self._grabs[(int(keycode), int(mask))] = action
+        return "ok"
+
+    def retry_pending(self) -> list[str]:
+        """Re-claim hotkeys that were busy; the other app may have exited since."""
+        if self._lib is None or self._display is None or not self.conflicts:
+            return []
+        recovered: list[str] = []
+        for action, spec in dict(self.conflicts).items():
+            if self._attempt_grab(action, spec) == "ok":
+                recovered.append(action)
+                self.conflicts.pop(action, None)
+        if recovered:
+            record_conflicts(self.conflicts)
+        return recovered
 
     def stop(self) -> None:
         if self._lib is None or self._display is None:

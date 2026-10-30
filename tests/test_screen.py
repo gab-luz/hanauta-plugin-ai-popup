@@ -37,6 +37,39 @@ def test_bad_display_raises_a_readable_error(monkeypatch):
     assert "Screen capture failed" in str(excinfo.value)
 
 
+def test_focused_window_geometry_is_parsed(monkeypatch):
+    class Result:
+        returncode = 0
+        stdout = "WINDOW=123\nX=40\nY=60\nWIDTH=1000\nHEIGHT=700\nSCREEN=0\n"
+
+    monkeypatch.setattr(screen.shutil, "which", lambda name: "/usr/bin/xdotool")
+    monkeypatch.setattr(screen.subprocess, "run", lambda *a, **k: Result())
+    assert screen.focused_window_region(":0") == (40, 60, 1000, 700)
+
+
+def test_focused_window_geometry_falls_back(monkeypatch):
+    monkeypatch.setattr(screen.shutil, "which", lambda name: None)
+    assert screen.focused_window_region(":0") is None
+
+    class Failed:
+        returncode = 1
+        stdout = ""
+
+    monkeypatch.setattr(screen.shutil, "which", lambda name: "/usr/bin/xdotool")
+    monkeypatch.setattr(screen.subprocess, "run", lambda *a, **k: Failed())
+    assert screen.focused_window_region(":0") is None
+
+
+def test_filter_upscales_small_windows_only():
+    small = (0, 0, 400, 300)
+    large = (0, 0, 2560, 1440)
+    assert screen._capture_filter(960, 540, small, True) == "scale=960:-2:flags=lanczos"
+    # Big sources and upscale=off keep the aspect-preserving downscale.
+    assert "force_original_aspect_ratio=decrease" in screen._capture_filter(960, 540, large, True)
+    assert "force_original_aspect_ratio=decrease" in screen._capture_filter(960, 540, small, False)
+    assert "force_original_aspect_ratio=decrease" in screen._capture_filter(960, 540, None, True)
+
+
 def test_auto_capture_interval_has_a_sane_floor():
     # A too-short interval is clamped, and the default is a relaxed 30s.
     assert screen.screen_interval({"screen_interval_seconds": "1"}) == 5.0

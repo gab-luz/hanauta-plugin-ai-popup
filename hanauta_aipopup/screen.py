@@ -27,6 +27,10 @@ SCREEN_DEFAULTS: dict[str, object] = {
     # 30s keeps a game readable without spamming the vision encoder.
     "screen_interval_seconds": "30",
     "screen_display": "",
+    # Cropping to the focused window spends the frame on readable text instead of
+    # desktop chrome; upscaling helps small windows fill it.
+    "screen_crop_focused": True,
+    "screen_upscale": True,
 }
 
 SCREEN_DIR = AI_STATE_DIR / "voice-screen"
@@ -103,9 +107,53 @@ def screen_resolution(config: dict[str, object]) -> tuple[int, int]:
     )
 
 
-def _ffmpeg_scale(width: int, height: int) -> str:
-    # Force both edges, so the vision encoder sees a stable, small frame.
-    return f"scale={width}:{height}:force_original_aspect_ratio=decrease"
+def focused_window_region(display: str = "") -> tuple[int, int, int, int] | None:
+    """Return ``(x, y, w, h)`` of the focused window via xdotool, else ``None``."""
+    xdotool = shutil.which("xdotool")
+    if not xdotool:
+        return None
+    env = dict(os.environ)
+    if display:
+        env["DISPLAY"] = display
+    try:
+        result = subprocess.run(
+            [xdotool, "getactivewindow", "getwindowgeometry", "--shell"],
+            capture_output=True, text=True, timeout=5, check=False, env=env,
+        )
+    except Exception:
+        return None
+    if result.returncode != 0:
+        return None
+    values: dict[str, int] = {}
+    for line in (result.stdout or "").splitlines():
+        key, _, raw = line.partition("=")
+        try:
+            values[key.strip().upper()] = int(float(raw.strip()))
+        except ValueError:
+            continue
+    width = values.get("WIDTH", 0)
+    height = values.get("HEIGHT", 0)
+    if width <= 0 or height <= 0:
+        return None
+    return values.get("X", 0), values.get("Y", 0), width, height
+
+
+def _capture_filter(
+    width: int,
+    height: int,
+    source: tuple[int, int, int, int] | None = None,
+    upscale: bool = True,
+) -> str:
+    """Build the ffmpeg scale filter for the target frame size.
+
+    A window smaller than the target is scaled up (lanczos) so it fills the
+    frame; anything larger is scaled down preserving aspect ratio.
+    """
+    if source is not None and upscale:
+        source_w, source_h = source[2], source[3]
+        if source_w < width or source_h < height:
+            return f"scale={width}:-2:flags=lanczos"
+    return f"scale={width}:{height}:force_original_aspect_ratio=decrease:flags=lanczos"
 
 
 def capture_screenshot(config: dict[str, object], dest_dir: Path | None = None) -> Path:
@@ -122,20 +170,22 @@ def capture_screenshot(config: dict[str, object], dest_dir: Path | None = None) 
 
     ffmpeg = shutil.which("ffmpeg")
     display = screen_display(config)
+    region: tuple[int, int, int, int] | None = None
+    if bool(config.get("screen_crop_focused", SCREEN_DEFAULTS["screen_crop_focused"])):
+        region = focused_window_region(display)
+    upscale = bool(config.get("screen_upscale", SCREEN_DEFAULTS["screen_upscale"]))
     if ffmpeg and display:
-        command = [
-            ffmpeg,
-            "-y",
-            "-loglevel",
-            "error",
-            "-f",
-            "x11grab",
-            "-i",
-            display,
+        command = [ffmpeg, "-y", "-loglevel", "error", "-f", "x11grab"]
+        if region is not None:
+            # Grab only the focused window: same token budget, far more text.
+            command += ["-video_size", f"{region[2]}x{region[3]}", "-i", f"{display}+{region[0]},{region[1]}"]
+        else:
+            command += ["-i", display]
+        command += [
             "-frames:v",
             "1",
             "-vf",
-            _ffmpeg_scale(width, height),
+            _capture_filter(width, height, region, upscale),
             "-q:v",
             "5",
             str(output),
@@ -154,7 +204,7 @@ def capture_screenshot(config: dict[str, object], dest_dir: Path | None = None) 
         if result.returncode == 0 and raw.exists() and raw.stat().st_size > 0:
             if ffmpeg:
                 scaled = subprocess.run(
-                    [ffmpeg, "-y", "-loglevel", "error", "-i", str(raw), "-vf", _ffmpeg_scale(width, height),
+                    [ffmpeg, "-y", "-loglevel", "error", "-i", str(raw), "-vf", _capture_filter(width, height),
                      "-q:v", "5", str(output)],
                     capture_output=True, text=True, timeout=20, check=False,
                 )
@@ -216,6 +266,7 @@ __all__ = [
     "SCREEN_DIR",
     "begin_turn",
     "capture_screenshot",
+    "focused_window_region",
     "screen_display",
     "screen_enabled",
     "screen_frame_data_url",

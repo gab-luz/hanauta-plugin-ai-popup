@@ -46,6 +46,14 @@ def test_start_without_display_is_graceful(monkeypatch):
     assert "X display" in message
 
 
+def test_retry_pending_is_safe_without_a_display():
+    hotkeys = GlobalHotkeys({"screen": "<ctrl>+<alt>+s"})
+    # Never started: nothing to retry, and no crash.
+    assert hotkeys.retry_pending() == []
+    hotkeys.conflicts["screen"] = "<ctrl>+<alt>+s"
+    assert hotkeys.retry_pending() == []
+
+
 def test_conflicts_are_recorded_and_described():
     record_conflicts({"screen": "<ctrl>+<alt>+s"})
     assert known_conflicts() == {"screen": "<ctrl>+<alt>+s"}

@@ -917,6 +917,17 @@ class VoiceModeDialog(QDialog):
         self.screen_display_input = QLineEdit(str(self.config.get("screen_display", "")))
         self.screen_display_input.setPlaceholderText("X display, e.g. :0.0 (blank = $DISPLAY)")
         form.addWidget(self._labeled("Display", self.screen_display_input))
+        self.screen_crop_check = QCheckBox("Crop to the focused window (readable text, not desktop chrome)")
+        self.screen_crop_check.setToolTip(
+            "Captures only the active window at the same token budget, so small text is legible "
+            "to the model. Needs xdotool; falls back to the full screen."
+        )
+        self.screen_crop_check.setChecked(bool(self.config.get("screen_crop_focused", True)))
+        form.addWidget(self.screen_crop_check)
+        self.screen_upscale_check = QCheckBox("Upscale small windows to fill the screenshot")
+        self.screen_upscale_check.setToolTip("Useful for narrow windows; the frame keeps its aspect ratio.")
+        self.screen_upscale_check.setChecked(bool(self.config.get("screen_upscale", True)))
+        form.addWidget(self.screen_upscale_check)
 
         screen_actions = QWidget()
         screen_actions_layout = QHBoxLayout(screen_actions)
@@ -1565,6 +1576,8 @@ class VoiceModeDialog(QDialog):
                 "screen_resolution": self.screen_resolution_input.text().strip() or "960x540",
                 "screen_interval_seconds": self.screen_interval_input.text().strip() or "30",
                 "screen_display": self.screen_display_input.text().strip(),
+                "screen_crop_focused": bool(self.screen_crop_check.isChecked()),
+                "screen_upscale": bool(self.screen_upscale_check.isChecked()),
                 "capture_hotkeys_enabled": bool(self.capture_hotkeys_check.isChecked()),
                 "hotkey_toggle_camera": self.hotkey_camera_input.text().strip() or "<ctrl>+<alt>+c",
                 "hotkey_toggle_screen": self.hotkey_screen_input.text().strip() or "<ctrl>+<alt>+s",

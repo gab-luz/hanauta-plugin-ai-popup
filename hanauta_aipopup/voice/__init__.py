@@ -84,6 +84,8 @@ def _voice_mode_defaults() -> dict:
         "screen_resolution": "960x540",
         "screen_interval_seconds": "30",
         "screen_display": "",
+        "screen_crop_focused": True,
+        "screen_upscale": True,
         "capture_hotkeys_enabled": True,
         "hotkey_toggle_camera": "<ctrl>+<alt>+c",
         "hotkey_toggle_screen": "<ctrl>+<alt>+s",
