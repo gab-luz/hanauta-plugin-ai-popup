@@ -17,7 +17,9 @@ from PyQt6.QtGui import QCursor, QFont, QGuiApplication
 from PyQt6.QtNetwork import QHostAddress, QTcpServer, QTcpSocket
 from PyQt6.QtWidgets import QApplication, QMainWindow, QVBoxLayout, QWidget
 
+from .camera import set_capture_listener
 from .fonts import load_ui_font
+from .overlay import CaptureOverlay
 from .runtime import (
     AI_POPUP_CRASH_FILE,
     AI_POPUP_ERROR_LOG_FILE,
@@ -169,6 +171,28 @@ class DemoWindow(QMainWindow):
         self.theme_timer = QTimer(self)
         self.theme_timer.timeout.connect(self._reload_theme_if_needed)
         self.theme_timer.start(3000)
+
+        # Capture indicator: a badge per shared source plus a chime the first time
+        # the camera or the screen actually grabs a frame, so the user always knows.
+        self.capture_overlay = CaptureOverlay()
+        set_capture_listener(lambda kind: self.capture_overlay.trigger.emit(kind))
+        self.capture_timer = QTimer(self)
+        self.capture_timer.timeout.connect(self._sync_capture_overlay)
+        self.capture_timer.start(2000)
+        QTimer.singleShot(0, self._sync_capture_overlay)
+
+    def _sync_capture_overlay(self) -> None:
+        """Show a badge for each source that voice mode is currently sharing."""
+        try:
+            config = dict((_load_backend_settings() or {}).get("_voice_mode", {}) or {})
+        except Exception:
+            config = {}
+        active = []
+        if bool(config.get("camera_enabled", False)):
+            active.append("camera")
+        if bool(config.get("screen_enabled", False)):
+            active.append("screen")
+        self.capture_overlay.set_active(active)
 
     def _build_panel(self) -> None:
         if hasattr(self, "panel") and self.panel is not None:

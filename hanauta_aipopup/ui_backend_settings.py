@@ -1337,6 +1337,13 @@ class BackendSettingsDialog(QDialog):
         self.llama_mmproj_path_input.setToolTip("Required for image input. LFM3-Omni needs its BF16 mmproj.")
         self.llama_mmproj_path_input.clicked.connect(self._browse_llama_mmproj_file)
         self.llama_scroll_layout.addWidget(self.llama_mmproj_path_input)
+        self.llama_context_input = QLineEdit()
+        self.llama_context_input.setPlaceholderText("Context window, e.g. 32768 (blank = model default)")
+        self.llama_context_input.setToolTip(
+            "Passed to llama-server as -c. LFM3-Omni supports 32768; a chat with images and audio "
+            "needs headroom above the default."
+        )
+        self.llama_scroll_layout.addWidget(self.llama_context_input)
         self.llama_auto_lfm3_check = QCheckBox("Auto-configure LFM3-Omni when its GGUF is selected")
         self.llama_auto_lfm3_check.setToolTip(
             "Switches the runtime flavor to LFM3 Omni, applies the pinned build ref, "
@@ -2593,6 +2600,7 @@ class BackendSettingsDialog(QDialog):
                 "llama_compute_backend": str(self.llama_compute_backend_combo.currentData() or "cpu").strip(),
                 "llama_verify_after_build": bool(self.llama_verify_after_build_check.isChecked()),
                 "llama_auto_configure_lfm3": bool(self.llama_auto_lfm3_check.isChecked()),
+                "llama_context": self.llama_context_input.text().strip(),
                 "llama_source_dir": self.llama_source_dir_input.text().strip(),
                 "llama_build_dir": self.llama_build_dir_input.text().strip(),
                 "gemma4_audio_stt_enabled": bool(self.kobold_gemma4_audio_stt_check.isChecked()) if hasattr(self, "kobold_gemma4_audio_stt_check") else False,
@@ -2699,6 +2707,7 @@ class BackendSettingsDialog(QDialog):
         self.text_model_path_input.setText(str(payload.get("text_model_path", "")))
         self.llama_model_path_input.setText(str(payload.get("gguf_path", "")))
         self.llama_mmproj_path_input.setText(str(payload.get("mmproj_path", "")))
+        self.llama_context_input.setText(str(payload.get("llama_context", "")))
         self._set_combo_selected(self.llama_compute_backend_combo, str(payload.get("llama_compute_backend", "cpu")).strip() or "cpu")
         self.llama_verify_after_build_check.setChecked(bool(payload.get("llama_verify_after_build", False)))
         self.llama_auto_lfm3_check.setChecked(bool(payload.get("llama_auto_configure_lfm3", True)))

@@ -36,6 +36,14 @@ _LLAMA_REPO_DEFAULTS: dict[str, tuple[str, str]] = {
     # and supply llama_patch_url (or PATCH_URL / PATCH_FILE) to pin your own build.
     "lfm3": ("https://github.com/ggml-org/llama.cpp.git", "d05706b4b"),
 }
+# The model card requires a server patch from the Abliter8 LFM3 serving guide on
+# top of the pinned commit, so the build is only reproducible with both.
+_LLAMA_PATCH_DEFAULTS: dict[str, str] = {
+    "lfm3": (
+        "https://raw.githubusercontent.com/abliter8-ai/lfm3-abliter8-serving/"
+        "main/patches/llama.cpp-lfm3-server.patch"
+    ),
+}
 _LLAMA_INSTALL_DIRS: dict[str, str] = {
     "upstream": "llama-cpp",
     "atomic": "atomic-llama-cpp",
@@ -59,6 +67,7 @@ def llama_build_plan(payload: dict[str, object]) -> dict[str, object]:
     default_repo, default_ref = _LLAMA_REPO_DEFAULTS[flavor]
     repo_url = str(payload.get("llama_git_url", "")).strip() or default_repo
     git_ref = str(payload.get("llama_git_ref", "")).strip() or default_ref
+    patch_url = str(payload.get("llama_patch_url", "")).strip() or _LLAMA_PATCH_DEFAULTS.get(flavor, "")
     install_root = _runtime_root(payload) / "runtimes" / _LLAMA_INSTALL_DIRS[flavor]
     source_dir = Path(str(payload.get("llama_source_dir", "")).strip() or (install_root / "src"))
     build_dir = Path(str(payload.get("llama_build_dir", "")).strip() or (source_dir / "build"))
@@ -66,6 +75,7 @@ def llama_build_plan(payload: dict[str, object]) -> dict[str, object]:
         "flavor": flavor,
         "repo_url": repo_url,
         "git_ref": git_ref,
+        "patch_url": patch_url,
         "install_root": install_root,
         "source_dir": source_dir,
         "build_dir": build_dir,
@@ -111,7 +121,8 @@ def lfm3_build_env(plan: dict[str, object], payload: dict[str, object]) -> dict[
     }
     if str(payload.get("device", "cpu")).strip().lower() == "gpu":
         env["CMAKE_EXTRA"] = "-DGGML_CUDA=ON"
-    patch_url = str(payload.get("llama_patch_url", "")).strip()
+    # Payload override first, then the flavor's documented patch (see _LLAMA_PATCH_DEFAULTS).
+    patch_url = str(payload.get("llama_patch_url", "")).strip() or str(plan.get("patch_url", "")).strip()
     if patch_url:
         env["PATCH_URL"] = patch_url
     if bool(payload.get("llama_verify_after_build", False)):
@@ -557,6 +568,14 @@ def start_llamacpp(payload: dict[str, object]) -> tuple[bool, str]:
     if binary_path is None or gguf_path is None:
         return False, "Configure both llama.cpp binary path and GGUF model first."
     command = [str(binary_path), "-m", str(gguf_path)]
+    # Context window. Without an explicit -c llama-server uses the model's trained
+    # context, which is far too small for a chat plus images/audio on some cards.
+    ctx_raw = str(payload.get("llama_context", "")).strip()
+    try:
+        if ctx_raw and int(float(ctx_raw)) >= 256:
+            command.extend(["-c", str(int(float(ctx_raw)))])
+    except (TypeError, ValueError):
+        pass
     host = str(payload.get("host", "")).strip()
     if host:
         parsed = urlparse(_normalize_host_url(host))

@@ -13,6 +13,7 @@ import base64
 import shutil
 import subprocess
 import time
+from collections.abc import Callable
 from pathlib import Path
 
 from .runtime import AI_STATE_DIR
@@ -33,6 +34,26 @@ _MIN_EDGE = 64
 
 # Throttle state: last capture time + last frame path.
 _FRAME_CACHE: dict[str, object] = {"ts": 0.0, "path": ""}
+
+# Optional observer (the overlay) told when a source starts capturing.
+_CAPTURE_LISTENER: Callable[[str], None] | None = None
+
+
+def set_capture_listener(listener: Callable[[str], None] | None) -> None:
+    """Register a callback fired as ``listener(kind)`` when capture starts."""
+    global _CAPTURE_LISTENER
+    _CAPTURE_LISTENER = listener
+
+
+def notify_capture(kind: str) -> None:
+    """Best-effort notification; a broken listener must never break a capture."""
+    listener = _CAPTURE_LISTENER
+    if listener is None:
+        return
+    try:
+        listener(kind)
+    except Exception:
+        pass
 
 
 def parse_resolution(value: object, fallback: tuple[int, int] = (640, 480)) -> tuple[int, int]:
@@ -136,6 +157,7 @@ def camera_frame_data_url(config: dict[str, object], *, force: bool = False) -> 
         return []
     _FRAME_CACHE["ts"] = now
     _FRAME_CACHE["path"] = str(frame)
+    notify_capture("camera")
     return [encode_image_data_url(frame)]
 
 
@@ -146,6 +168,8 @@ __all__ = [
     "camera_frame_data_url",
     "capture_snapshot",
     "encode_image_data_url",
+    "notify_capture",
+    "set_capture_listener",
     "parse_interval",
     "parse_resolution",
 ]

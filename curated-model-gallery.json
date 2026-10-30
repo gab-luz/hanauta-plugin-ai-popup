@@ -15,7 +15,7 @@
       "modalities": ["text", "vision", "audio"],
       "llama_flags": ["--jinja", "--reasoning", "off"],
       "llama_git_ref": "d05706b4b",
-      "llama_patch_url": "",
+      "llama_patch_url": "https://raw.githubusercontent.com/abliter8-ai/lfm3-abliter8-serving/main/patches/llama.cpp-lfm3-server.patch",
       "notes": "Omni model: understands text, images and audio and replies with text or speech. Q6_K is the card's serving example and keeps a much closer neutral-text distribution than Q4 builds (Q8_0 for maximum fidelity). Needs its mmproj for images and the pinned llama.cpp build (d05706b4b + serving-guide patch), which the popup can compile for you. Filenames are resolved from the repo at download time."
     },
     {

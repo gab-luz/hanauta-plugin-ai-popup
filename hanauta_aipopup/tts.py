@@ -2129,6 +2129,56 @@ def _load_skills() -> list[dict]:
         return []
 
 
+def _estimate_token_count(payload: object) -> int:
+    """Cheap token estimate (~4 chars/token) for prompt budgeting."""
+    raw = payload if isinstance(payload, str) else json.dumps(payload, default=str)
+    return max(1, len(raw) // 4)
+
+
+def _voice_prompt_budget(config: dict[str, object], backend_settings: dict[str, dict[str, object]]) -> int:
+    """Token budget for a voice turn, capped by the model's own context."""
+    try:
+        budget = int(float(str(config.get("prompt_token_budget", "6000")).strip() or "6000"))
+    except (TypeError, ValueError):
+        budget = 6000
+    budget = max(1024, budget)
+    profile_key = str(config.get("llm_profile", "")).strip()
+    payload = dict(backend_settings.get(profile_key, {}) or {})
+    try:
+        ctx = int(float(str(payload.get("llama_context", "")).strip() or "0"))
+    except (TypeError, ValueError):
+        ctx = 0
+    if ctx > 0:
+        # Leave half the window for the reply, images and audio.
+        budget = min(budget, max(1024, ctx // 2))
+    return budget
+
+
+def _trim_voice_tools(
+    tools: list[dict],
+    config: dict[str, object],
+    backend_settings: dict[str, dict[str, object]],
+) -> tuple[list[dict], bool]:
+    """Drop skill definitions when they would dominate the prompt.
+
+    The skills registry is several thousand tokens of JSON, which on a local CPU
+    model means a long wait before the first word. Skills stay available whenever
+    the budget allows, so nothing is lost when the prompt is small enough.
+    """
+    if not tools:
+        return tools, False
+    budget = _voice_prompt_budget(config, backend_settings)
+    if _estimate_token_count(tools) <= budget:
+        return tools, False
+    LOGGER.info(
+        "Omitting %d skill definitions from the voice prompt (%d tokens > %d budget)",
+        len(tools),
+        _estimate_token_count(tools),
+        budget,
+    )
+    return [], True
+
+
 def _audio_input_part(audio_path: Path) -> dict[str, object]:
     """Build an OpenAI-style input_audio part from a recorded WAV file."""
     data = Path(audio_path).read_bytes()
@@ -2140,8 +2190,26 @@ def _audio_input_part(audio_path: Path) -> dict[str, object]:
     }
 
 
+def _vision_message_images(config: dict[str, object]) -> list[str]:
+    """Attach camera and/or screen frames to a voice-mode prompt when enabled."""
+    images: list[str] = []
+    try:
+        from .camera import camera_frame_data_url
+
+        images.extend(camera_frame_data_url(config))
+    except Exception as exc:
+        LOGGER.debug("Camera frame unavailable: %s", exc)
+    try:
+        from .screen import screen_frame_data_url
+
+        images.extend(screen_frame_data_url(config))
+    except Exception as exc:
+        LOGGER.debug("Screen frame unavailable: %s", exc)
+    return images
+
+
 def _camera_message_images(config: dict[str, object]) -> list[str]:
-    """Attach the current camera frame to a voice-mode prompt when enabled."""
+    """Backwards-compatible alias: camera frames only."""
     try:
         from .camera import camera_frame_data_url
     except Exception:
@@ -2189,6 +2257,7 @@ def generate_voice_chat_reply(
     except Exception:
         prompt_for_llm = masked_prompt
     tools = _load_skills() if bool(config.get("skills_enabled", True)) else []
+    tools, _tools_trimmed = _trim_voice_tools(tools, config, backend_settings)
     from .user_profile import load_profile_state, preferred_user_name, load_ai_popup_user_profile
     _user_name = preferred_user_name(load_profile_state())
     _user_profile = load_ai_popup_user_profile()
@@ -2207,7 +2276,7 @@ def generate_voice_chat_reply(
         tools=tools or None,
         user_name=_user_name,
         user_info=_user_info,
-        images=_camera_message_images(config),
+        images=_vision_message_images(config),
         extra_parts=extra_parts,
     )
     if bool(config.get("llm_external_api", False)):

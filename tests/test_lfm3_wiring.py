@@ -27,6 +27,7 @@ def test_build_env_matrix_patch_and_gpu():
     )
     assert env["BACKENDS"] == "cpu cuda"
     assert env["PATCH_URL"] == "https://example.invalid/lfm3.patch"
+    assert llama_build_plan({"llama_runtime_flavor": "lfm3"})["patch_url"].endswith("llama.cpp-lfm3-server.patch")
     assert env["CMAKE_EXTRA"] == "-DGGML_CUDA=ON"
     assert env["LLAMA_REF"] == "d05706b4b"
     assert env["PREFIX"] == str(plan["install_root"])
@@ -45,9 +46,11 @@ def test_build_env_verify_is_opt_in():
     assert env["BACKENDS"] == "cpu"
 
 
-def test_build_env_defaults_pin_the_evaluated_commit():
-    # The lfm3 flavor must carry the evaluated commit; other flavors stay upstream.
+def test_build_env_defaults_pin_commit_and_serving_patch():
+    # The lfm3 flavor must carry the evaluated commit *and* the serving-guide patch.
     env = lfm3_build_env(llama_build_plan({"llama_runtime_flavor": "lfm3"}), {})
     assert env["LLAMA_REF"] == "d05706b4b"
-    assert "PATCH_URL" not in env
+    assert env["PATCH_URL"].endswith("llama.cpp-lfm3-server.patch")
     assert llama_build_plan({})["flavor"] == "upstream"
+    # Other flavors must not pick up the LFM3 patch.
+    assert "PATCH_URL" not in lfm3_build_env(llama_build_plan({"llama_runtime_flavor": "upstream"}), {})

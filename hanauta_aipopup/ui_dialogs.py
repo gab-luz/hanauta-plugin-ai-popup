@@ -667,6 +667,27 @@ class _CameraPreviewWorker(QThread):
         self.done.emit(str(path))
 
 
+class _ScreenPreviewWorker(QThread):
+    """Captures one low-resolution screenshot off the UI thread."""
+
+    done = pyqtSignal(str)
+    failed = pyqtSignal(str)
+
+    def __init__(self, config: dict) -> None:
+        super().__init__()
+        self.config = dict(config)
+
+    def run(self) -> None:
+        try:
+            from .screen import capture_screenshot
+
+            path = capture_screenshot(self.config)
+        except Exception as exc:
+            self.failed.emit(str(exc))
+            return
+        self.done.emit(str(path))
+
+
 class VoiceModeDialog(QDialog):
     def __init__(
         self,
@@ -874,6 +895,45 @@ class VoiceModeDialog(QDialog):
         self.camera_interval_input = QLineEdit(str(self.config.get("camera_interval_seconds", "10")))
         self.camera_interval_input.setPlaceholderText("Seconds between frames, e.g. 10")
         form.addWidget(self._labeled("Camera interval (s)", self.camera_interval_input))
+
+        form.addWidget(self._section_label("Screen (what you're looking at)"))
+        self.screen_enabled_check = QCheckBox("Let the model see periodic low-res screenshots")
+        self.screen_enabled_check.setToolTip(
+            "Share a downscaled screenshot so you can talk about a game, a document or anything else "
+            "on screen. Needs a vision model with an mmproj loaded."
+        )
+        self.screen_enabled_check.setChecked(bool(self.config.get("screen_enabled", False)))
+        form.addWidget(self.screen_enabled_check)
+        self.screen_resolution_input = QLineEdit(str(self.config.get("screen_resolution", "960x540")))
+        self.screen_resolution_input.setPlaceholderText("e.g. 960x540 (max 1920x1080)")
+        form.addWidget(self._labeled("Screenshot resolution", self.screen_resolution_input))
+        self.screen_interval_input = QLineEdit(str(self.config.get("screen_interval_seconds", "15")))
+        self.screen_interval_input.setPlaceholderText("Seconds between screenshots, e.g. 15")
+        form.addWidget(self._labeled("Screenshot interval (s)", self.screen_interval_input))
+        self.screen_display_input = QLineEdit(str(self.config.get("screen_display", "")))
+        self.screen_display_input.setPlaceholderText("X display, e.g. :0.0 (blank = $DISPLAY)")
+        form.addWidget(self._labeled("Display", self.screen_display_input))
+
+        screen_actions = QWidget()
+        screen_actions_layout = QHBoxLayout(screen_actions)
+        screen_actions_layout.setContentsMargins(0, 0, 0, 0)
+        screen_actions_layout.setSpacing(8)
+        self.screen_preview_button = QPushButton("Capture test screenshot")
+        self.screen_preview_button.clicked.connect(self._preview_screen_frame)
+        self.screen_preview_status = QLabel("Not tested yet")
+        self.screen_preview_status.setWordWrap(True)
+        self.screen_preview_status.setStyleSheet(f"color: {TEXT_DIM};")
+        screen_actions_layout.addWidget(self.screen_preview_button)
+        screen_actions_layout.addWidget(self.screen_preview_status, 1)
+        form.addWidget(self._labeled("Screenshot test", screen_actions))
+        self.screen_preview_image = QLabel("No screenshot captured yet")
+        self.screen_preview_image.setFixedHeight(150)
+        self.screen_preview_image.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.screen_preview_image.setStyleSheet(
+            f"background: {bg_raised}; border: 1px solid {border}; border-radius: 12px; color: {TEXT_DIM};"
+        )
+        form.addWidget(self.screen_preview_image)
+        self._screen_preview_worker: _ScreenPreviewWorker | None = None
         self.native_audio_check = QCheckBox("Send mic audio straight to the model (omni audio input)")
         self.native_audio_check.setToolTip(
             "Skips the separate speech-to-text step for models that accept audio directly, "
@@ -1027,6 +1087,14 @@ class VoiceModeDialog(QDialog):
         self.token_saver_check = QCheckBox("Token saver (compress transcript before sending to the text model)")
         self.token_saver_check.setChecked(bool(self.config.get("token_saver_enabled", True)))
         form.addWidget(self.token_saver_check)
+        self.prompt_budget_input = QLineEdit(str(self.config.get("prompt_token_budget", "6000")))
+        self.prompt_budget_input.setPlaceholderText("e.g. 6000")
+        self.prompt_budget_input.setToolTip(
+            "Approximate prompt budget per voice turn. Above it, the skill/tool definitions are "
+            "dropped so a local model answers quickly instead of spending seconds on prompt processing. "
+            "Also capped at half of the llama.cpp context window when one is set."
+        )
+        form.addWidget(self._labeled("Prompt budget (tokens)", self.prompt_budget_input))
 
         self.memory_check = QCheckBox("Embeddings memory (inject relevant past snippets)")
         self.memory_check.setChecked(bool(self.config.get("memory_enabled", False)))
@@ -1181,6 +1249,44 @@ class VoiceModeDialog(QDialog):
     def _finish_camera_preview(self) -> None:
         self.camera_preview_button.setEnabled(True)
         self._camera_preview_worker = None
+
+    def _preview_screen_frame(self) -> None:
+        worker = self._screen_preview_worker
+        if worker is not None and worker.isRunning():
+            return
+        config = {
+            "screen_enabled": True,
+            "screen_resolution": self.screen_resolution_input.text().strip() or "960x540",
+            "screen_display": self.screen_display_input.text().strip(),
+        }
+        self.screen_preview_button.setEnabled(False)
+        self.screen_preview_status.setText("Capturing…")
+        worker = _ScreenPreviewWorker(config)
+        self._screen_preview_worker = worker
+        worker.done.connect(self._on_screen_preview_done)
+        worker.failed.connect(self._on_screen_preview_failed)
+        worker.finished.connect(self._finish_screen_preview)
+        worker.start()
+
+    def _on_screen_preview_done(self, path: str) -> None:
+        pixmap = QPixmap(path)
+        if pixmap.isNull():
+            self._on_screen_preview_failed("Captured file could not be decoded.")
+            return
+        self.screen_preview_image.setPixmap(
+            pixmap.scaledToHeight(150, Qt.TransformationMode.SmoothTransformation)
+        )
+        self.screen_preview_status.setText(
+            f"OK — {pixmap.width()}×{pixmap.height()}, ~{max(1, len(str(path)) and pixmap.width() * pixmap.height() // 800)} tokens-ish"
+        )
+
+    def _on_screen_preview_failed(self, message: str) -> None:
+        self.screen_preview_image.setText("No screenshot")
+        self.screen_preview_status.setText(str(message).strip()[:200] or "Capture failed.")
+
+    def _finish_screen_preview(self) -> None:
+        self.screen_preview_button.setEnabled(True)
+        self._screen_preview_worker = None
 
     def _section_label(self, text: str) -> QLabel:
         label = QLabel(text)
@@ -1415,6 +1521,7 @@ class VoiceModeDialog(QDialog):
                 "barge_in_threshold": self.barge_in_threshold_input.text().strip() or "0.035",
                 "emotion_tags_enabled": bool(self.emotion_tags_check.isChecked()),
                 "token_saver_enabled": bool(self.token_saver_check.isChecked()),
+                "prompt_token_budget": self.prompt_budget_input.text().strip() or "6000",
                 "memory_enabled": bool(self.memory_check.isChecked()),
                 "memory_store": str(self.memory_store_combo.currentData() or "sqlite"),
                 "memory_host": self.memory_host_input.text().strip(),
@@ -1428,6 +1535,10 @@ class VoiceModeDialog(QDialog):
                 "camera_source": self.camera_source_input.text().strip() or "/dev/video0",
                 "camera_resolution": self.camera_resolution_input.text().strip() or "640x480",
                 "camera_interval_seconds": self.camera_interval_input.text().strip() or "10",
+                "screen_enabled": bool(self.screen_enabled_check.isChecked()),
+                "screen_resolution": self.screen_resolution_input.text().strip() or "960x540",
+                "screen_interval_seconds": self.screen_interval_input.text().strip() or "15",
+                "screen_display": self.screen_display_input.text().strip(),
                 "stop_phrases_enabled": bool(self.stop_phrases_check.isChecked()),
                 "stop_phrases_language": str(self.stop_lang_combo.currentData() or "en-us"),
                 "stop_phrases_allow_single_word": bool(self.stop_single_check.isChecked()),
