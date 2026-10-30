@@ -3199,7 +3199,7 @@ class BackendSettingsDialog(QDialog):
             self.binary_path_input.setText(str(prebuilt))
             self.status_label.setText(f"Using existing LFM3 runtime: {prebuilt.name}")
             self.status_label.setStyleSheet(f"color: {ACCENT};")
-            self._save_backend()
+            self._save_current_backend()
             return
         if getattr(self, "_lfm3_auto_build_started", False):
             return
@@ -3531,7 +3531,7 @@ class BackendSettingsDialog(QDialog):
                 self.binary_path_input.setText(str(binary_path).strip())
                 self.status_label.setText(f"{message} Binary: {Path(binary_path).name}")
                 self.status_label.setStyleSheet(f"color: {ACCENT};")
-                self._save_backend()
+                self._save_current_backend()
                 return
             self.status_label.setText(message)
             self.status_label.setStyleSheet(f"color: {ACCENT};")
