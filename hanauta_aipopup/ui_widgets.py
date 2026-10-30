@@ -20,7 +20,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from .models import ChatItemData, SourceChipData
+from .models import BackendProfile, ChatItemData, SourceChipData
 from .runtime import AI_ASSETS_DIR, BACKEND_ICONS_DIR
 from .style import (
     ACCENT, ACCENT_SOFT, BORDER_ACCENT, BORDER_SOFT, CARD_BG, CARD_BG_SOFT,

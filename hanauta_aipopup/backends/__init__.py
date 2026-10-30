@@ -26,19 +26,166 @@ def _runtime_root(payload: dict[str, object]) -> Path:
     return Path.home() / ".cache" / "hanauta-ai-popup"
 
 
+# flavor -> (repo url, default git ref)
+_LLAMA_REPO_DEFAULTS: dict[str, tuple[str, str]] = {
+    "upstream": ("https://github.com/ggml-org/llama.cpp.git", "master"),
+    "atomic": ("https://github.com/AtomicBot-ai/atomic-llama-cpp-turboquant.git", "feature/turboquant-kv-cache"),
+    # LFM3-Omni (text + vision + audio): the model card pins llama.cpp at d05706b4b
+    # "plus the documented server patch" from the Abliter8 LFM3 serving guide.
+    # Override llama_git_url / llama_git_ref (or the script's LLAMA_REPO / LLAMA_REF)
+    # and supply llama_patch_url (or PATCH_URL / PATCH_FILE) to pin your own build.
+    "lfm3": ("https://github.com/ggml-org/llama.cpp.git", "d05706b4b"),
+}
+_LLAMA_INSTALL_DIRS: dict[str, str] = {
+    "upstream": "llama-cpp",
+    "atomic": "atomic-llama-cpp",
+    "lfm3": "lfm3-llama-cpp",
+}
+# Drop-in location for a maintainer-provided binary, so users never need a toolchain.
+_VENDOR_LLAMA_DIR = Path(__file__).resolve().parents[2] / "vendor" / "llama-lfm3"
+
+
+def _llama_flavor(payload: dict[str, object]) -> str:
+    flavor = str(payload.get("llama_runtime_flavor", "auto")).strip().lower() or "auto"
+    if flavor == "auto":
+        needs_atomic = bool(payload.get("llama_mtp_enabled", False)) or bool(payload.get("llama_flash_attn", False))
+        return "atomic" if needs_atomic else "upstream"
+    return flavor if flavor in _LLAMA_REPO_DEFAULTS else "upstream"
+
+
+def llama_build_plan(payload: dict[str, object]) -> dict[str, object]:
+    """Resolve runtime flavor into repo/ref/install paths. Pure, no I/O."""
+    flavor = _llama_flavor(payload)
+    default_repo, default_ref = _LLAMA_REPO_DEFAULTS[flavor]
+    repo_url = str(payload.get("llama_git_url", "")).strip() or default_repo
+    git_ref = str(payload.get("llama_git_ref", "")).strip() or default_ref
+    install_root = _runtime_root(payload) / "runtimes" / _LLAMA_INSTALL_DIRS[flavor]
+    source_dir = Path(str(payload.get("llama_source_dir", "")).strip() or (install_root / "src"))
+    build_dir = Path(str(payload.get("llama_build_dir", "")).strip() or (source_dir / "build"))
+    return {
+        "flavor": flavor,
+        "repo_url": repo_url,
+        "git_ref": git_ref,
+        "install_root": install_root,
+        "source_dir": source_dir,
+        "build_dir": build_dir,
+    }
+
+
+def _prebuilt_llama_server(payload: dict[str, object]) -> Path | None:
+    """Return an already-usable llama-server binary, so nothing needs compiling."""
+    for key in ("llama_server_binary", "binary_path"):
+        explicit = _existing_path(payload.get(key))
+        if explicit is not None and explicit.is_file() and os.access(explicit, os.X_OK):
+            return explicit
+    plan = llama_build_plan(payload)
+    install_root = Path(str(plan["install_root"]))
+    backend = str(payload.get("llama_compute_backend", "cpu")).strip() or "cpu"
+    roots = [
+        install_root,
+        install_root / "current",
+        install_root / backend,
+        install_root / "cpu",
+        Path(str(plan["build_dir"])) / "bin",
+        _VENDOR_LLAMA_DIR,
+    ]
+    for root in roots:
+        for name in ("llama-server", "server"):
+            candidate = root / name
+            try:
+                if candidate.is_file() and candidate.stat().st_size > 0:
+                    return candidate
+            except OSError:
+                continue
+    return None
+
+
+def lfm3_build_env(plan: dict[str, object], payload: dict[str, object]) -> dict[str, str]:
+    """Environment overrides for scripts/build_llama_lfm3.sh (matrix + verify)."""
+    env: dict[str, str] = {
+        "LLAMA_REPO": str(plan["repo_url"]),
+        "LLAMA_REF": str(plan["git_ref"]),
+        "PREFIX": str(plan["install_root"]),
+        "JOBS": str(max(1, (multiprocessing.cpu_count() or 2) - 1)),
+        "BACKENDS": str(payload.get("llama_compute_backend", "cpu")).strip() or "cpu",
+    }
+    if str(payload.get("device", "cpu")).strip().lower() == "gpu":
+        env["CMAKE_EXTRA"] = "-DGGML_CUDA=ON"
+    patch_url = str(payload.get("llama_patch_url", "")).strip()
+    if patch_url:
+        env["PATCH_URL"] = patch_url
+    if bool(payload.get("llama_verify_after_build", False)):
+        # The script boots the server and waits for the model to load.
+        model = str(payload.get("gguf_path", "")).strip()
+        mmproj = str(payload.get("mmproj_path", "")).strip()
+        if model:
+            env["SMOKE_MODEL"] = model
+        if mmproj:
+            env["SMOKE_MMPROJ"] = mmproj
+    return env
+
+
+def _lfm3_build_script() -> Path | None:
+    script = Path(__file__).resolve().parents[2] / "scripts" / "build_llama_lfm3.sh"
+    return script if script.is_file() else None
+
+
+def _build_llamacpp_via_script(
+    plan: dict[str, object], payload: dict[str, object]
+) -> tuple[bool, str, Path | None]:
+    """Compile the LFM3 runtime through scripts/build_llama_lfm3.sh.
+
+    The card requires a pinned commit plus a patch, which the script handles;
+    this keeps one canonical build recipe instead of a second copy in Python.
+    """
+    script = _lfm3_build_script()
+    if script is None:
+        return False, "scripts/build_llama_lfm3.sh not found; cannot build the LFM3 runtime.", None
+    env = dict(os.environ)
+    env.update(lfm3_build_env(plan, payload))
+    try:
+        result = subprocess.run(
+            ["bash", str(script)],
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=7200,
+            check=False,
+        )
+    except Exception as exc:
+        return False, f"LFM3 runtime build failed to start: {exc}", None
+    binary = _prebuilt_llama_server(payload)
+    if result.returncode == 0 and binary is not None:
+        try:
+            binary.chmod(0o755)
+        except Exception:
+            pass
+        return True, f"Compiled the LFM3 llama.cpp runtime ({plan['git_ref']}).", binary
+    detail = (result.stderr or result.stdout or "").strip().splitlines()
+    reason = detail[-1] if detail else f"exit code {result.returncode}"
+    return False, f"LFM3 runtime build failed: {reason}", None
+
+
 def _ensure_llamacpp_binary(payload: dict[str, object]) -> tuple[bool, str, Path | None]:
-    mtp_enabled = bool(payload.get("llama_mtp_enabled", False))
-    flash_enabled = bool(payload.get("llama_flash_attn", False))
-    needs_atomic = mtp_enabled or flash_enabled
-    repo_url = (
-        "https://github.com/AtomicBot-ai/atomic-llama-cpp-turboquant.git"
-        if needs_atomic
-        else "https://github.com/ggerganov/llama.cpp.git"
-    )
-    runtime_root = _runtime_root(payload)
-    install_root = runtime_root / "runtimes" / ("atomic-llama-cpp" if needs_atomic else "llama-cpp")
-    src_dir = install_root / "src"
-    build_dir = src_dir / "build"
+    prebuilt = _prebuilt_llama_server(payload)
+    if prebuilt is not None:
+        try:
+            prebuilt.chmod(0o755)
+        except Exception:
+            pass
+        return True, f"Using existing llama-server runtime ({prebuilt.name}).", prebuilt
+
+    plan = llama_build_plan(payload)
+    flavor = str(plan["flavor"])
+    if flavor == "lfm3":
+        # Pinned commit + patch: build through the documented shell recipe.
+        return _build_llamacpp_via_script(plan, payload)
+    needs_atomic = flavor == "atomic"
+    repo_url = str(plan["repo_url"])
+    git_ref = str(plan["git_ref"])
+    install_root = Path(str(plan["install_root"]))
+    src_dir = Path(str(plan["source_dir"]))
+    build_dir = Path(str(plan["build_dir"]))
     bin_dir = build_dir / "bin"
     candidates = [
         bin_dir / "llama-server",
@@ -46,13 +193,6 @@ def _ensure_llamacpp_binary(payload: dict[str, object]) -> tuple[bool, str, Path
         src_dir / "llama-server",
         src_dir / "server",
     ]
-    for candidate in candidates:
-        if candidate.exists() and candidate.is_file() and candidate.stat().st_size > 0:
-            try:
-                candidate.chmod(0o755)
-            except Exception:
-                pass
-            return True, f"Using managed {'atomic-llama' if needs_atomic else 'llama.cpp'} runtime.", candidate
     if shutil.which("git") is None:
         return False, "git is required to auto-install llama.cpp runtime.", None
     if shutil.which("cmake") is None:
@@ -72,6 +212,13 @@ def _ensure_llamacpp_binary(payload: dict[str, object]) -> tuple[bool, str, Path
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
+    # Pin the requested ref: LFM3 support lives on a specific branch/commit.
+    subprocess.run(
+        ["git", "-C", str(src_dir), "checkout", git_ref],
+        check=False,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
     subprocess.run(
         ["cmake", "-S", str(src_dir), "-B", str(build_dir), "-DCMAKE_BUILD_TYPE=Release"],
         check=True,
@@ -90,7 +237,7 @@ def _ensure_llamacpp_binary(payload: dict[str, object]) -> tuple[bool, str, Path
                 candidate.chmod(0o755)
             except Exception:
                 pass
-            flavor = "atomic-llama (turboquant/MTP)" if needs_atomic else "llama.cpp"
+            flavor = "atomic-llama (turboquant/MTP)" if needs_atomic else f"llama.cpp ({flavor})"
             return True, f"Installed and compiled {flavor} runtime.", candidate
     return False, "llama.cpp build finished but server binary was not found.", None
 
@@ -116,8 +263,7 @@ def _normalize_host_url(host: str) -> str:
 
 def _openai_compat_alive(host: str) -> bool:
     try:
-        import request
-        with request.urlopen(f"{_normalize_host_url(host)}/v1/models", timeout=1.2) as response:
+        with _req.urlopen(f"{_normalize_host_url(host)}/v1/models", timeout=1.2) as response:
             return response.status < 400
     except Exception:
         return False
@@ -418,6 +564,21 @@ def start_llamacpp(payload: dict[str, object]) -> tuple[bool, str]:
             command.extend(["--host", str(parsed.hostname)])
         if parsed.port:
             command.extend(["--port", str(parsed.port)])
+    # Vision projector. Required for image input (LFM3-Omni, VL models); without it
+    # llama-server ignores image parts instead of failing loudly.
+    mmproj_path = _existing_path(payload.get("mmproj_path"))
+    if mmproj_path is not None:
+        command.extend(["--mmproj", str(mmproj_path)])
+    # Chat template + reasoning mode. The LFM3-Omni card serves the model with
+    # `--jinja --reasoning off` (it is a non-reasoning architecture).
+    if bool(payload.get("llama_jinja", True)):
+        command.append("--jinja")
+    is_lfm3 = "lfm3" in gguf_path.name.lower()
+    if bool(payload.get("llama_reasoning_off", is_lfm3)):
+        command.extend(["--reasoning", "off"])
+    extra_flags = payload.get("llama_extra_flags", [])
+    if isinstance(extra_flags, list):
+        command.extend(str(flag) for flag in extra_flags if str(flag).strip())
     # Performance flags
     if bool(payload.get("llama_flash_attn", False)):
         command.append("--flash-attn")

@@ -33,6 +33,7 @@ from PyQt6.QtWidgets import (
     QPushButton,
     QScrollArea,
     QSizePolicy,
+    QStyleFactory,
     QTextBrowser,
     QTabWidget,
     QToolButton,
@@ -59,6 +60,7 @@ from .characters import (
     import_character_from_file,
 )
 from .ui_widgets import SurfaceFrame, _apply_antialias_font, _button_css_weight, _button_qfont_weight
+from .camera import capture_snapshot as _capture_camera_frame
 from .voice import _write_privacy_codebook
 from .tts import (
     _default_tts_model_dir, _list_pocket_voice_references,
@@ -646,6 +648,25 @@ class CharacterLibraryDialog(QDialog):
         )
 
 
+class _CameraPreviewWorker(QThread):
+    """Captures one camera frame off the UI thread."""
+
+    done = pyqtSignal(str)
+    failed = pyqtSignal(str)
+
+    def __init__(self, config: dict) -> None:
+        super().__init__()
+        self.config = dict(config)
+
+    def run(self) -> None:
+        try:
+            path = _capture_camera_frame(self.config)
+        except Exception as exc:
+            self.failed.emit(str(exc))
+            return
+        self.done.emit(str(path))
+
+
 class VoiceModeDialog(QDialog):
     def __init__(
         self,
@@ -836,6 +857,52 @@ class VoiceModeDialog(QDialog):
         self.min_speech_input = QLineEdit(str(self.config.get("min_speech_ms", "260")))
         self.min_speech_input.setPlaceholderText("e.g. 260")
         form.addWidget(self._labeled("Minimum speech (ms)", self.min_speech_input))
+
+        form.addWidget(self._section_label("Camera (vision)"))
+        self.camera_enabled_check = QCheckBox("Let the model see periodic camera frames")
+        self.camera_enabled_check.setToolTip(
+            "Requires an omni/vision model with an mmproj loaded (for example LFM3-Omni 2B)."
+        )
+        self.camera_enabled_check.setChecked(bool(self.config.get("camera_enabled", False)))
+        form.addWidget(self.camera_enabled_check)
+        self.camera_source_input = QLineEdit(str(self.config.get("camera_source", "/dev/video0")))
+        self.camera_source_input.setPlaceholderText("/dev/video0 or rtsp://… / http://… source")
+        form.addWidget(self._labeled("Camera source", self.camera_source_input))
+        self.camera_resolution_input = QLineEdit(str(self.config.get("camera_resolution", "640x480")))
+        self.camera_resolution_input.setPlaceholderText("e.g. 640x480 (max 1280x720)")
+        form.addWidget(self._labeled("Camera resolution", self.camera_resolution_input))
+        self.camera_interval_input = QLineEdit(str(self.config.get("camera_interval_seconds", "10")))
+        self.camera_interval_input.setPlaceholderText("Seconds between frames, e.g. 10")
+        form.addWidget(self._labeled("Camera interval (s)", self.camera_interval_input))
+        self.native_audio_check = QCheckBox("Send mic audio straight to the model (omni audio input)")
+        self.native_audio_check.setToolTip(
+            "Skips the separate speech-to-text step for models that accept audio directly, "
+            "for example LFM3-Omni on an audio-capable llama.cpp build. Needs the same "
+            "mmproj/audio support as the model card describes."
+        )
+        self.native_audio_check.setChecked(bool(self.config.get("native_audio_input", False)))
+        form.addWidget(self.native_audio_check)
+
+        camera_actions = QWidget()
+        camera_actions_layout = QHBoxLayout(camera_actions)
+        camera_actions_layout.setContentsMargins(0, 0, 0, 0)
+        camera_actions_layout.setSpacing(8)
+        self.camera_preview_button = QPushButton("Capture test frame")
+        self.camera_preview_button.clicked.connect(self._preview_camera_frame)
+        self.camera_preview_status = QLabel("Not tested yet")
+        self.camera_preview_status.setWordWrap(True)
+        self.camera_preview_status.setStyleSheet(f"color: {TEXT_DIM};")
+        camera_actions_layout.addWidget(self.camera_preview_button)
+        camera_actions_layout.addWidget(self.camera_preview_status, 1)
+        form.addWidget(self._labeled("Camera test", camera_actions))
+        self.camera_preview_image = QLabel("No frame captured yet")
+        self.camera_preview_image.setFixedHeight(150)
+        self.camera_preview_image.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.camera_preview_image.setStyleSheet(
+            f"background: {bg_raised}; border: 1px solid {border}; border-radius: 12px; color: {TEXT_DIM};"
+        )
+        form.addWidget(self.camera_preview_image)
+        self._camera_preview_worker: _CameraPreviewWorker | None = None
 
         form.addWidget(self._section_label("Speech to text"))
         self.stt_external_check = QCheckBox("Use external STT API")
@@ -1079,6 +1146,42 @@ class VoiceModeDialog(QDialog):
         self._refresh_vosk_model_catalog(initial=True)
         self._refresh_visibility()
 
+    def _preview_camera_frame(self) -> None:
+        worker = self._camera_preview_worker
+        if worker is not None and worker.isRunning():
+            return
+        config = {
+            "camera_enabled": True,
+            "camera_source": self.camera_source_input.text().strip() or "/dev/video0",
+            "camera_resolution": self.camera_resolution_input.text().strip() or "640x480",
+        }
+        self.camera_preview_button.setEnabled(False)
+        self.camera_preview_status.setText("Capturing…")
+        worker = _CameraPreviewWorker(config)
+        self._camera_preview_worker = worker
+        worker.done.connect(self._on_camera_preview_done)
+        worker.failed.connect(self._on_camera_preview_failed)
+        worker.finished.connect(self._finish_camera_preview)
+        worker.start()
+
+    def _on_camera_preview_done(self, path: str) -> None:
+        pixmap = QPixmap(path)
+        if pixmap.isNull():
+            self._on_camera_preview_failed("Captured file could not be decoded.")
+            return
+        self.camera_preview_image.setPixmap(
+            pixmap.scaledToHeight(150, Qt.TransformationMode.SmoothTransformation)
+        )
+        self.camera_preview_status.setText(f"OK — {pixmap.width()}×{pixmap.height()} from the current settings")
+
+    def _on_camera_preview_failed(self, message: str) -> None:
+        self.camera_preview_image.setText("No frame")
+        self.camera_preview_status.setText(str(message).strip()[:160] or "Capture failed.")
+
+    def _finish_camera_preview(self) -> None:
+        self.camera_preview_button.setEnabled(True)
+        self._camera_preview_worker = None
+
     def _section_label(self, text: str) -> QLabel:
         label = QLabel(text)
         label.setFont(QFont(self.ui_font, 12, QFont.Weight.DemiBold))
@@ -1320,6 +1423,11 @@ class VoiceModeDialog(QDialog):
                 "memory_max_chars": self.memory_max_chars_input.text().strip() or "1100",
                 "memory_qdrant_url": self.memory_qdrant_url_input.text().strip() or "http://127.0.0.1:6333",
                 "memory_qdrant_collection": self.memory_qdrant_collection_input.text().strip() or "hanauta_voice_memory",
+                "native_audio_input": bool(self.native_audio_check.isChecked()),
+                "camera_enabled": bool(self.camera_enabled_check.isChecked()),
+                "camera_source": self.camera_source_input.text().strip() or "/dev/video0",
+                "camera_resolution": self.camera_resolution_input.text().strip() or "640x480",
+                "camera_interval_seconds": self.camera_interval_input.text().strip() or "10",
                 "stop_phrases_enabled": bool(self.stop_phrases_check.isChecked()),
                 "stop_phrases_language": str(self.stop_lang_combo.currentData() or "en-us"),
                 "stop_phrases_allow_single_word": bool(self.stop_single_check.isChecked()),

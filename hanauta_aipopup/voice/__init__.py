@@ -74,6 +74,11 @@ def _voice_mode_defaults() -> dict:
         "hide_character_photo": False,
         "hide_answer_text": False,
         "generic_notification_text": "Notification received",
+        "native_audio_input": False,
+        "camera_enabled": False,
+        "camera_source": "/dev/video0",
+        "camera_resolution": "640x480",
+        "camera_interval_seconds": "10",
         "stop_phrases_enabled": True,
         "stop_phrases_language": "en-us",
         "stop_phrases_allow_single_word": False,
@@ -152,9 +157,6 @@ def _matches_stop_phrase(text: str, config: dict) -> bool:
         if norm == p_norm or norm.startswith(p_norm + " "):
             return True
     return False
-
-
-import json
 
 
 def _record_microphone_wav(seconds: float) -> Path:

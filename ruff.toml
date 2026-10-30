@@ -1,0 +1,12 @@
+# The app targets Python 3.12+ (it uses 3.12 f-string syntax, e.g. skills/calendar.py).
+target-version = "py312"
+line-length = 160
+
+[lint]
+# Gate on mistakes that break the app at runtime rather than on style.
+# F821: undefined name  -> NameError on the code path that uses it
+# F811: redefinition    -> a later definition silently shadows the one above
+# E9:   syntax / IO errors
+# B023: closure over a loop variable -> the closure silently keeps reading the
+#       loop's binding instead of the value it was created with.
+select = ["B023", "E9", "F811", "F821"]

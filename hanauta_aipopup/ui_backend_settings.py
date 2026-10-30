@@ -1,14 +1,16 @@
 from __future__ import annotations
 
+from base64 import b64encode
 from html import escape as _html_escape
 import json
 import shutil
 import time
 import subprocess
 from pathlib import Path
+from typing import TYPE_CHECKING
 from urllib import error
 
-from PyQt6.QtCore import Qt, QTimer, QObject, pyqtSignal, QThread
+from PyQt6.QtCore import Qt, QTimer, QObject, QUrl, pyqtSignal, QThread
 from PyQt6.QtGui import QColor, QCursor, QFont, QGuiApplication, QPainter, QPen
 from PyQt6.QtWidgets import (
     QApplication,
@@ -40,6 +42,7 @@ from PyQt6.QtWidgets import (
 
 from .models import BackendProfile, ChatItemData, SourceChipData
 from .runtime import (
+    AI_POPUP_ERROR_LOG_FILE,
     AI_STATE_DIR,
     BACKEND_SETTINGS_FILE,
     CHAT_ARCHIVES_DIR,
@@ -71,10 +74,15 @@ from .http import (
     _looks_like_gemma4_model_name,
     save_backend_settings,
     _looks_like_gemma4_audio_variant,
+    _probe_openai_style_audio_input_support,
 )
-from .backends import _existing_path, _is_pid_alive, _is_pgid_alive, koboldcpp_status as _koboldcpp_status, start_koboldcpp as _start_koboldcpp, stop_koboldcpp as _stop_koboldcpp, llamacpp_status as _llamacpp_status, start_llamacpp as _start_llamacpp, stop_llamacpp as _stop_llamacpp
-from .catalog import MODEL_CATALOG, _dir_size_bytes, _format_bytes
+from .backends import _existing_path, _is_pid_alive, _is_pgid_alive, koboldcpp_status as _koboldcpp_status, start_koboldcpp as _start_koboldcpp, stop_koboldcpp as _stop_koboldcpp, llamacpp_status as _llamacpp_status, start_llamacpp as _start_llamacpp, stop_llamacpp as _stop_llamacpp, llama_build_plan, _prebuilt_llama_server, lfm3_build_env
+
+if TYPE_CHECKING:
+    from .ui_chat import TtsSynthesisWorker
+from .catalog import MODEL_CATALOG, _dir_size_bytes, _format_bytes, find_entry
 from .tts import (
+    _download_file, _ensure_wav_reference, _generate_openai_style_reply, _hf_resolve_url, _play_audio_file,
     synthesize_tts, validate_backend, benchmark_whisper_transcription, benchmark_parakeet_transcription,
     _start_kokoro_server, _stop_kokoro_server, _kokoro_server_status,
     _start_pocket_server, _stop_pocket_server, _pocket_server_status,
@@ -356,20 +364,40 @@ fi
         try:
             runtime_dir = Path(str(self.payload.get("runtime_dir", "")).strip() or (Path.home() / ".cache" / "hanauta-ai-popup" / "runtimes"))
             runtime_dir.mkdir(parents=True, exist_ok=True)
-            flavor = str(self.payload.get("llama_runtime_flavor", "auto")).strip().lower() or "auto"
-            mtp = bool(self.payload.get("llama_mtp_enabled", False))
-            flash = bool(self.payload.get("llama_flash_attn", False))
-            if flavor == "auto":
-                flavor = "atomic" if (mtp or flash) else "upstream"
-            default_repo = (
-                "https://github.com/AtomicBot-ai/atomic-llama-cpp-turboquant.git"
-                if flavor == "atomic"
-                else "https://github.com/ggerganov/llama.cpp.git"
-            )
-            repo_url = str(self.payload.get("llama_git_url", "")).strip() or default_repo
-            git_ref = str(self.payload.get("llama_git_ref", "")).strip() or ("feature/turboquant-kv-cache" if flavor == "atomic" else "master")
-            source_dir = Path(str(self.payload.get("llama_source_dir", "")).strip() or (runtime_dir / ("atomic-llama-cpp" if flavor == "atomic" else "llama-cpp") / "src"))
-            build_dir = Path(str(self.payload.get("llama_build_dir", "")).strip() or (source_dir / "build"))
+            # Shared with the runtime launcher so both agree on flavor/repo/ref/paths.
+            plan = llama_build_plan(self.payload)
+            flavor = str(plan["flavor"])
+            repo_url = str(plan["repo_url"])
+            git_ref = str(plan["git_ref"])
+            source_dir = Path(str(plan["source_dir"]))
+            build_dir = Path(str(plan["build_dir"]))
+
+            existing_binary = _prebuilt_llama_server(self.payload)
+            if existing_binary is not None:
+                self._emit(100, f"Using existing llama-server: {existing_binary}")
+                self.finished_ok.emit(str(existing_binary), f"Using the existing {flavor} llama-server binary.")
+                return
+
+            if flavor == "lfm3":
+                # The card pins a commit *and* a server patch, so build through the
+                # documented shell recipe instead of duplicating it here.
+                script = Path(__file__).resolve().parents[1] / "scripts" / "build_llama_lfm3.sh"
+                if script.is_file():
+                    env = dict(os.environ)
+                    env.update(lfm3_build_env(plan, self.payload))
+                    self._emit(
+                        15,
+                        f"Running scripts/build_llama_lfm3.sh (backends={env.get('BACKENDS')}, ref={git_ref})",
+                    )
+                    self._run(["bash", str(script)], cwd=None)
+                    built = _prebuilt_llama_server(self.payload)
+                    if built is None:
+                        raise RuntimeError("Build script finished but llama-server was not found.")
+                    self._emit(100, f"Build complete: {built}")
+                    self.finished_ok.emit(
+                        str(built), f"{flavor} runtime compiled via scripts/build_llama_lfm3.sh ({git_ref})."
+                    )
+                    return
 
             self._emit(2, f"Preparing {flavor} runtime.")
             if self.install_deps:
@@ -498,12 +526,21 @@ class GgufModelDownloadWorker(QThread):
     finished_ok = pyqtSignal(str, str)
     failed = pyqtSignal(str, str)
 
-    def __init__(self, entry_id: str, repo_id: str, filename: str, destination: Path) -> None:
+    def __init__(
+        self,
+        entry_id: str,
+        repo_id: str,
+        filename: str,
+        destination: Path,
+        mmproj_filename: str = "",
+    ) -> None:
         super().__init__()
         self.entry_id = entry_id
         self.repo_id = repo_id
         self.filename = filename
         self.destination = destination
+        self.mmproj_filename = mmproj_filename
+        self._mmproj_path = ""
 
     def run(self) -> None:
         try:
@@ -520,11 +557,24 @@ class GgufModelDownloadWorker(QThread):
 
             self.progress.emit(self.entry_id, 0, "Starting download…")
             _download_file(url, self.destination, timeout=1800.0, progress_cb=_emit)
+            if self.mmproj_filename:
+                # Vision projector: without it an omni model cannot see images.
+                self.progress.emit(self.entry_id, 0, "Downloading vision projector…")
+                mmproj_path = self.destination.parent / Path(self.mmproj_filename).name
+                _download_file(
+                    _hf_resolve_url(self.repo_id, self.mmproj_filename),
+                    mmproj_path,
+                    timeout=1800.0,
+                )
+                self._mmproj_path = str(mmproj_path)
         except Exception as exc:
             self.failed.emit(self.entry_id, str(exc).strip() or "Download failed.")
             return
         self.progress.emit(self.entry_id, 100, "Download complete")
-        self.finished_ok.emit(self.entry_id, str(self.destination))
+        payload = str(self.destination)
+        if self._mmproj_path:
+            payload = f"{payload}|{self._mmproj_path}"
+        self.finished_ok.emit(self.entry_id, payload)
 
 
 class GgufDownloadManager(QObject):
@@ -540,20 +590,40 @@ class GgufDownloadManager(QObject):
     def status(self, entry_id: str) -> dict[str, object]:
         return dict(self._status.get(entry_id, {}))
 
+    def entry(self, entry_id: str) -> dict[str, object]:
+        return dict(getattr(self, "_entries", {}).get(entry_id, {}))
+
     def is_running(self, entry_id: str) -> bool:
         worker = self._workers.get(entry_id)
         return worker is not None and worker.isRunning()
 
     def start(self, entry: dict[str, object]) -> bool:
         entry_id = str(entry.get("id", "")).strip()
+        # Remember the entry so the finish handler can apply its build metadata
+        # (pinned llama.cpp ref, patch URL) without the user retyping it.
+        if not hasattr(self, "_entries"):
+            self._entries = {}
+        self._entries[entry_id] = dict(entry)
         repo_id = str(entry.get("repo_id", "")).strip()
         filename = str(entry.get("file", "")).strip()
+        mmproj_filename = str(entry.get("mmproj", "")).strip()
+        if filename.lower() == "auto" or mmproj_filename.lower() == "auto":
+            # Entries may defer the exact quant/mmproj name to the repo listing.
+            from .catalog import resolve_gguf_files
+
+            resolved_file, resolved_mmproj = resolve_gguf_files(entry)
+            if filename.lower() == "auto":
+                filename = resolved_file
+            if mmproj_filename.lower() == "auto":
+                mmproj_filename = resolved_mmproj
+        elif mmproj_filename.lower() in {"none"}:
+            mmproj_filename = ""
         if not entry_id or not repo_id or not filename:
             return False
         if self.is_running(entry_id):
             return False
-        destination = GGUF_GALLERY_DIR / filename
-        worker = GgufModelDownloadWorker(entry_id, repo_id, filename, destination)
+        destination = GGUF_GALLERY_DIR / Path(filename).name
+        worker = GgufModelDownloadWorker(entry_id, repo_id, filename, destination, mmproj_filename)
         self._workers[entry_id] = worker
         self._status[entry_id] = {"running": True, "progress": 0, "message": "Starting download"}
         worker.progress.connect(self._on_progress)
@@ -1256,6 +1326,27 @@ class BackendSettingsDialog(QDialog):
         self.llama_hf_cache_dir_input.setPlaceholderText("Model cache dir, e.g. ~/.cache/hanauta-ai-popup/llm-models")
         self.llama_hf_cache_dir_input.clicked.connect(self._browse_llama_cache_dir)
         self.llama_scroll_layout.addWidget(self.llama_hf_cache_dir_input)
+        # Manual file selection: works without any HF download.
+        self.llama_model_path_input = ClickableLineEdit()
+        self.llama_model_path_input.setPlaceholderText("Local GGUF model path (click to browse)")
+        self.llama_model_path_input.setToolTip("Pick an existing GGUF on disk, or download one automatically below.")
+        self.llama_model_path_input.clicked.connect(self._browse_llama_model_file)
+        self.llama_scroll_layout.addWidget(self.llama_model_path_input)
+        self.llama_mmproj_path_input = ClickableLineEdit()
+        self.llama_mmproj_path_input.setPlaceholderText("mmproj / vision-audio projector path (click to browse)")
+        self.llama_mmproj_path_input.setToolTip("Required for image input. LFM3-Omni needs its BF16 mmproj.")
+        self.llama_mmproj_path_input.clicked.connect(self._browse_llama_mmproj_file)
+        self.llama_scroll_layout.addWidget(self.llama_mmproj_path_input)
+        self.llama_auto_lfm3_check = QCheckBox("Auto-configure LFM3-Omni when its GGUF is selected")
+        self.llama_auto_lfm3_check.setToolTip(
+            "Switches the runtime flavor to LFM3 Omni, applies the pinned build ref, "
+            "and turns on native audio input."
+        )
+        self.llama_auto_lfm3_check.setChecked(True)
+        self.llama_scroll_layout.addWidget(self.llama_auto_lfm3_check)
+        self.llama_download_lfm3_btn = QPushButton("Download LFM3 GGUF + mmproj")
+        self.llama_download_lfm3_btn.clicked.connect(self._download_lfm3_bundle)
+        self.llama_scroll_layout.addWidget(self.llama_download_lfm3_btn)
         self.llama_build_card = SurfaceFrame(bg=rgba(CARD_BG, 0.64), border=BORDER_SOFT, radius=14)
         self.llama_build_card.setStyleSheet(
             f"""
@@ -1290,6 +1381,7 @@ class BackendSettingsDialog(QDialog):
         self.llama_runtime_flavor_combo.addItem("Auto (Atomic if MTP/Flash enabled)", "auto")
         self.llama_runtime_flavor_combo.addItem("Upstream llama.cpp", "upstream")
         self.llama_runtime_flavor_combo.addItem("Atomic turboquant fork", "atomic")
+        self.llama_runtime_flavor_combo.addItem("LFM3 Omni (text + vision + audio)", "lfm3")
         llama_build_layout.addWidget(self.llama_runtime_flavor_combo)
         self.llama_git_url_input = QLineEdit()
         self.llama_git_url_input.setPlaceholderText("Git URL (optional override)")
@@ -1297,6 +1389,9 @@ class BackendSettingsDialog(QDialog):
         self.llama_git_ref_input = QLineEdit()
         self.llama_git_ref_input.setPlaceholderText("Git branch/tag/commit (e.g. master or feature/turboquant-kv-cache)")
         llama_build_layout.addWidget(self.llama_git_ref_input)
+        self.llama_patch_url_input = QLineEdit()
+        self.llama_patch_url_input.setPlaceholderText("Optional patch URL required by some builds (LFM3 serving-guide patch)")
+        llama_build_layout.addWidget(self.llama_patch_url_input)
         self.llama_source_dir_input = ClickableLineEdit()
         self.llama_source_dir_input.setPlaceholderText("Source directory (optional)")
         self.llama_source_dir_input.clicked.connect(self._browse_llama_source_dir)
@@ -1319,6 +1414,23 @@ class BackendSettingsDialog(QDialog):
         llama_build_actions.addWidget(self.llama_compile_and_install_btn)
         llama_build_actions.addStretch(1)
         llama_build_layout.addLayout(llama_build_actions)
+        llama_matrix_row = QHBoxLayout()
+        llama_matrix_row.setContentsMargins(0, 0, 0, 0)
+        llama_matrix_row.setSpacing(8)
+        self.llama_compute_backend_combo = QComboBox()
+        self.llama_compute_backend_combo.addItem("CPU only", "cpu")
+        self.llama_compute_backend_combo.addItem("CUDA (NVIDIA)", "cuda")
+        self.llama_compute_backend_combo.addItem("Vulkan (cross-vendor)", "vulkan")
+        self.llama_compute_backend_combo.addItem("HIP / ROCm (AMD)", "hip")
+        self.llama_compute_backend_combo.addItem("CPU + CUDA matrix", "cpu cuda")
+        llama_matrix_row.addWidget(self.llama_compute_backend_combo, 1)
+        self.llama_verify_after_build_check = QCheckBox("Verify after build (load model + mmproj)")
+        self.llama_verify_after_build_check.setToolTip(
+            "After compiling, boot llama-server against the selected GGUF/mmproj and wait for it to serve. "
+            "The result is printed in the build log above."
+        )
+        llama_matrix_row.addWidget(self.llama_verify_after_build_check, 1)
+        llama_build_layout.addLayout(llama_matrix_row)
         self.llama_build_log = QTextEdit()
         self.llama_build_log.setReadOnly(True)
         self.llama_build_log.setMinimumHeight(130)
@@ -2457,9 +2569,10 @@ class BackendSettingsDialog(QDialog):
                 "tts_voice_mode": voice_mode,
                 "tts_download_if_missing": bool(self.tts_auto_download_check.isChecked()),
                 "tts_autostart": bool(self.kokoro_autostart_check.isChecked()),
-                "gguf_path": self.gguf_path_input.text().strip(),
+                "gguf_path": self.llama_model_path_input.text().strip() or self.gguf_path_input.text().strip(),
+                # Kobold's projector field and llama.cpp's share the payload key.
+                "mmproj_path": self.llama_mmproj_path_input.text().strip() or self.mmproj_path_input.text().strip(),
                 "text_model_path": self.text_model_path_input.text().strip(),
-                "mmproj_path": self.mmproj_path_input.text().strip(),
                 "jinja": bool(self.kobold_jinja_check.isChecked()),
                 "llama_flash_attn": bool(self.llama_flash_attn_check.isChecked()),
                 "llama_mtp_enabled": bool(self.llama_mtp_check.isChecked()),
@@ -2476,6 +2589,10 @@ class BackendSettingsDialog(QDialog):
                 "llama_runtime_flavor": str(self.llama_runtime_flavor_combo.currentData() or "auto").strip(),
                 "llama_git_url": self.llama_git_url_input.text().strip(),
                 "llama_git_ref": self.llama_git_ref_input.text().strip(),
+                "llama_patch_url": self.llama_patch_url_input.text().strip(),
+                "llama_compute_backend": str(self.llama_compute_backend_combo.currentData() or "cpu").strip(),
+                "llama_verify_after_build": bool(self.llama_verify_after_build_check.isChecked()),
+                "llama_auto_configure_lfm3": bool(self.llama_auto_lfm3_check.isChecked()),
                 "llama_source_dir": self.llama_source_dir_input.text().strip(),
                 "llama_build_dir": self.llama_build_dir_input.text().strip(),
                 "gemma4_audio_stt_enabled": bool(self.kobold_gemma4_audio_stt_check.isChecked()) if hasattr(self, "kobold_gemma4_audio_stt_check") else False,
@@ -2580,6 +2697,11 @@ class BackendSettingsDialog(QDialog):
             str(payload.get("parakeet_gguf_path", "") if profile.key == "parakeet" else payload.get("gguf_path", ""))
         )
         self.text_model_path_input.setText(str(payload.get("text_model_path", "")))
+        self.llama_model_path_input.setText(str(payload.get("gguf_path", "")))
+        self.llama_mmproj_path_input.setText(str(payload.get("mmproj_path", "")))
+        self._set_combo_selected(self.llama_compute_backend_combo, str(payload.get("llama_compute_backend", "cpu")).strip() or "cpu")
+        self.llama_verify_after_build_check.setChecked(bool(payload.get("llama_verify_after_build", False)))
+        self.llama_auto_lfm3_check.setChecked(bool(payload.get("llama_auto_configure_lfm3", True)))
         self.mmproj_path_input.setText(str(payload.get("mmproj_path", "")))
         self.kobold_jinja_check.setChecked(bool(payload.get("jinja", False)))
         self.llama_flash_attn_check.setChecked(bool(payload.get("llama_flash_attn", False)))
@@ -2600,6 +2722,7 @@ class BackendSettingsDialog(QDialog):
         self._set_combo_selected(self.llama_runtime_flavor_combo, str(payload.get("llama_runtime_flavor", "auto")).strip().lower() or "auto")
         self.llama_git_url_input.setText(str(payload.get("llama_git_url", "")))
         self.llama_git_ref_input.setText(str(payload.get("llama_git_ref", "")))
+        self.llama_patch_url_input.setText(str(payload.get("llama_patch_url", "")))
         self.llama_source_dir_input.setText(str(payload.get("llama_source_dir", "")))
         self.llama_build_dir_input.setText(str(payload.get("llama_build_dir", "")))
         if profile.key == "llamacpp":
@@ -3031,6 +3154,64 @@ class BackendSettingsDialog(QDialog):
             return
         QGuiApplication.clipboard().setText(payload)
         send_desktop_notification("Clipboard", "Copied backend errors/status text.")
+
+    def _lfm3_entry(self) -> dict[str, object]:
+        entry = find_entry("lfm3_omni_2b_abliter8")
+        return entry or {}
+
+    def _browse_llama_model_file(self) -> None:
+        picked, _ = QFileDialog.getOpenFileName(
+            self,
+            "Select GGUF model",
+            self.llama_model_path_input.text().strip() or str(Path.home()),
+            "GGUF models (*.gguf);;All files (*)",
+        )
+        if picked:
+            self.llama_model_path_input.setText(picked)
+            self._maybe_autoconfigure_lfm3(picked)
+
+    def _browse_llama_mmproj_file(self) -> None:
+        picked, _ = QFileDialog.getOpenFileName(
+            self,
+            "Select mmproj (vision/audio projector)",
+            self.llama_mmproj_path_input.text().strip() or str(Path.home()),
+            "GGUF/mmproj (*.gguf);;All files (*)",
+        )
+        if picked:
+            self.llama_mmproj_path_input.setText(picked)
+
+    def _maybe_autoconfigure_lfm3(self, model_path: str) -> None:
+        """When an LFM3 GGUF is chosen, set the runtime + voice mode up for it."""
+        if not self.llama_auto_lfm3_check.isChecked():
+            return
+        if "lfm3" not in str(model_path or "").lower():
+            return
+        self._set_combo_selected(self.llama_runtime_flavor_combo, "lfm3")
+        entry = self._lfm3_entry()
+        ref = str(entry.get("llama_git_ref", "")).strip()
+        if ref and not self.llama_git_ref_input.text().strip():
+            self.llama_git_ref_input.setText(ref)
+        patch_url = str(entry.get("llama_patch_url", "")).strip()
+        if patch_url and not self.llama_patch_url_input.text().strip():
+            self.llama_patch_url_input.setText(patch_url)
+        # Omni models take audio directly, so skip the separate STT hop.
+        voice = self.settings.setdefault("_voice_mode", {})
+        if isinstance(voice, dict):
+            voice["native_audio_input"] = True
+        self.status_label.setText("Configured LFM3-Omni: runtime flavor, pinned ref, native audio input.")
+        self.status_label.setStyleSheet(f"color: {ACCENT};")
+
+    def _download_lfm3_bundle(self) -> None:
+        entry = self._lfm3_entry()
+        if not entry:
+            self.status_label.setText("LFM3-Omni is not in the bundled model gallery.")
+            self.status_label.setStyleSheet(f"color: {UI_TEXT_MUTED};")
+            return
+        if self._selected_profile().key != "llamacpp":
+            self.status_label.setText("Select the llama.cpp backend first, then download LFM3-Omni.")
+            self.status_label.setStyleSheet(f"color: {UI_TEXT_MUTED};")
+            return
+        self._download_gguf(entry)
 
     def _copy_llama_build_log(self) -> None:
         text = self.llama_build_log.toPlainText().strip() if hasattr(self, "llama_build_log") else ""
@@ -4386,6 +4567,8 @@ class BackendSettingsDialog(QDialog):
             actions.addWidget(download_btn)
             repo_id = str(entry.get("repo_id", "")).strip()
             filename = str(entry.get("file", "")).strip()
+            if filename.lower() in {"", "auto"}:
+                filename = "auto-resolved GGUF"
             link = QLabel(f"{repo_id} / {filename}".strip(" /"))
             link.setWordWrap(True)
             link.setStyleSheet(f"color: {UI_ICON_DIM};")
@@ -4430,14 +4613,36 @@ class BackendSettingsDialog(QDialog):
         self.status_label.setStyleSheet(f"color: {UI_TEXT_MUTED};")
 
     def _on_gguf_download_finished(self, entry_id: str, path: str) -> None:
+        model_path, _, mmproj_path = path.partition("|")
         profile = self._selected_profile()
+        entry = self._gguf_download_manager.entry(entry_id)
+        if entry:
+            # Reproducible runtime: carry the model's pinned ref/patch into the
+            # build fields so the right llama.cpp is compiled with no manual input.
+            git_ref = str(entry.get("llama_git_ref", "")).strip()
+            patch_url = str(entry.get("llama_patch_url", "")).strip()
+            if git_ref:
+                self.llama_git_ref_input.setText(git_ref)
+                self._set_combo_selected(self.llama_runtime_flavor_combo, "lfm3")
+            if patch_url:
+                self.llama_patch_url_input.setText(patch_url)
         if profile.key == "koboldcpp":
-            self.gguf_path_input.setText(path)
+            self.gguf_path_input.setText(model_path)
+            if mmproj_path:
+                self.mmproj_path_input.setText(mmproj_path)
             self.gguf_download_progress.setValue(100)
             self.gguf_download_progress_label.setText("Download complete")
-            self.status_label.setText(f"GGUF downloaded: {Path(path).name}")
+            detail = f"GGUF downloaded: {Path(model_path).name}"
+            if mmproj_path:
+                detail += " (+ vision projector)"
+            self.status_label.setText(detail)
             self.status_label.setStyleSheet(f"color: {ACCENT};")
-        send_desktop_notification("GGUF ready", f"Downloaded {entry_id} to {path}.")
+        if profile.key == "llamacpp" and model_path:
+            self.llama_model_path_input.setText(model_path)
+            if mmproj_path:
+                self.llama_mmproj_path_input.setText(mmproj_path)
+            self._maybe_autoconfigure_lfm3(model_path)
+        send_desktop_notification("GGUF ready", f"Downloaded {entry_id} to {model_path}.")
 
     def _on_gguf_download_failed(self, entry_id: str, message: str) -> None:
         profile = self._selected_profile()

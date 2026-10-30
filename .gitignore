@@ -119,3 +119,10 @@ Thumbs.db
 code.html
 ideia.html
 orb.html
+
+# ── Build output inside the onnx tree ─────────────────────────────────────────
+# The `!onnx/cpp/**` exception above re-enables the whole subtree, which also
+# re-enabled compiled binaries. Keep sources, never keep build results.
+onnx/cpp/**/build/
+onnx/cpp/**/__pycache__/
+*.pyc

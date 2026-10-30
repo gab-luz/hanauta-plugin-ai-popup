@@ -8,6 +8,7 @@ from pathlib import Path
 from PyQt6.QtCore import Qt, QTimer, QPropertyAnimation, QEasingCurve, pyqtSignal, pyqtProperty
 from PyQt6.QtGui import QColor, QFont, QLinearGradient, QPainter, QPen, QBrush
 from PyQt6.QtWidgets import (
+    QApplication,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -15,12 +16,13 @@ from PyQt6.QtWidgets import (
     QPushButton,
     QScrollArea,
     QSizePolicy,
+    QTextBrowser,
     QToolButton,
     QVBoxLayout,
     QWidget,
 )
 
-from .models import ChatItemData, SourceChipData
+from .models import BackendProfile, ChatItemData, SourceChipData
 from .html_sanitize import sanitize_message_html
 from .style import (
     ACCENT, ACCENT_SOFT, BORDER_SOFT, CARD_BG, CARD_BG_SOFT,

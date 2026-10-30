@@ -10,7 +10,7 @@ import time
 import zipfile
 from pathlib import Path
 
-from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QThread, QSize
+from PyQt6.QtCore import Qt, QTimer, QPropertyAnimation, pyqtSignal, QThread, QSize
 from PyQt6.QtGui import QColor, QCursor, QFont, QGuiApplication, QIcon, QPixmap, QPainter, QPen
 from PyQt6.QtWidgets import (
     QApplication,
@@ -31,6 +31,7 @@ from PyQt6.QtWidgets import (
     QScrollArea,
     QSizePolicy,
     QStackedLayout,
+    QStyleFactory,
     QToolButton,
     QVBoxLayout,
     QWidget,
@@ -65,12 +66,14 @@ from .http import (
     send_desktop_notification_with_action,
     maybe_notify_koboldcpp_release,
     _api_url_from_host,
+    _normalize_host_url,
     _openai_compat_alive,
     _looks_like_gemma4_model_name,
     _looks_like_gemma4_audio_variant,
     _probe_openai_style_audio_input_support,
     _wait_for_http_ready,
 )
+from .backends import _is_pid_alive, _is_pgid_alive
 from .characters import (
     load_character_library,
     save_character_library,
@@ -1268,7 +1271,9 @@ class SidebarPanel(QFrame):
             host = str(config.get("llm_host", "")).strip()
             if not host:
                 return False, "Voice mode needs an LLM host."
-            ready = _wait_for_http_ready(f"{_api_url_from_host(host)}/v1/models", timeout=8.0)
+            # Short probe only: a long wait here blocks the Qt thread. The caller
+            # already handles "not ready yet" by scheduling a ready notification.
+            ready = _wait_for_http_ready(f"{_api_url_from_host(host)}/v1/models", timeout=0.9)
             if ready:
                 return True, ""
             return False, (
@@ -1284,9 +1289,9 @@ class SidebarPanel(QFrame):
         if not host:
             return True, ""
         if profile.provider in {"openai", "openai_compat"}:
-            ready = _wait_for_http_ready(f"{_api_url_from_host(host)}/v1/models", timeout=8.0)
+            ready = _wait_for_http_ready(f"{_api_url_from_host(host)}/v1/models", timeout=0.9)
         elif profile.provider == "ollama":
-            ready = _wait_for_http_ready(f"{_api_url_from_host(host)}/api/tags", timeout=8.0)
+            ready = _wait_for_http_ready(f"{_api_url_from_host(host)}/api/tags", timeout=0.9)
         else:
             ready = _host_reachable(host, timeout=1.5)
         if ready:
@@ -2790,7 +2795,13 @@ class SidebarPanel(QFrame):
     def _maybe_launch_koboldcpp(self, profile: BackendProfile) -> bool:
         payload = dict(self.backend_settings.get(profile.key, {}))
         host = str(payload.get("host", profile.host)).strip()
-        if host and _openai_compat_alive(host):
+        # Cheap local check first: /proc answers instantly, so the common
+        # "process we launched is still running" case never blocks on HTTP.
+        pid = int(payload.get("koboldcpp_pid", 0) or 0)
+        pgid = int(payload.get("koboldcpp_pgid", 0) or 0)
+        if _is_pid_alive(pid) or _is_pgid_alive(pgid):
+            return True
+        if host and _openai_compat_alive(host, timeout=0.6):
             return True
         active, _message = _koboldcpp_status(payload)
         if active:

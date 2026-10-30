@@ -141,12 +141,29 @@ def _http_post_multipart(url: str, fields: dict, files: dict, headers: dict | No
         raise _friendly_network_error("Upload", url, exc) from exc
 
 
-def _openai_compat_alive(host: str) -> bool:
+_ALIVE_CACHE: dict[str, tuple[float, bool]] = {}
+_ALIVE_CACHE_TTL = 1.5
+
+
+def _openai_compat_alive(host: str, timeout: float = 1.2) -> bool:
+    """Is an OpenAI-compatible backend answering at ``host``?
+
+    Results are cached briefly: UI paths call this several times in a row when a
+    popup opens, and each uncached call can block for the whole timeout.
+    """
+    base = _normalize_host_url(host)
+    now = time.time()
+    cached = _ALIVE_CACHE.get(base)
+    if cached is not None and (now - cached[0]) < _ALIVE_CACHE_TTL:
+        return cached[1]
+    alive = False
     try:
-        with request.urlopen(f"{_normalize_host_url(host)}/v1/models", timeout=1.2):
-            return True
+        with request.urlopen(f"{base}/v1/models", timeout=timeout):
+            alive = True
     except Exception:
-        return False
+        alive = False
+    _ALIVE_CACHE[base] = (now, alive)
+    return alive
 
 
 def _looks_like_gemma4_model_name(text: str) -> bool:
@@ -291,15 +308,6 @@ def _sdapi_not_found_message(host: str) -> str:
     return f"SD API 404. Start WebUI/Forge with --api and use base host ({_normalize_host_url(host)})."
 
 
-def _looks_like_gemma4_model_name(text: str) -> bool:
-    return "gemma-4" in text.lower() or "gemma4" in text.lower()
-
-
-def _looks_like_gemma4_audio_variant(text: str) -> bool:
-    lowered = text.lower()
-    return _looks_like_gemma4_model_name(lowered) and ("e4b" in lowered or "e2b" in lowered)
-
-
 def _probe_openai_style_audio_input_support(host: str, model: str, api_key: str = "") -> bool:
     import io
     import struct
@@ -355,7 +363,7 @@ def load_backend_settings() -> dict:
 
 
 def save_backend_settings(settings: dict):
-    from .runtime import AI_STATE_DIR, BACKEND_SETTINGS_FILE
+    from .runtime import BACKEND_SETTINGS_FILE
     AI_STATE_DIR.mkdir(parents=True, exist_ok=True)
     BACKEND_SETTINGS_FILE.write_text(json.dumps(settings, indent=2), encoding="utf-8")
 

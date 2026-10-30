@@ -42,8 +42,63 @@ if str(APP_DIR) not in sys.path:
     sys.path.insert(0, str(APP_DIR))
 
 
-from pyqt.shared.theme import load_theme_palette, palette_mtime, relative_luminance  # noqa: E402
-from pyqt.shared.button_helpers import create_close_button  # noqa: E402
+try:  # noqa: E402
+    from pyqt.shared.theme import load_theme_palette, palette_mtime, relative_luminance
+    from pyqt.shared.button_helpers import create_close_button
+except Exception:  # noqa: E402
+    # The Hanauta host is not installed (standalone use, tooling, CI). Fall back to
+    # a self-contained palette so this package can still be imported and tested.
+    from types import SimpleNamespace
+
+    _FALLBACK_PALETTE: dict[str, str] = {
+        "background": "#0f0f14",
+        "panel_bg": "#141419",
+        "panel_border": "#2a2a33",
+        "app_running_bg": "#1b1b24",
+        "app_running_border": "#35353f",
+        "app_focused_border": "#7d5cff",
+        "chip_bg": "#1f1f28",
+        "chip_border": "#2e2e38",
+        "surface_container": "#161620",
+        "surface_container_high": "#1b1b24",
+        "text": "#f2f2f7",
+        "text_muted": "#b9b9c6",
+        "inactive": "#8c8c99",
+        "primary": "#7d5cff",
+        "accent_soft": "rgba(125, 92, 255, 0.18)",
+        "tertiary": "#59d6c7",
+        "media_active_start": "#242432",
+        "hover_bg": "#22222c",
+        "on_primary": "#101114",
+        "on_surface": "#f2f2f7",
+        "on_surface_variant": "#b9b9c6",
+        "outline": "#2a2a33",
+        "active_text": "#101114",
+    }
+
+    def load_theme_palette() -> SimpleNamespace:
+        return SimpleNamespace(**_FALLBACK_PALETTE)
+
+    def palette_mtime() -> float:
+        return 0.0
+
+    def relative_luminance(color: str) -> float:
+        raw = str(color or "").strip().lstrip("#")
+        if len(raw) < 6:
+            return 0.0
+        try:
+            channels = [int(raw[i:i + 2], 16) / 255.0 for i in (0, 2, 4)]
+        except ValueError:
+            return 0.0
+        linear = [c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4 for c in channels]
+        return 0.2126 * linear[0] + 0.7152 * linear[1] + 0.0722 * linear[2]
+
+    def create_close_button(parent=None):
+        from PyQt6.QtWidgets import QToolButton
+
+        button = QToolButton(parent)
+        button.setText("×")
+        return button
 
 try:  # noqa: E402
     from pyqt.shared.plugin_bridge import trigger_fullscreen_alert

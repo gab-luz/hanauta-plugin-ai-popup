@@ -1,0 +1,30 @@
+# Hanauta AI Popup — core runtime dependencies.
+#
+# Heavy ML runtimes are installed on demand into per-engine virtualenvs
+# (see hanauta_aipopup/voice/__init__.py::_ensure_voice_venv) and are listed
+# in the optional section at the bottom. They are NOT required to start the UI.
+
+# UI
+PyQt6>=6.6
+
+# Encrypted secret + chat storage (Fernet)
+cryptography>=42
+
+# Optional but recommended: memory preflight warnings in voice mode
+psutil>=5.9
+
+# Nicer terminal logging (optional, degrades gracefully)
+rich>=13
+
+# ---------------------------------------------------------------------------
+# Optional: speech / model runtimes (installed into isolated venvs at runtime)
+# ---------------------------------------------------------------------------
+# numpy
+# onnxruntime
+# kokoro-onnx
+# faster-whisper
+# soundfile
+# scipy
+# huggingface-hub
+# safetensors
+# torch

@@ -5,6 +5,7 @@ import importlib
 import json
 import os
 import platform
+import re
 import shlex
 import shutil
 import signal
@@ -17,12 +18,13 @@ import tarfile
 import time
 import wave
 import zipfile
-from base64 import b64decode
+from base64 import b64decode, b64encode
 from pathlib import Path
+from typing import TYPE_CHECKING
 from urllib import error, request
 from urllib.parse import urlparse
 
-from PyQt6.QtCore import QThread, pyqtSignal
+from PyQt6.QtCore import QLocale, QThread, pyqtSignal
 from PyQt6.QtWidgets import QApplication, QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
 from PyQt6.QtCore import Qt
 
@@ -53,6 +55,8 @@ from .runtime import (
     TTS_MODELS_DIR,
     TTS_OUTPUT_DIR,
     VOICE_MEMORY_DB_FILE,
+    VOICE_RECORDINGS_DIR,
+    VOICE_STOP_EXPRESSIONS_FILE,
     VOICE_TOKEN_COMPRESSOR_FILE,
     VOICE_TOKEN_COMPRESSOR_SAMPLE_FILE,
     trigger_fullscreen_alert,
@@ -67,11 +71,8 @@ from .http import (
     _http_post_multipart,
     _sd_auth_headers,
     _sdapi_not_found_message,
-    _hf_resolve_url,
-    _download_file,
-    _download_hf_files,
-    _download_and_extract_zip_bundle,
     _openai_compat_alive,
+    _looks_like_gemma4_model_name,
     send_desktop_notification,
 )
 from .backends import _existing_path, _is_pid_alive, _is_pgid_alive
@@ -89,6 +90,10 @@ from .voice import (
 )
 
 import logging
+
+if TYPE_CHECKING:
+    import numpy as np
+
 LOGGER = logging.getLogger("hanauta.ai_popup")
 
 _KOKORO_RUNTIME_READY = False
@@ -467,75 +472,6 @@ def _matches_stop_phrase(text: str, config: dict[str, object]) -> bool:
         if norm.startswith(p + " "):
             return True
     return False
-
-
-def _record_microphone_wav(seconds: float) -> Path:
-    VOICE_RECORDINGS_DIR.mkdir(parents=True, exist_ok=True)
-    duration = max(0.25, min(30.0, float(seconds or 5.0)))
-    output = VOICE_RECORDINGS_DIR / f"voice_{int(time.time() * 1000)}.wav"
-    commands: list[list[str]] = []
-    if shutil.which("ffmpeg"):
-        commands.append([
-            "ffmpeg",
-            "-y",
-            "-f",
-            "pulse",
-            "-i",
-            "default",
-            "-t",
-            f"{duration:.2f}",
-            "-ac",
-            "1",
-            "-ar",
-            "16000",
-            str(output),
-        ])
-    if shutil.which("arecord"):
-        commands.append([
-            "arecord",
-            "-q",
-            "-f",
-            "S16_LE",
-            "-c",
-            "1",
-            "-r",
-            "16000",
-            "-d",
-            str(max(1, int(round(duration)))),
-            str(output),
-        ])
-    if shutil.which("pw-record"):
-        commands.append([
-            "pw-record",
-            "--channels",
-            "1",
-            "--rate",
-            "16000",
-            str(output),
-        ])
-    if not commands:
-        raise RuntimeError("Install ffmpeg, arecord, or pw-record to capture microphone audio.")
-    last_error = ""
-    for command in commands:
-        try:
-            timeout = duration + 4.0
-            result = subprocess.run(
-                command,
-                capture_output=True,
-                text=True,
-                timeout=timeout,
-                check=False,
-            )
-            if result.returncode == 0 and output.exists() and output.stat().st_size > 44:
-                return output
-            last_error = (result.stderr or result.stdout or "").strip()
-        except subprocess.TimeoutExpired:
-            if output.exists() and output.stat().st_size > 44:
-                return output
-            last_error = "microphone recorder timed out"
-        except Exception as exc:
-            last_error = str(exc)
-    raise RuntimeError(last_error or "Microphone recording failed.")
 
 
 def _transcribe_with_external_api(audio_path: Path, config: dict[str, object]) -> str:
@@ -1664,6 +1600,8 @@ def _chat_messages_for_prompt(
     tools: list[dict] | None = None,
     user_name: str = "",
     user_info: str = "",
+    images: list[str] | None = None,
+    extra_parts: list[dict[str, object]] | None = None,
 ) -> list[dict[str, str]]:
     system = (
         "You are Hanauta AI. Keep spoken replies concise, natural, and easy to listen to.\n"
@@ -1738,7 +1676,17 @@ def _chat_messages_for_prompt(
     emotion_suffix = _emotion_prompt_suffix(emotion_tags)
     if emotion_suffix:
         system = f"{system}\n\n{emotion_suffix}"
-    return [{"role": "system", "content": system}, {"role": "user", "content": prompt}]
+    parts: list[dict[str, object]] = []
+    if images:
+        # OpenAI-compatible multimodal shape; KoboldCpp/llama.cpp map image_url
+        # parts through the mmproj vision projector.
+        parts.extend({"type": "image_url", "image_url": {"url": url}} for url in images)
+    if extra_parts:
+        parts.extend(extra_parts)
+    user_content: object = prompt
+    if parts:
+        user_content = [{"type": "text", "text": prompt}, *parts]
+    return [{"role": "system", "content": system}, {"role": "user", "content": user_content}]
 
 
 def _chat_messages_with_memory(
@@ -1750,11 +1698,13 @@ def _chat_messages_with_memory(
     tools: list[dict] | None = None,
     user_name: str = "",
     user_info: str = "",
+    images: list[str] | None = None,
+    extra_parts: list[dict[str, object]] | None = None,
 ) -> list[dict[str, str]]:
     messages = _chat_messages_for_prompt(
         prompt, character,
         emotion_tags=emotion_tags, tools=tools, user_name=user_name,
-        user_info=user_info,
+        user_info=user_info, images=images, extra_parts=extra_parts,
     )
     memo = str(memory or "").strip()
     if not memo:
@@ -2179,12 +2129,37 @@ def _load_skills() -> list[dict]:
         return []
 
 
+def _audio_input_part(audio_path: Path) -> dict[str, object]:
+    """Build an OpenAI-style input_audio part from a recorded WAV file."""
+    data = Path(audio_path).read_bytes()
+    if len(data) <= 44:
+        raise RuntimeError("audio file is empty")
+    return {
+        "type": "input_audio",
+        "input_audio": {"data": b64encode(data).decode("ascii"), "format": "wav"},
+    }
+
+
+def _camera_message_images(config: dict[str, object]) -> list[str]:
+    """Attach the current camera frame to a voice-mode prompt when enabled."""
+    try:
+        from .camera import camera_frame_data_url
+    except Exception:
+        return []
+    try:
+        return camera_frame_data_url(config)
+    except Exception as exc:
+        LOGGER.debug("Camera frame unavailable: %s", exc)
+        return []
+
+
 def generate_voice_chat_reply(
     config: dict[str, object],
     profiles: dict[str, BackendProfile],
     backend_settings: dict[str, dict[str, object]],
     prompt: str,
     character: CharacterCard | None,
+    audio_path: Path | None = None,
 ) -> tuple[str, str, str, str]:
     privacy_mapping: dict[str, str] = {}
     masked_prompt = prompt
@@ -2218,6 +2193,12 @@ def generate_voice_chat_reply(
     _user_name = preferred_user_name(load_profile_state())
     _user_profile = load_ai_popup_user_profile()
     _user_info = _user_profile.get("about", "") if _user_profile.get("enabled", False) else ""
+    extra_parts: list[dict[str, object]] = []
+    if audio_path is not None and bool(config.get("native_audio_input", False)):
+        try:
+            extra_parts.append(_audio_input_part(Path(audio_path)))
+        except Exception:
+            LOGGER.debug("Native audio part unavailable for %s", audio_path)
     messages = _chat_messages_with_memory(
         prompt_for_llm,
         character,
@@ -2226,6 +2207,8 @@ def generate_voice_chat_reply(
         tools=tools or None,
         user_name=_user_name,
         user_info=_user_info,
+        images=_camera_message_images(config),
+        extra_parts=extra_parts,
     )
     if bool(config.get("llm_external_api", False)):
         host = str(config.get("llm_host", "")).strip()

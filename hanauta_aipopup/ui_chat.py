@@ -10,15 +10,20 @@ import shutil
 import struct
 import subprocess
 import wave
+from base64 import b64decode
+from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
-from PyQt6.QtCore import Qt, QTimer, QUrl, pyqtSignal, pyqtSlot, QObject, QThread
+from PyQt6.QtCore import Qt, QTimer, QUrl, QPoint, pyqtSignal, pyqtSlot, QObject, QThread
 from PyQt6.QtGui import QColor, QDesktopServices, QFont
 from PyQt6.QtWidgets import (
+    QFileDialog,
     QFrame,
     QHBoxLayout,
     QLabel,
+    QMenu,
     QPushButton,
     QScrollArea,
     QSizePolicy,
@@ -78,6 +83,7 @@ from .backends import (
     start_llamacpp as _start_llamacpp,
 )
 from .tts import (
+    _play_audio_file,
     synthesize_tts, _waveform_from_hanauta_service,
     _iter_openai_sse_deltas,
     _ensure_voice_whisper_script,
@@ -96,6 +102,9 @@ from .ui_widgets import (
 )
 from .characters import _character_compose_prompt
 from .web.popup_html import render_popup_html
+
+if TYPE_CHECKING:
+    from .ui_panel import SidebarPanel
 from .voice import (
     _voice_mode_defaults,
     VOICE_EMOTIONS,
@@ -113,7 +122,7 @@ from .voice import (
     _voice_venv_python,
 )
 from .tts import (
-    synthesize_tts, _waveform_from_hanauta_service,
+    _camera_message_images,
     transcribe_voice_audio, generate_voice_chat_reply,
     _voice_mode_settings, _with_voice_device,
     _canonical_whisper_model,
@@ -126,6 +135,18 @@ from .tts import (
 )
 
 LOGGER = logging.getLogger("hanauta.ai_popup")
+
+
+@dataclass
+class _StreamingTtsState:
+    """Mutable state for progressive TTS chunking during one streaming reply."""
+
+    speech: str = ""
+    spoken_chars: int = 0
+    total_audio: float = 0.0
+    min_chars: int = 12
+    max_chars: int = 100
+
 
 class PopupWebBridge(QObject):
     stateChanged = pyqtSignal(str)
@@ -1455,6 +1476,66 @@ class VoiceConversationWorker(QThread):
         self._whisper_stream_proc: subprocess.Popen[str] | None = None
         self._whisper_stream_last_prompt: str = ""
 
+    def _flush_tts(
+        self,
+        state: _StreamingTtsState,
+        profile: BackendProfile,
+        payload: dict[str, object],
+        *,
+        force: bool = False,
+    ) -> None:
+        """Speak the next chunk of streamed text, mutating ``state`` in place.
+
+        Hoisted out of the conversation loop: as a closure it read the loop's
+        bindings, which both B023 and future readers flag as fragile.
+        """
+        if not self._tts_streaming_enabled():
+            return
+        text = state.speech
+        if state.spoken_chars >= len(text):
+            return
+        remaining = text[state.spoken_chars:]
+        candidate = remaining[:state.max_chars]
+        split_at = -1
+        if not force:
+            if len(candidate) < state.min_chars:
+                return
+            # Sentence/line boundaries first.
+            for mark in ("\n", ".", "?", "!", ":", ";"):
+                idx = candidate.rfind(mark)
+                if idx >= state.min_chars - 1:
+                    split_at = idx + 1
+                    break
+            if split_at < 0 and len(candidate) >= state.max_chars:
+                space = candidate.rfind(" ")
+                split_at = space if space > 0 else len(candidate)
+        else:
+            split_at = len(candidate)
+        if split_at <= 0:
+            return
+        chunk_text = remaining[:split_at].strip()
+        if not chunk_text:
+            state.spoken_chars += split_at
+            return
+        spoken_chunk = _strip_simple_markdown(chunk_text).strip()
+        if not spoken_chunk:
+            state.spoken_chars += split_at
+            return
+        try:
+            LOGGER.info(
+                "[VoiceMode] streaming TTS chunk backend=%s chars=%d ref=%s text=%r",
+                profile.key,
+                len(spoken_chunk),
+                bool(str(payload.get("_character_voice_sample", "") or "").strip()),
+                spoken_chunk[:160],
+            )
+            audio_out, _source = synthesize_tts(profile, payload, spoken_chunk)
+            self.tts_chunk_ready.emit(str(audio_out), spoken_chunk)
+            state.total_audio += float(_wav_duration_seconds(audio_out) or 0.0)
+        except Exception:
+            LOGGER.exception("[VoiceMode] streaming TTS chunk failed")
+        state.spoken_chars += split_at
+
     def stop(self) -> None:
         self._running = False
         proc = self._whisper_stream_proc
@@ -1804,7 +1885,8 @@ class VoiceConversationWorker(QThread):
                 answer = ""
                 streaming_llm = False
                 try:
-                    streaming_llm = self._llm_streaming_enabled() and (
+                    # Native audio input is only attached on the non-streaming path.
+                    streaming_llm = self._llm_streaming_enabled() and not bool(self.config.get("native_audio_input", False)) and (
                         bool(self.config.get("llm_external_api", False))
                         or (
                             str(self.config.get("llm_profile", "koboldcpp")).strip() in self.profiles
@@ -1821,6 +1903,7 @@ class VoiceConversationWorker(QThread):
                         self.backend_settings,
                         transcript,
                         self.character if bool(self.config.get("enable_character", True)) else None,
+                        audio_path=audio_path,
                     )
                     try:
                         # Non-streaming: emit after generation returns so we log the final chosen backend/model.
@@ -1852,6 +1935,7 @@ class VoiceConversationWorker(QThread):
                         emotion_tags=bool(self.config.get("emotion_tags_enabled", False)),
                         memory=memo,
                         user_info=user_info,
+                        images=_camera_message_images(self.config),
                     )
                     host = ""
                     model = ""
@@ -1881,9 +1965,7 @@ class VoiceConversationWorker(QThread):
                     clean_accum = ""
                     tag_parsed = False
                     llm_started_emitted = False
-                    spoken_chars = 0
-                    speech_accum = ""
-                    total_audio = 0.0
+                    tts_state = _StreamingTtsState()
                     tts_profile = self._tts_profile()
                     if tts_profile is None:
                         self.failed.emit("No TTS backend selected for voice mode.")
@@ -1896,57 +1978,10 @@ class VoiceConversationWorker(QThread):
                         # Very short chunks can drift into odd filler words or lose the reference voice.
                         min_chars = max(min_chars, 80)
                         max_chars = max(max_chars, 220)
+                    tts_state.min_chars = min_chars
+                    tts_state.max_chars = max_chars
                     interrupted = False
                     last_barge_check = 0.0
-
-                    def _flush_tts(force: bool = False) -> None:
-                        nonlocal spoken_chars, total_audio
-                        if not self._tts_streaming_enabled():
-                            return
-                        text = speech_accum
-                        if spoken_chars >= len(text):
-                            return
-                        remaining = text[spoken_chars:]
-                        candidate = remaining[:max_chars]
-                        split_at = -1
-                        if not force:
-                            if len(candidate) < min_chars:
-                                return
-                            # sentence/line boundaries first
-                            for mark in ("\n", ".", "?", "!", ":", ";"):
-                                idx = candidate.rfind(mark)
-                                if idx >= min_chars - 1:
-                                    split_at = idx + 1
-                                    break
-                            if split_at < 0 and len(candidate) >= max_chars:
-                                sp = candidate.rfind(" ")
-                                split_at = sp if sp > 0 else len(candidate)
-                        else:
-                            split_at = len(candidate)
-                        if split_at <= 0:
-                            return
-                        chunk_text = remaining[:split_at].strip()
-                        if not chunk_text:
-                            spoken_chars += split_at
-                            return
-                        spoken_chunk = _strip_simple_markdown(chunk_text).strip()
-                        if not spoken_chunk:
-                            spoken_chars += split_at
-                            return
-                        try:
-                            LOGGER.info(
-                                "[VoiceMode] streaming TTS chunk backend=%s chars=%d ref=%s text=%r",
-                                tts_profile.key,
-                                len(spoken_chunk),
-                                bool(str(tts_payload.get("_character_voice_sample", "") or "").strip()),
-                                spoken_chunk[:160],
-                            )
-                            audio_out, source = synthesize_tts(tts_profile, tts_payload, spoken_chunk)
-                            self.tts_chunk_ready.emit(str(audio_out), spoken_chunk)
-                            total_audio += float(_wav_duration_seconds(audio_out) or 0.0)
-                        except Exception:
-                            LOGGER.exception("[VoiceMode] streaming TTS chunk failed")
-                        spoken_chars += split_at
 
                     for delta in _stream_openai_style_reply(host, model, messages, api_key):
                         if not self._running:
@@ -1972,13 +2007,13 @@ class VoiceConversationWorker(QThread):
                         )
                         restored = _restore_sensitive_words(raw_accum.strip(), privacy_mapping)
                         clean_accum = restored
-                        speech_accum = "" if waiting_for_emotion_tag else _strip_simple_markdown(clean_accum).strip()
+                        tts_state.speech = "" if waiting_for_emotion_tag else _strip_simple_markdown(clean_accum).strip()
                         self.response_partial.emit(clean_accum, emotion, llm_label, llm_model)
                         # Try to speak progressively.
-                        _flush_tts(force=False)
+                        self._flush_tts(tts_state, tts_profile, tts_payload)
                         # Barge-in: if the user starts talking while TTS is speaking, interrupt the reply.
                         if (
-                            spoken_chars > 0
+                            tts_state.spoken_chars > 0
                             and self._tts_barge_in_enabled(tts_profile, tts_payload)
                             and (time.time() - last_barge_check) >= 0.85
                         ):
@@ -1997,7 +2032,7 @@ class VoiceConversationWorker(QThread):
                     if interrupted:
                         continue
                     # Flush remaining.
-                    _flush_tts(force=True)
+                    self._flush_tts(tts_state, tts_profile, tts_payload, force=True)
                     answer = clean_accum.strip()
                     if not answer:
                         raise RuntimeError("LLM endpoint returned no assistant text.")
@@ -2005,7 +2040,7 @@ class VoiceConversationWorker(QThread):
                     self.response_partial.emit(answer, emotion, llm_label, llm_model)
                     # Wait roughly for queued audio to finish (best-effort) and allow barge-in.
                     self.status_changed.emit("Speaking")
-                    pause_until = time.time() + min(60.0, max(1.0, total_audio + 0.8))
+                    pause_until = time.time() + min(60.0, max(1.0, tts_state.total_audio + 0.8))
                     while self._running and time.time() < pause_until:
                         if not self._tts_barge_in_enabled(tts_profile, tts_payload):
                             time.sleep(0.1)

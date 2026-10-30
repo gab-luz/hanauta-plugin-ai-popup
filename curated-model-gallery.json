@@ -1,6 +1,24 @@
 {
   "llm_gguf": [
     {
+      "id": "lfm3_omni_2b_abliter8",
+      "title": "LFM3-Omni-2B-Abliter8 (Q6_K)",
+      "repo_id": "abliter8-ai/lfm3-2b-omni-abliter8-gguf",
+      "file": "auto",
+      "prefer_quant": "Q6_K",
+      "mmproj": "auto",
+      "params": "2.17B",
+      "context": 32768,
+      "quant": "Q6_K",
+      "license": "LFM Open License v1.0",
+      "size_bytes": 0,
+      "modalities": ["text", "vision", "audio"],
+      "llama_flags": ["--jinja", "--reasoning", "off"],
+      "llama_git_ref": "d05706b4b",
+      "llama_patch_url": "",
+      "notes": "Omni model: understands text, images and audio and replies with text or speech. Q6_K is the card's serving example and keeps a much closer neutral-text distribution than Q4 builds (Q8_0 for maximum fidelity). Needs its mmproj for images and the pinned llama.cpp build (d05706b4b + serving-guide patch), which the popup can compile for you. Filenames are resolved from the repo at download time."
+    },
+    {
       "id": "phi3_mini_4k_q4",
       "title": "Phi-3 Mini 4K Instruct (Q4_K_M)",
       "repo_id": "microsoft/Phi-3-mini-4k-instruct-gguf",
@@ -29,4 +47,3 @@
   "stt_whisper_distill": [],
   "stt_whisper_onnx": []
 }
-
