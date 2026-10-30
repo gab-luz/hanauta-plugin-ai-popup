@@ -23,7 +23,9 @@ from .runtime import AI_STATE_DIR
 SCREEN_DEFAULTS: dict[str, object] = {
     "screen_enabled": False,
     "screen_resolution": "960x540",
-    "screen_interval_seconds": "15",
+    # Auto capture: a new frame is only taken once the previous one is this old.
+    # 30s keeps a game readable without spamming the vision encoder.
+    "screen_interval_seconds": "30",
     "screen_display": "",
 }
 
@@ -35,6 +37,24 @@ _MAX_HEIGHT = 1080
 _MIN_EDGE = 64
 
 _FRAME_CACHE: dict[str, object] = {"ts": 0.0, "path": ""}
+
+# Per-turn cache: one vision call per turn may reuse the frame it already has,
+# so a tool loop or a retry never re-captures the screen behind the user.
+_TURN_CACHE: dict[str, object] = {"turn": "", "path": ""}
+
+# Never let auto capture run faster than this, even if configured lower.
+_MIN_INTERVAL_SECONDS = 5.0
+
+
+def screen_interval(config: dict[str, object]) -> float:
+    raw = config.get("screen_interval_seconds", SCREEN_DEFAULTS["screen_interval_seconds"])
+    return max(_MIN_INTERVAL_SECONDS, parse_interval(raw, fallback=30.0))
+
+
+def begin_turn() -> None:
+    """Start a new conversation turn (clears the per-turn frame reuse)."""
+    _TURN_CACHE["turn"] = ""
+    _TURN_CACHE["path"] = ""
 
 
 def screen_display(config: dict[str, object]) -> str:
@@ -151,20 +171,30 @@ def capture_screenshot(config: dict[str, object], dest_dir: Path | None = None) 
     raise RuntimeError("Screen capture failed: " + ("; ".join(errors) or "no display detected"))
 
 
-def screen_frame_data_url(config: dict[str, object], *, force: bool = False) -> list[str]:
+def screen_frame_data_url(config: dict[str, object], *, force: bool = False, turn_id: str = "") -> list[str]:
     """Return ``[data_url]`` for the current screenshot, honouring the interval.
 
-    Returns an empty list when screen sharing is off or capture fails, so the
-    result can be passed straight into a prompt.
+    ``turn_id`` makes repeated calls inside one turn reuse a single frame, so a
+    follow-up question about the same moment never forces a fresh capture.
+    Returns an empty list when screen sharing is off or capture fails.
     """
     if not screen_enabled(config):
         return []
-    interval = parse_interval(config.get("screen_interval_seconds", SCREEN_DEFAULTS["screen_interval_seconds"]), fallback=15.0)
+    turn = str(turn_id or "").strip()
+    if turn and _TURN_CACHE.get("turn") == turn:
+        cached_turn_path = str(_TURN_CACHE.get("path", "") or "")
+        if cached_turn_path and Path(cached_turn_path).exists():
+            return [encode_image_data_url(Path(cached_turn_path))]
+
+    interval = screen_interval(config)
     now = time.time()
     last_ts = float(_FRAME_CACHE.get("ts", 0.0) or 0.0)
     cached_path = str(_FRAME_CACHE.get("path", "") or "")
 
     if not force and cached_path and (now - last_ts) < interval and Path(cached_path).exists():
+        if turn:
+            _TURN_CACHE["turn"] = turn
+            _TURN_CACHE["path"] = cached_path
         return [encode_image_data_url(Path(cached_path))]
 
     try:
@@ -174,6 +204,9 @@ def screen_frame_data_url(config: dict[str, object], *, force: bool = False) -> 
         return []
     _FRAME_CACHE["ts"] = now
     _FRAME_CACHE["path"] = str(frame)
+    if turn:
+        _TURN_CACHE["turn"] = turn
+        _TURN_CACHE["path"] = str(frame)
     notify_capture("screen")
     return [encode_image_data_url(frame)]
 
@@ -181,9 +214,11 @@ def screen_frame_data_url(config: dict[str, object], *, force: bool = False) -> 
 __all__ = [
     "SCREEN_DEFAULTS",
     "SCREEN_DIR",
+    "begin_turn",
     "capture_screenshot",
     "screen_display",
     "screen_enabled",
     "screen_frame_data_url",
+    "screen_interval",
     "screen_resolution",
 ]

@@ -2190,7 +2190,7 @@ def _audio_input_part(audio_path: Path) -> dict[str, object]:
     }
 
 
-def _vision_message_images(config: dict[str, object]) -> list[str]:
+def _vision_message_images(config: dict[str, object], turn_id: str = "") -> list[str]:
     """Attach camera and/or screen frames to a voice-mode prompt when enabled."""
     images: list[str] = []
     try:
@@ -2202,7 +2202,7 @@ def _vision_message_images(config: dict[str, object]) -> list[str]:
     try:
         from .screen import screen_frame_data_url
 
-        images.extend(screen_frame_data_url(config))
+        images.extend(screen_frame_data_url(config, turn_id=turn_id))
     except Exception as exc:
         LOGGER.debug("Screen frame unavailable: %s", exc)
     return images
@@ -2276,7 +2276,7 @@ def generate_voice_chat_reply(
         tools=tools or None,
         user_name=_user_name,
         user_info=_user_info,
-        images=_vision_message_images(config),
+        images=_vision_message_images(config, turn_id=str(id(config)) + ":" + str(time.time())),
         extra_parts=extra_parts,
     )
     if bool(config.get("llm_external_api", False)):

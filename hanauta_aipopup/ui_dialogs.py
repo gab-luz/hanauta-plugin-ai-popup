@@ -907,8 +907,12 @@ class VoiceModeDialog(QDialog):
         self.screen_resolution_input = QLineEdit(str(self.config.get("screen_resolution", "960x540")))
         self.screen_resolution_input.setPlaceholderText("e.g. 960x540 (max 1920x1080)")
         form.addWidget(self._labeled("Screenshot resolution", self.screen_resolution_input))
-        self.screen_interval_input = QLineEdit(str(self.config.get("screen_interval_seconds", "15")))
-        self.screen_interval_input.setPlaceholderText("Seconds between screenshots, e.g. 15")
+        self.screen_interval_input = QLineEdit(str(self.config.get("screen_interval_seconds", "30")))
+        self.screen_interval_input.setPlaceholderText("Auto capture interval in seconds, e.g. 30 (minimum 5)")
+        self.screen_interval_input.setToolTip(
+            "While screen sharing is on, a new screenshot is only taken once the previous one is this "
+            "old, so you can keep playing and the model still sees an up-to-date frame."
+        )
         form.addWidget(self._labeled("Screenshot interval (s)", self.screen_interval_input))
         self.screen_display_input = QLineEdit(str(self.config.get("screen_display", "")))
         self.screen_display_input.setPlaceholderText("X display, e.g. :0.0 (blank = $DISPLAY)")
@@ -934,6 +938,20 @@ class VoiceModeDialog(QDialog):
         )
         form.addWidget(self.screen_preview_image)
         self._screen_preview_worker: _ScreenPreviewWorker | None = None
+
+        form.addWidget(self._section_label("Capture hotkeys (global)"))
+        self.capture_hotkeys_check = QCheckBox("Toggle camera and screen sharing with global hotkeys")
+        self.capture_hotkeys_check.setToolTip(
+            "Works while another window has focus, so a game can stay fullscreen."
+        )
+        self.capture_hotkeys_check.setChecked(bool(self.config.get("capture_hotkeys_enabled", True)))
+        form.addWidget(self.capture_hotkeys_check)
+        self.hotkey_camera_input = QLineEdit(str(self.config.get("hotkey_toggle_camera", "<ctrl>+<alt>+c")))
+        self.hotkey_camera_input.setPlaceholderText("<ctrl>+<alt>+c")
+        form.addWidget(self._labeled("Toggle camera", self.hotkey_camera_input))
+        self.hotkey_screen_input = QLineEdit(str(self.config.get("hotkey_toggle_screen", "<ctrl>+<alt>+s")))
+        self.hotkey_screen_input.setPlaceholderText("<ctrl>+<alt>+s")
+        form.addWidget(self._labeled("Toggle screen", self.hotkey_screen_input))
         self.native_audio_check = QCheckBox("Send mic audio straight to the model (omni audio input)")
         self.native_audio_check.setToolTip(
             "Skips the separate speech-to-text step for models that accept audio directly, "
@@ -1537,8 +1555,11 @@ class VoiceModeDialog(QDialog):
                 "camera_interval_seconds": self.camera_interval_input.text().strip() or "10",
                 "screen_enabled": bool(self.screen_enabled_check.isChecked()),
                 "screen_resolution": self.screen_resolution_input.text().strip() or "960x540",
-                "screen_interval_seconds": self.screen_interval_input.text().strip() or "15",
+                "screen_interval_seconds": self.screen_interval_input.text().strip() or "30",
                 "screen_display": self.screen_display_input.text().strip(),
+                "capture_hotkeys_enabled": bool(self.capture_hotkeys_check.isChecked()),
+                "hotkey_toggle_camera": self.hotkey_camera_input.text().strip() or "<ctrl>+<alt>+c",
+                "hotkey_toggle_screen": self.hotkey_screen_input.text().strip() or "<ctrl>+<alt>+s",
                 "stop_phrases_enabled": bool(self.stop_phrases_check.isChecked()),
                 "stop_phrases_language": str(self.stop_lang_combo.currentData() or "en-us"),
                 "stop_phrases_allow_single_word": bool(self.stop_single_check.isChecked()),

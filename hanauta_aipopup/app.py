@@ -19,6 +19,7 @@ from PyQt6.QtWidgets import QApplication, QMainWindow, QVBoxLayout, QWidget
 
 from .camera import set_capture_listener
 from .fonts import load_ui_font
+from .hotkeys import GlobalHotkeys
 from .overlay import CaptureOverlay
 from .runtime import (
     AI_POPUP_CRASH_FILE,
@@ -179,7 +180,66 @@ class DemoWindow(QMainWindow):
         self.capture_timer = QTimer(self)
         self.capture_timer.timeout.connect(self._sync_capture_overlay)
         self.capture_timer.start(2000)
+
+        # Global capture hotkeys, so sharing can be toggled while a game has focus.
+        self._hotkey_spec: dict[str, str] = {}
+        self.hotkeys = GlobalHotkeys({}, self)
+        self.hotkeys.triggered.connect(self._toggle_capture_source)
+        self._refresh_capture_hotkeys()
         QTimer.singleShot(0, self._sync_capture_overlay)
+
+    def _hotkey_bindings(self) -> dict[str, str]:
+        try:
+            config = dict((_load_backend_settings() or {}).get("_voice_mode", {}) or {})
+        except Exception:
+            config = {}
+        if not bool(config.get("capture_hotkeys_enabled", True)):
+            return {}
+        bindings: dict[str, str] = {}
+        for action, key, default in (
+            ("camera", "hotkey_toggle_camera", "<ctrl>+<alt>+c"),
+            ("screen", "hotkey_toggle_screen", "<ctrl>+<alt>+s"),
+        ):
+            spec = str(config.get(key, default) or "").strip() or default
+            if spec:
+                bindings[action] = spec
+        return bindings
+
+    def _refresh_capture_hotkeys(self) -> None:
+        """(Re)bind the global hotkeys when their configuration changes."""
+        spec = self._hotkey_bindings()
+        if spec == self._hotkey_spec:
+            return
+        self.hotkeys.stop()
+        self.hotkeys = GlobalHotkeys(spec, self)
+        self.hotkeys.triggered.connect(self._toggle_capture_source)
+        ok, message = self.hotkeys.start()
+        self._hotkey_spec = spec
+        if ok:
+            LOGGER.info("Capture hotkeys: %s", message)
+        else:
+            LOGGER.warning("Capture hotkeys unavailable: %s", message)
+
+    def _toggle_capture_source(self, kind: str) -> None:
+        """Flip camera/screen sharing from a hotkey and reflect it immediately."""
+        key = "camera_enabled" if kind == "camera" else "screen_enabled"
+        try:
+            settings = dict(_load_backend_settings() or {})
+        except Exception:
+            settings = {}
+        config = dict(settings.get("_voice_mode", {}) or {})
+        enabled = not bool(config.get(key, False))
+        config[key] = enabled
+        settings["_voice_mode"] = config
+        try:
+            _save_backend_settings(settings)
+        except Exception as exc:
+            LOGGER.warning("Could not save capture toggle: %s", exc)
+        if enabled:
+            # Chime + caption, so the toggle is audible even in a fullscreen game.
+            self.capture_overlay.trigger.emit(kind)
+        self._sync_capture_overlay()
+        LOGGER.info("Hotkey toggled %s sharing -> %s", kind, enabled)
 
     def _sync_capture_overlay(self) -> None:
         """Show a badge for each source that voice mode is currently sharing."""
@@ -193,6 +253,7 @@ class DemoWindow(QMainWindow):
         if bool(config.get("screen_enabled", False)):
             active.append("screen")
         self.capture_overlay.set_active(active)
+        self._refresh_capture_hotkeys()
 
     def _build_panel(self) -> None:
         if hasattr(self, "panel") and self.panel is not None:

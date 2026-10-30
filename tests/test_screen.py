@@ -1,6 +1,7 @@
 import os
 import pathlib
 import sys
+import tempfile
 
 import pytest
 
@@ -34,6 +35,34 @@ def test_bad_display_raises_a_readable_error(monkeypatch):
     with pytest.raises(RuntimeError) as excinfo:
         screen.capture_screenshot({"screen_resolution": "320x180", "screen_display": ":99.9"})
     assert "Screen capture failed" in str(excinfo.value)
+
+
+def test_auto_capture_interval_has_a_sane_floor():
+    # A too-short interval is clamped, and the default is a relaxed 30s.
+    assert screen.screen_interval({"screen_interval_seconds": "1"}) == 5.0
+    assert screen.screen_interval({"screen_interval_seconds": "30"}) == 30.0
+    assert screen.screen_interval({}) == 30.0
+
+
+def test_same_turn_reuses_one_frame(monkeypatch):
+    calls = {"n": 0}
+
+    def fake_capture(config, dest_dir=None):
+        calls["n"] += 1
+        path = pathlib.Path(tempfile.mkdtemp()) / f"frame_{calls['n']}.jpg"
+        path.write_bytes(b"\xff\xd8\xff\xd9")
+        return path
+
+    monkeypatch.setattr(screen, "capture_screenshot", fake_capture)
+    config = {"screen_enabled": True, "screen_interval_seconds": "30"}
+    first = screen.screen_frame_data_url(config, force=True, turn_id="t1")
+    second = screen.screen_frame_data_url(config, force=True, turn_id="t1")
+    assert first and first == second
+    assert calls["n"] == 1  # a repeat call inside a turn never re-captures
+
+    screen.begin_turn()
+    third = screen.screen_frame_data_url(config, force=True, turn_id="t2")
+    assert third and calls["n"] == 2
 
 
 def test_failing_capture_never_breaks_a_turn(monkeypatch):
