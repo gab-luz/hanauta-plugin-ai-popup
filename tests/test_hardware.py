@@ -123,6 +123,23 @@ def test_auto_tune_opt_out_switch(monkeypatch, tmp_path):
     assert "llama_flash_attn" not in off and off["device"] == "cpu"
 
 
+def test_busy_port_is_reported_before_launching():
+    import socket as _socket
+
+    dummy = _socket.socket()
+    dummy.bind(("127.0.0.1", 0))
+    dummy.listen(1)
+    port = dummy.getsockname()[1]
+    try:
+        note = backends._port_in_use_note({"host": f"127.0.0.1:{port}"})
+        assert f"Port {port}" in note and "already in use" in note
+    finally:
+        dummy.close()
+    # A closed port must not block a launch.
+    assert backends._port_in_use_note({"host": "127.0.0.1:1"}) == ""
+    assert backends._port_in_use_note({}) == ""
+
+
 def test_cpu_build_reports_no_devices(monkeypatch, tmp_path):
     monkeypatch.setattr(
         backends.subprocess, "run",

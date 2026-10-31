@@ -19,7 +19,7 @@ _APP = QApplication.instance() or QApplication([])
 
 LFM3 = BackendProfile(
     "lfm3", "LFM3-Omni 2B", "openai_compat", "lfm3-omni-2b",
-    "127.0.0.1:8081", "koboldcpp", False, True,
+    "127.0.0.1:8082", "koboldcpp", False, True,
 )
 
 

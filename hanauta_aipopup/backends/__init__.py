@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import re
 import shlex
+import socket
 import signal
 import subprocess
 import time
@@ -167,6 +168,31 @@ def _cpu_runtime_binary(payload: dict[str, object]) -> Path | None:
             if candidate.is_file():
                 return candidate
     return None
+
+
+def _port_in_use_note(payload: dict[str, object]) -> str:
+    """Refuse to start when another service already owns the port.
+
+    llama.cpp exits immediately if it cannot bind, which used to look like a
+    successful start; the Hanauta host server squatting on 8081 made every LFM3
+    launch fail silently.
+    """
+    host = str(payload.get("host", "")).strip()
+    if not host:
+        return ""
+    parsed = urlparse(_normalize_host_url(host))
+    if not parsed.hostname or not parsed.port:
+        return ""
+    probe = "127.0.0.1" if parsed.hostname in {"0.0.0.0", "::", "localhost"} else parsed.hostname
+    try:
+        with socket.create_connection((probe, parsed.port), timeout=0.6):
+            pass
+    except OSError:
+        return ""
+    return (
+        f"Port {parsed.port} is already in use by another service, so llama.cpp cannot bind it. "
+        "Set a free host for this backend (for example 127.0.0.1:8082) or stop that service."
+    )
 
 
 def _missing_model_note(payload: dict[str, object]) -> str:
@@ -908,6 +934,9 @@ def start_llamacpp(payload: dict[str, object]) -> tuple[bool, str]:
             note = f"Ignored flags this llama.cpp build does not support: {', '.join(dropped)}."
             bootstrap_note = f"{bootstrap_note} {note}".strip()
         command.extend(extra_tokens)
+    port_problem = _port_in_use_note(payload)
+    if port_problem:
+        return False, port_problem
     try:
         process = subprocess.Popen(
             command,

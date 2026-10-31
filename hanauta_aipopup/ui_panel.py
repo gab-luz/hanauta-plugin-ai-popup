@@ -189,7 +189,8 @@ class SidebarPanel(QFrame):
         self.profiles.append(
             BackendProfile(
                 "lfm3", "LFM3-Omni 2B", "openai_compat", "lfm3-omni-2b",
-                "127.0.0.1:8081", "koboldcpp", False, True,
+                # 8081 belongs to the Hanauta host server; llama.cpp must not fight it.
+                "127.0.0.1:8082", "koboldcpp", False, True,
             )
         )
         self.profile_by_key = {profile.key: profile for profile in self.profiles}
