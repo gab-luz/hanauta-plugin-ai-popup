@@ -1105,13 +1105,9 @@ class VoiceModeDialog(QDialog):
         for profile in profiles:
             if profile.provider in {"openai", "openai_compat"} or profile.key == "ollama":
                 self.llm_profile_combo.addItem(profile.label, profile.key)
-        # Default to the LFM3 backend once its model is configured, unless the user
-        # already picked something.
-        raw_voice = dict(self.settings.get("_voice_mode", {}) or {})
-        default_llm_profile = str(raw_voice.get("llm_profile", "")).strip()
-        if not default_llm_profile:
-            lfm3_payload = dict(self.settings.get("lfm3", {}) or {})
-            default_llm_profile = "lfm3" if str(lfm3_payload.get("gguf_path", "")).strip() else "koboldcpp"
+        # `self.config` already applies the LFM3 preference (see
+        # _preferred_voice_llm_profile); mirroring its default is not enough.
+        default_llm_profile = str(self.config.get("llm_profile", "")).strip() or "koboldcpp"
         self._set_combo_selected(self.llm_profile_combo, default_llm_profile)
         form.addWidget(self._labeled("Local/profile backend", self.llm_profile_combo))
         self.llm_host_input = QLineEdit(str(self.config.get("llm_host", "api.openai.com")))
