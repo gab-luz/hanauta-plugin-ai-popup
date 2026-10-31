@@ -289,15 +289,19 @@ def _voice_mode_defaults() -> dict[str, object]:
     }
 
 
-def _preferred_voice_llm_profile(saved: str, settings: dict[str, dict[str, object]]) -> str:
+def _preferred_voice_llm_profile(
+    saved: str, settings: dict[str, dict[str, object]], explicit: bool = False
+) -> str:
     """Voice mode prefers LFM3 once its weights are configured.
 
     ``_voice_mode_defaults()`` always stores "koboldcpp", so the stored value
-    cannot tell "the user chose this" apart from "never touched". Without this
-    the LFM3 backend exists but voice mode can never select it by default.
+    cannot tell "the user chose this" apart from "never touched" without the
+    ``llm_profile_explicit`` flag the voice dialog writes when it saves.
     """
+    if saved and explicit:
+        return saved
     lfm3 = dict(settings.get("lfm3", {}) or {})
-    if not str(lfm3.get("gguf_path", "")). strip():
+    if not str(lfm3.get("gguf_path", "")).strip():
         return saved or "koboldcpp"
     return "lfm3" if saved in {"", "koboldcpp"} else saved
 
@@ -308,7 +312,9 @@ def _voice_mode_settings(settings: dict[str, dict[str, object]]) -> dict[str, ob
     if isinstance(raw, dict):
         payload.update(raw)
     payload["llm_profile"] = _preferred_voice_llm_profile(
-        str(payload.get("llm_profile", "")).strip(), settings
+        str(payload.get("llm_profile", "")).strip(),
+        settings,
+        bool(raw.get("llm_profile_explicit", False)) if isinstance(raw, dict) else False,
     )
     # Auto-switch STT to "LLM audio" when KoboldCpp is running Gemma 4 audio variants and the user opted in.
     # This avoids loading Whisper entirely (lower VRAM), and uses the same LLM for STT+chat.

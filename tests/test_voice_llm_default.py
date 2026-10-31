@@ -42,6 +42,14 @@ def test_an_explicit_voice_choice_is_kept():
     assert _voice_mode_settings(_settings(llm_profile="llamacpp"))["llm_profile"] == "llamacpp"
 
 
+def test_choosing_koboldcpp_after_saving_sticks():
+    # Saving the dialog writes llm_profile_explicit, so picking KoboldCpp must
+    # survive instead of being read as "never touched" on the next open.
+    settings = _settings(llm_profile="koboldcpp")
+    settings["_voice_mode"]["llm_profile_explicit"] = True
+    assert _voice_mode_settings(settings)["llm_profile"] == "koboldcpp"
+
+
 def test_without_lfm3_weights_voice_stays_on_kobold():
     assert _voice_mode_settings(_settings(gguf_path=""))["llm_profile"] == "koboldcpp"
 

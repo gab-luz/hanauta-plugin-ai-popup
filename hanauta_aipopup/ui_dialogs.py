@@ -1550,6 +1550,9 @@ class VoiceModeDialog(QDialog):
                 "tts_streaming_min_chars": self.tts_streaming_min_chars_input.text().strip() or "42",
                 "tts_streaming_max_chars": self.tts_streaming_max_chars_input.text().strip() or "180",
                 "llm_profile": str(self.llm_profile_combo.currentData() or "koboldcpp"),
+                # Marks a deliberate choice so it is not mistaken for the
+                # untouched default once LFM3 weights exist.
+                "llm_profile_explicit": True,
                 "llm_device": str(self.llm_device_combo.currentData() or "cpu"),
                 "llm_external_api": bool(self.llm_external_check.isChecked()),
                 "llm_host": self.llm_host_input.text().strip(),
