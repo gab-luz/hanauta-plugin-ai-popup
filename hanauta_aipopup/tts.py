@@ -714,11 +714,14 @@ def _resolve_model_path(model_name: str, model_cache: Path) -> Path:
             return candidate
     repo_id = MODEL_REPOS.get(model_name, model_name)
     target = model_cache / repo_id.replace("/", "--")
-    if target.exists():
+    # A finished download is the whole point of this helper: never re-enter the
+    # hub (and its version-sensitive downloader) when model.bin is already here.
+    if (target / "model.bin").is_file():
         return target
     os.environ.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
     os.environ.setdefault("HF_HUB_DOWNLOAD_TIMEOUT", "35")
     os.environ.setdefault("HF_HUB_ETAG_TIMEOUT", "20")
+    target.mkdir(parents=True, exist_ok=True)
     try:
         # huggingface_hub keeps reshaping this call (local_dir_use_symlinks was
         # dropped, metadata_errors moved between versions), so only pass the
@@ -739,6 +742,34 @@ def _resolve_model_path(model_name: str, model_cache: Path) -> Path:
             "Whisper model download was interrupted. "
             "Please wait for the first model download to finish, or switch STT to External API."
         )
+    except Exception:
+        pass  # fall through to the plain HTTPS fetch below
+    if (target / "model.bin").is_file():
+        return target
+    # Some hub releases fail inside their own downloader (for example an
+    # unexpected `metadata_errors` kwarg reaching open()). The model is five
+    # files, so fetch them straight from the CDN instead of dying.
+    from urllib import request as _req
+
+    try:
+        for name in (
+            "model.bin",
+            "config.json",
+            "tokenizer.json",
+            "vocabulary.txt",
+            "preprocessor_config.json",
+        ):
+            dest = target / name
+            if dest.is_file() and dest.stat().st_size > 0:
+                continue
+            url = f"https://huggingface.co/{repo_id}/resolve/main/{name}?download=true"
+            with _req.urlopen(_req.Request(url, headers={"User-Agent": "Hanauta AI/1.0"}), timeout=1800) as resp:
+                with dest.open("wb") as handle:
+                    while True:
+                        chunk = resp.read(1024 * 1024)
+                        if not chunk:
+                            break
+                        handle.write(chunk)
     except Exception as exc:
         raise RuntimeError(
             f"Unable to download the Whisper model '{model_name}' into {target}: {exc}"
@@ -746,7 +777,30 @@ def _resolve_model_path(model_name: str, model_cache: Path) -> Path:
     return target
 
 
+def _patch_av_open() -> None:
+    # faster-whisper 1.1 opens audio with metadata_errors=, a PyAV kwarg older
+    # builds reject ("open() got an unexpected keyword argument"), which made
+    # every transcription fail on an otherwise healthy install.
+    import av
+
+    try:
+        av.open(os.devnull, metadata_errors="ignore")
+        return
+    except TypeError:
+        pass
+    except Exception:
+        return  # a different error means the kwarg was accepted
+    original = av.open
+
+    def _open(*args, **kwargs):
+        kwargs.pop("metadata_errors", None)
+        return original(*args, **kwargs)
+
+    av.open = _open
+
+
 def _try_transcribe(model_name: str, audio_path: Path, device: str, compute_type: str, model_cache: Path) -> str:
+    _patch_av_open()
     resolved_model = _resolve_model_path(model_name, model_cache)
     model = WhisperModel(
         str(resolved_model),
@@ -837,11 +891,12 @@ def _resolve_model_path(model_name: str, model_cache: Path) -> Path:
             return candidate
     repo_id = MODEL_REPOS.get(model_name, model_name)
     target = model_cache / repo_id.replace("/", "--")
-    if target.exists():
+    if (target / "model.bin").is_file():
         return target
     os.environ.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
     os.environ.setdefault("HF_HUB_DOWNLOAD_TIMEOUT", "35")
     os.environ.setdefault("HF_HUB_ETAG_TIMEOUT", "20")
+    target.mkdir(parents=True, exist_ok=True)
     # Only pass keywords this huggingface_hub build declares; the signature has
     # changed more than once (local_dir_use_symlinks removed, metadata_errors
     # moved), and a mismatch surfaces as an opaque TypeError at model load.
@@ -851,15 +906,64 @@ def _resolve_model_path(model_name: str, model_cache: Path) -> Path:
         "max_workers": 4,
         "etag_timeout": 20,
     }
-    accepted = set(inspect.signature(snapshot_download).parameters)
-    call = {key: value for key, value in wanted.items() if key in accepted}
-    if "local_dir_use_symlinks" in accepted:
-        call["local_dir_use_symlinks"] = False
-    snapshot_download(**call)
+    try:
+        accepted = set(inspect.signature(snapshot_download).parameters)
+        call = {key: value for key, value in wanted.items() if key in accepted}
+        if "local_dir_use_symlinks" in accepted:
+            call["local_dir_use_symlinks"] = False
+        snapshot_download(**call)
+    except KeyboardInterrupt:
+        raise
+    except Exception:
+        pass  # fall through to the plain HTTPS fetch below
+    if (target / "model.bin").is_file():
+        return target
+    from urllib import request as _req
+
+    for name in (
+        "model.bin",
+        "config.json",
+        "tokenizer.json",
+        "vocabulary.txt",
+        "preprocessor_config.json",
+    ):
+        dest = target / name
+        if dest.is_file() and dest.stat().st_size > 0:
+            continue
+        url = f"https://huggingface.co/{repo_id}/resolve/main/{name}?download=true"
+        with _req.urlopen(_req.Request(url, headers={"User-Agent": "Hanauta AI/1.0"}), timeout=1800) as resp:
+            with dest.open("wb") as handle:
+                while True:
+                    chunk = resp.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    handle.write(chunk)
     return target
 
 
+def _patch_av_open() -> None:
+    # Older PyAV builds reject the metadata_errors= kwarg that faster-whisper 1.1
+    # passes to av.open; drop it instead of failing the whole session.
+    import av
+
+    try:
+        av.open(os.devnull, metadata_errors="ignore")
+        return
+    except TypeError:
+        pass
+    except Exception:
+        return
+    original = av.open
+
+    def _open(*args, **kwargs):
+        kwargs.pop("metadata_errors", None)
+        return original(*args, **kwargs)
+
+    av.open = _open
+
+
 def _transcribe(model: WhisperModel, audio_path: Path, prompt: str) -> str:
+    _patch_av_open()
     kwargs = {"beam_size": 1}
     # Optional params across faster-whisper versions.
     try:

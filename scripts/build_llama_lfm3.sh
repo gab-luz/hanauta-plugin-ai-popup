@@ -222,6 +222,23 @@ build_one() {
   chmod +x "$bin_path"
   find "$(dirname "$found")" -maxdepth 1 -name 'lib*.so*' -exec cp -a {} "$prefix/" \; 2>/dev/null || true
   say "   installed: $bin_path"
+
+  # Speech output lives in a separate tool (tools/tts). Older revisions of the
+  # source do not build it, and a runtime without it still answers in text.
+  say "   building llama-tts (native speech output)"
+  cmake --build "$build_dir" --config Release -j "$JOBS" --target llama-tts \
+    >/dev/null 2>&1 || true
+  local tts_found=""
+  for candidate in "$build_dir/bin/llama-tts" "$src_dir/llama-tts"; do
+    if [ -f "$candidate" ] && [ -s "$candidate" ]; then tts_found="$candidate"; break; fi
+  done
+  if [ -n "$tts_found" ]; then
+    cp -a "$tts_found" "$prefix/llama-tts"
+    chmod +x "$prefix/llama-tts"
+    say "   installed: $prefix/llama-tts"
+  else
+    say "   note: this revision did not build llama-tts; text chat still works"
+  fi
 }
 
 say "repo:     $LLAMA_REPO"

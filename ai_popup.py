@@ -1,22 +1,34 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+"""Launcher for the Hanauta AI popup.
 
+The popup itself now lives in ``ai-popup.py`` (the Nest-based rewrite). This
+entry point stays because the hyphenated name is not importable, and the plugin
+and desktop file use this path. Run the legacy UI with
+``python3 -m hanauta_aipopup.app`` while the remaining modules are ported.
+"""
 from __future__ import annotations
 
-import os
+import importlib.util
+import sys
+from pathlib import Path
 
-# Qt WebEngine can crash on some Linux/GBM GPU stacks. Use conservative flags only.
-_chromium_flags = os.environ.get("QTWEBENGINE_CHROMIUM_FLAGS", "").strip()
-_extra_flags = [
-    "--disable-gpu",
-    "--disable-features=UseSkiaRenderer,Vulkan",
-]
-for _flag in _extra_flags:
-    if _flag not in _chromium_flags:
-        _chromium_flags = f"{_chromium_flags} {_flag}".strip()
-os.environ["QTWEBENGINE_CHROMIUM_FLAGS"] = _chromium_flags
+ROOT = Path(__file__).resolve().parent
 
-from hanauta_aipopup.app import main
+
+def load_main():
+    name = "hanauta_popup_main"
+    if name in sys.modules:
+        return sys.modules[name]
+    spec = importlib.util.spec_from_file_location(name, ROOT / "ai-popup.py")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)  # type: ignore[union-attr]
+    return module
+
+
+def main() -> int:
+    return int(load_main().main())
 
 
 if __name__ == "__main__":

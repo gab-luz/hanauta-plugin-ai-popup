@@ -1,85 +1,121 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Hanauta AI popup — Material Design 3, built on the Hanauta Nest view.
+"""Hanauta AI popup — started from ``hanauta_nest/hanauta_nest.py``.
 
-The presentation comes from ``hanauta_nest/hanauta_nest.py``: a stack of rounded
-MD3 cards (header, model, chat, composer), 48dp action tiles and 20dp bubbles.
-The behaviour is carried over from the existing modules:
+Migration rule for this file: the presentation is the Nest view (rounded MD3
+cards, 48dp tiles, 20dp bubbles) and features are added here batch by batch
+with no dependency on the legacy package. Nothing in the Nest
+classes performs I/O; the controller at the bottom owns every side effect and
+and no legacy module is imported.
 
-* backend settings and runtime state      -> hanauta_aipopup.http / .backends
-* chat transport (OpenAI-compatible SSE)  -> hanauta_aipopup.tts prompts
-* history persistence                     -> hanauta_aipopup.storage
-* dictation                               -> hanauta_aipopup.voice / .tts
-* backend configuration dialog            -> hanauta_aipopup.ui_backend_settings
+Ported so far
+    * backend selection + readiness probe (LFM3 / llama.cpp / KoboldCpp)
+    * streaming chat with Markdown-free plain text, 40 ms coalescing
+    * character prompt + user profile injection
+    * image/file attachments (vision via base64 data URLs)
+    * screen + camera sharing with auto capture, overlay badges and a chime
+    * global X11 hotkeys for voice / camera / screen
+    * hands-free voice loop and dictation, both speech->text via LFM3-Omni
+    * encrypted history through the existing store, JSONL fallback
+    * native settings dialog, llama.cpp launch/stop with progress
+    * voice mode stage (holographic portrait) with viseme + envelope lip sync
 
-Nothing here creates a second QApplication: ``main()`` is the only entry point.
+Speech input goes to the same LFM3-Omni server that answers: it is an omni
+model with an audio encoder, so no separate Whisper/Vosk install is needed.
+Speech output can be LFM3's own voice (LiquidCodec through a transformers
+helper process) or espeak-ng/piper as a lightweight fallback; llama.cpp itself
+still serves LFM3 as text in, text out.
+
+Weights come from the local cache and download when missing; capture, speech,
+settings, storage and process control all live here now.
 """
 from __future__ import annotations
 
-import html
+import array
+import base64
 import json
+import math
 import os
+import queue
+import shutil
+import signal
+import socket
+import struct
+import subprocess
 import sys
 import threading
+import wave
 import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
-from datetime import datetime
 from pathlib import Path
+from typing import Callable
 
-from PyQt6.QtCore import QSize, Qt, QThread, QTimer, pyqtSignal
-from PyQt6.QtGui import QColor, QIcon, QPainter, QPainterPath, QPen, QPixmap
+from PyQt6.QtCore import (
+    QEasingCurve,
+    QEvent,
+    QObject,
+    QPointF,
+    QPropertyAnimation,
+    QRectF,
+    QSize,
+    QSocketNotifier,
+    Qt,
+    QThread,
+    QTimer,
+    QUrl,
+    QVariantAnimation,
+    pyqtProperty,
+    pyqtSignal,
+)
+from PyQt6.QtGui import (
+    QColor,
+    QFont,
+    QGuiApplication,
+    QIcon,
+    QImage,
+    QPainter,
+    QPainterPath,
+    QPen,
+    QPixmap,
+)
 from PyQt6.QtWidgets import (
+    QAbstractButton,
     QApplication,
+    QCheckBox,
     QComboBox,
     QDialog,
     QFileDialog,
+    QFormLayout,
     QFrame,
+    QGridLayout,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QListWidget,
     QListWidgetItem,
+    QMenu,
+    QMessageBox,
     QPushButton,
     QScrollArea,
     QSizePolicy,
+    QSpinBox,
+    QStackedWidget,
     QTextEdit,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
 
-from hanauta_aipopup.characters import _chat_messages_for_prompt, load_character_library
-from hanauta_aipopup.fonts import load_ui_font
-from hanauta_aipopup.http import load_backend_settings, save_backend_settings
-from hanauta_aipopup.models import BackendProfile, ChatItemData, SourceChipData
-from hanauta_aipopup.runtime import AI_STATE_DIR
-from hanauta_aipopup.storage import secure_append_chat, secure_load_chat_history
-from hanauta_aipopup.style import THEME
-
+APP_NAME = "Hanauta AI"
 SETUP_ID = "hanauta:setup"
-SCREENSHOT_DIR = Path(AI_STATE_DIR) / "voice-screen"
+STREAM_INTERVAL_MS = 40
 
 
 # --------------------------------------------------------------------------- #
-# Theme
+# Theme + icons — unchanged contract from the Nest reference
 # --------------------------------------------------------------------------- #
-def _rgb(value: object, fallback: str) -> str:
-    text = str(value or "").strip()
-    if not text:
-        return fallback
-    if text.startswith("#"):
-        return text
-    if "(" in text:  # "rgba(208, 188, 255, 1.0)" from the matugen palette
-        try:
-            inner = text[text.index("(") + 1 : text.rindex(")")]
-            parts = [p.strip() for p in inner.split(",")]
-            r, g, b = (int(float(p)) for p in parts[:3])
-            return f"#{r:02x}{g:02x}{b:02x}"
-        except Exception:
-            return fallback
-    return fallback
-
-
 @dataclass(frozen=True)
 class Theme:
     background: str = "#141218"
@@ -94,27 +130,8 @@ class Theme:
     error: str = "#ffb4ab"
 
 
-def theme_from_palette() -> Theme:
-    """Map the app's Matugen palette onto the MD3 roles Nest uses."""
-    primary = _rgb(getattr(THEME, "primary", ""), Theme.primary)
-    return Theme(
-        background=_rgb(getattr(THEME, "panel_bg", ""), Theme.background),
-        surface=_rgb(getattr(THEME, "app_running_bg", ""), Theme.surface),
-        raised=_rgb(getattr(THEME, "chip_bg", ""), Theme.raised),
-        hover=_rgb(getattr(THEME, "hover_bg", ""), Theme.hover),
-        primary=primary,
-        on_primary=_rgb(getattr(THEME, "on_primary", ""), Theme.on_primary),
-        text=_rgb(getattr(THEME, "text", ""), Theme.text),
-        muted=_rgb(getattr(THEME, "text_muted", ""), Theme.muted),
-        positive=_rgb(getattr(THEME, "positive", ""), Theme.positive),
-        error=_rgb(getattr(THEME, "error", ""), Theme.error),
-    )
-
-
-# --------------------------------------------------------------------------- #
-# Icons (painter fallbacks, as in the reference)
-# --------------------------------------------------------------------------- #
 def icon(name: str, color: str, size: int = 24) -> QIcon:
+    """Small original vector fallback set; replace with shared icon provider."""
     pix = QPixmap(size * 2, size * 2)
     pix.fill(Qt.GlobalColor.transparent)
     p = QPainter(pix)
@@ -125,9 +142,12 @@ def icon(name: str, color: str, size: int = 24) -> QIcon:
     pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
     p.setPen(pen)
     if name == "close":
-        p.drawLine(6, 6, 18, 18); p.drawLine(18, 6, 6, 18)
+        p.drawLine(6, 6, 18, 18)
+        p.drawLine(18, 6, 6, 18)
     elif name == "history":
-        p.drawEllipse(3, 3, 18, 18); p.drawLine(12, 6, 12, 12); p.drawLine(12, 12, 16, 15)
+        p.drawEllipse(3, 3, 18, 18)
+        p.drawLine(12, 6, 12, 12)
+        p.drawLine(12, 12, 16, 15)
     elif name in ("settings", "tune"):
         for y, x in ((6, 15), (12, 8), (18, 14)):
             p.drawLine(3, y, 21, y)
@@ -136,34 +156,64 @@ def icon(name: str, color: str, size: int = 24) -> QIcon:
             p.setBrush(Qt.BrushStyle.NoBrush)
     elif name == "model":
         path = QPainterPath()
-        for a, b in [((12, 2), (21, 7)), ((21, 7), (21, 17)), ((21, 17), (12, 22)),
-                     ((12, 22), (3, 17)), ((3, 17), (3, 7)), ((3, 7), (12, 2)),
-                     ((3, 7), (12, 12)), ((21, 7), (12, 12)), ((12, 12), (12, 22))]:
-            path.moveTo(*a); path.lineTo(*b)
+        for a, b in [
+            ((12, 2), (21, 7)), ((21, 7), (21, 17)), ((21, 17), (12, 22)),
+            ((12, 22), (3, 17)), ((3, 17), (3, 7)), ((3, 7), (12, 2)),
+            ((3, 7), (12, 12)), ((21, 7), (12, 12)), ((12, 12), (12, 22)),
+        ]:
+            path.moveTo(*a)
+            path.lineTo(*b)
         p.drawPath(path)
     elif name == "mic":
         p.drawRoundedRect(9, 2, 6, 13, 3, 3)
         p.drawArc(6, 7, 12, 12, 180 * 16, 180 * 16)
-        p.drawLine(12, 19, 12, 22); p.drawLine(8, 22, 16, 22)
+        p.drawLine(12, 19, 12, 22)
+        p.drawLine(8, 22, 16, 22)
     elif name == "screen":
         p.drawRoundedRect(2, 3, 20, 14, 2, 2)
-        p.drawLine(12, 17, 12, 21); p.drawLine(7, 21, 17, 21)
+        p.drawLine(12, 17, 12, 21)
+        p.drawLine(7, 21, 17, 21)
     elif name == "send":
-        path = QPainterPath(); path.moveTo(3, 3); path.lineTo(22, 12)
-        path.lineTo(3, 21); path.lineTo(7, 12); path.closeSubpath()
-        p.drawPath(path); p.drawLine(7, 12, 17, 12)
-    elif name == "attach":
-        path = QPainterPath(); path.moveTo(9, 17); path.lineTo(17, 9)
-        path.cubicTo(21, 5, 16, 0, 12, 4); path.lineTo(4, 12)
-        path.cubicTo(-2, 18, 6, 26, 12, 20); path.lineTo(21, 11)
+        path = QPainterPath()
+        path.moveTo(3, 3)
+        path.lineTo(22, 12)
+        path.lineTo(3, 21)
+        path.lineTo(7, 12)
+        path.closeSubpath()
         p.drawPath(path)
-    else:  # leaf mark
-        path = QPainterPath(); path.moveTo(12, 22)
-        path.cubicTo(12, 12, 2, 8, 2, 14); path.cubicTo(2, 20, 12, 20, 12, 22)
-        path.moveTo(12, 22); path.cubicTo(12, 12, 22, 8, 22, 14)
+        p.drawLine(7, 12, 17, 12)
+    elif name == "attach":
+        path = QPainterPath()
+        path.moveTo(9, 17)
+        path.lineTo(17, 9)
+        path.cubicTo(21, 5, 16, 0, 12, 4)
+        path.lineTo(4, 12)
+        path.cubicTo(-2, 18, 6, 26, 12, 20)
+        path.lineTo(21, 11)
+        p.drawPath(path)
+    elif name == "voice":
+        for x, half in ((7, 3), (12, 7), (17, 4)):
+            p.drawLine(x, 12 - half, x, 12 + half)
+    elif name == "camera":
+        p.drawRoundedRect(2, 6, 20, 13, 3, 3)
+        p.drawEllipse(9, 10, 6, 6)
+        p.drawLine(8, 6, 10, 3)
+        p.drawLine(16, 6, 14, 3)
+    elif name == "chevron":
+        p.drawLine(9, 5, 16, 12)
+        p.drawLine(16, 12, 9, 19)
+    else:  # Hanauta leaf mark, replace with the ecosystem's official asset.
+        path = QPainterPath()
+        path.moveTo(12, 22)
+        path.cubicTo(12, 12, 2, 8, 2, 14)
+        path.cubicTo(2, 20, 12, 20, 12, 22)
+        path.moveTo(12, 22)
+        path.cubicTo(12, 12, 22, 8, 22, 14)
         path.cubicTo(22, 20, 12, 20, 12, 22)
-        path.moveTo(12, 17); path.cubicTo(4, 10, 12, 2, 12, 2)
-        path.cubicTo(20, 10, 12, 17, 12, 17); p.drawPath(path)
+        path.moveTo(12, 17)
+        path.cubicTo(4, 10, 12, 2, 12, 2)
+        path.cubicTo(20, 10, 12, 17, 12, 17)
+        p.drawPath(path)
     p.end()
     pix.setDevicePixelRatio(2)
     return QIcon(pix)
@@ -184,176 +234,14 @@ class Editor(QTextEdit):
 
 
 # --------------------------------------------------------------------------- #
-# Backend resolution
-# --------------------------------------------------------------------------- #
-def _llama_payload(settings: dict, key: str = "lfm3") -> dict:
-    return dict(settings.get(key, {}) or {})
-
-
-def resolve_llm(settings: dict) -> tuple[str, str, str, str]:
-    """Return ``(label, host, model, api_key)`` for the configured text backend."""
-    voice = dict(settings.get("_voice_mode", {}) or {})
-    key = str(voice.get("llm_profile", "")).strip()
-    if not key or key == "koboldcpp":
-        lfm3 = _llama_payload(settings)
-        if lfm3.get("gguf_path"):
-            key = "lfm3"
-    payload = _llama_payload(settings, key) if key else {}
-    if key in {"lfm3", "llamacpp"}:
-        host = str(payload.get("host", "127.0.0.1:8082")).strip() or "127.0.0.1:8082"
-        model = Path(str(payload.get("gguf_path", ""))).name or "lfm3"
-        label = "LFM3-Omni 2B" if key == "lfm3" else "llama.cpp"
-    elif key == "koboldcpp":
-        payload = _llama_payload(settings, "koboldcpp")
-        host = str(payload.get("host", "127.0.0.1:5001")).strip() or "127.0.0.1:5001"
-        model = Path(str(payload.get("gguf_path", ""))).name or "koboldcpp"
-        label = "KoboldCpp"
-    else:
-        host, model, label = "", "", ""
-    api_key = ""
-    if key:
-        try:
-            from hanauta_aipopup.storage import secure_load_secret
-
-            api_key = secure_load_secret(f"{key}:api_key").strip()
-        except Exception:
-            api_key = ""
-    return label, host, model, api_key
-
-
-def _base_url(host: str) -> str:
-    clean = host.strip().rstrip("/")
-    if not clean:
-        return ""
-    if clean.startswith(("http://", "https://")):
-        return clean
-    return f"http://{clean}"
-
-
-def stream_chat(
-    host: str,
-    model: str,
-    messages: list[dict[str, str]],
-    api_key: str = "",
-    on_delta: callable | None = None,
-    timeout: float = 300.0,
-) -> str:
-    """POST an OpenAI-style chat completion, forwarding SSE deltas."""
-    url = f"{_base_url(host)}/v1/chat/completions"
-    body = json.dumps(
-        {"model": model or "model", "messages": messages, "stream": True, "temperature": 0.7}
-    ).encode("utf-8")
-    headers = {"Content-Type": "application/json", "User-Agent": "Hanauta AI/1.0"}
-    if api_key:
-        headers["Authorization"] = f"Bearer {api_key}"
-    request = urllib.request.Request(url, data=body, headers=headers)
-    answer = ""
-    with urllib.request.urlopen(request, timeout=timeout) as response:
-        content_type = response.headers.get("Content-Type", "")
-        if "text/event-stream" not in content_type:
-            data = json.loads(response.read().decode("utf-8", errors="ignore") or "{}")
-            answer = str(data.get("choices", [{}])[0].get("message", {}).get("content", ""))
-            if answer and on_delta:
-                on_delta(answer)
-            return answer
-        for raw in response:
-            line = raw.decode("utf-8", errors="ignore").strip()
-            if not line.startswith("data:"):
-                continue
-            payload = line[5:].strip()
-            if payload == "[DONE]":
-                break
-            try:
-                chunk = json.loads(payload)
-            except Exception:
-                continue
-            choices = chunk.get("choices") or []
-            if not choices:
-                continue
-            delta = choices[0].get("delta", {}) or {}
-            piece = delta.get("content") or ""
-            if piece:
-                answer += piece
-                if on_delta:
-                    on_delta(piece)
-    return answer
-
-
-# --------------------------------------------------------------------------- #
-# Workers
-# --------------------------------------------------------------------------- #
-class ChatWorker(QThread):
-    delta = pyqtSignal(str)
-    finished_ok = pyqtSignal(str)
-    failed = pyqtSignal(str)
-
-    def __init__(self, host: str, model: str, messages: list[dict[str, str]], api_key: str = "") -> None:
-        super().__init__()
-        self._host = host
-        self._model = model
-        self._messages = messages
-        self._api_key = api_key
-        self._cancelled = False
-
-    def cancel(self) -> None:
-        self._cancelled = True
-
-    def run(self) -> None:
-        try:
-            answer = stream_chat(
-                self._host,
-                self._model,
-                self._messages,
-                self._api_key,
-                on_delta=None if self._cancelled else self.delta.emit,
-            )
-        except urllib.error.HTTPError as exc:
-            detail = ""
-            try:
-                detail = exc.read().decode("utf-8", errors="ignore")[:300]
-            except Exception:
-                detail = ""
-            self.failed.emit(f"{exc.code} {exc.reason}. {detail}".strip())
-            return
-        except Exception as exc:
-            self.failed.emit(str(exc))
-            return
-        self.finished_ok.emit(answer.strip())
-
-
-class DictationWorker(QThread):
-    finished_ok = pyqtSignal(str)
-    failed = pyqtSignal(str)
-
-    def __init__(self, config: dict, profiles: dict, settings: dict, seconds: float = 8.0) -> None:
-        super().__init__()
-        self._config = dict(config)
-        self._profiles = profiles
-        self._settings = settings
-        self._seconds = seconds
-
-    def run(self) -> None:
-        try:
-            from hanauta_aipopup.tts import transcribe_voice_audio
-            from hanauta_aipopup.voice import _record_microphone_wav
-
-            audio = _record_microphone_wav(self._seconds)
-            text = transcribe_voice_audio(audio, self._config, self._profiles, self._settings)
-        except Exception as exc:
-            self.failed.emit(str(exc))
-            return
-        if not text.strip():
-            self.failed.emit("No speech detected.")
-            return
-        self.finished_ok.emit(text.strip())
-
-
-# --------------------------------------------------------------------------- #
-# View (from the Nest reference)
+# Nest view — presentation only
 # --------------------------------------------------------------------------- #
 class NestView(QFrame):
     send_requested = pyqtSignal(str)
     configure_requested = pyqtSignal()
+    start_requested = pyqtSignal()
+    voice_requested = pyqtSignal()
+    camera_requested = pyqtSignal()
     history_requested = pyqtSignal()
     attachment_requested = pyqtSignal()
     microphone_requested = pyqtSignal()
@@ -366,8 +254,10 @@ class NestView(QFrame):
         self._connected = False
         self._busy = False
         self._messages: dict[str, QLabel] = {}
+        self._live_thinking = False
         self.setObjectName("nest")
         self.setMinimumSize(400, 580)
+        self.setAccessibleName(self.tr("Hanauta AI assistant"))
         self._build()
         self.apply_theme(self.theme)
         self.set_backend_state(False)
@@ -377,7 +267,7 @@ class NestView(QFrame):
         frame.setObjectName(name)
         return frame
 
-    def _button(self, glyph: str, title: str, signal, primary: bool = False) -> QPushButton:
+    def _button(self, glyph: str, title: str, signal=None, primary: bool = False) -> QPushButton:
         button = QPushButton(title if primary else "")
         button.setObjectName("primary" if primary else "iconButton")
         button.setProperty("glyph", glyph)
@@ -388,7 +278,8 @@ class NestView(QFrame):
         button.setMinimumHeight(40 if primary else 48)
         if not primary:
             button.setFixedWidth(48)
-        button.clicked.connect(lambda checked=False: signal.emit())
+        if signal is not None:
+            button.clicked.connect(lambda checked=False: signal.emit())
         return button
 
     def _build(self) -> None:
@@ -406,13 +297,15 @@ class NestView(QFrame):
         h.addWidget(self.brand)
         labels = QVBoxLayout()
         labels.setSpacing(3)
-        title = QLabel("Hanauta AI")
+        title = QLabel(APP_NAME)
         title.setObjectName("title")
         self.subtitle = QLabel()
         self.subtitle.setObjectName("muted")
         labels.addWidget(title)
         labels.addWidget(self.subtitle)
         h.addLayout(labels, 1)
+        self.voice_button = self._button("voice", self.tr("Hands-free voice mode"), self.voice_requested)
+        h.addWidget(self.voice_button)
         for glyph, text, signal in (
             ("history", self.tr("History"), self.history_requested),
             ("settings", self.tr("Settings"), self.configure_requested),
@@ -444,8 +337,14 @@ class NestView(QFrame):
         self.status.clicked.connect(lambda: self.configure_requested.emit())
         row.addWidget(self.status)
         m.addLayout(row)
+        actions = QHBoxLayout()
+        actions.setSpacing(8)
         self.configure = self._button("tune", self.tr("Configure model"), self.configure_requested, True)
-        m.addWidget(self.configure)
+        actions.addWidget(self.configure, 1)
+        self.start_button = self._button("model", self.tr("Start backend"), self.start_requested, True)
+        self.start_button.setVisible(False)
+        actions.addWidget(self.start_button, 1)
+        m.addLayout(actions)
         root.addWidget(model)
 
         chat = self._panel()
@@ -484,7 +383,10 @@ class NestView(QFrame):
         il.addWidget(self.editor, 1)
         c.addWidget(input_panel, 1)
         c.addWidget(self._button("mic", self.tr("Dictate"), self.microphone_requested))
-        c.addWidget(self._button("screen", self.tr("Screen context"), self.screen_requested))
+        self.camera_button = self._button("camera", self.tr("Share camera"), self.camera_requested)
+        c.addWidget(self.camera_button)
+        self.screen_button = self._button("screen", self.tr("Share screen"), self.screen_requested)
+        c.addWidget(self.screen_button)
         self.send_button = self._button("send", self.tr("Send message"), self.editor.submitted)
         c.addWidget(self.send_button)
         root.addWidget(composer)
@@ -492,11 +394,9 @@ class NestView(QFrame):
     def apply_theme(self, theme: Theme) -> None:
         self.theme = theme
         t = theme
-        # load_ui_font() returns a family name (str), not a QFont.
-        family = str(load_ui_font() or "Noto Sans")
         self.setStyleSheet(f"""
         QFrame#nest {{ background:{t.background}; border-radius:30px; }}
-        QFrame#nest QWidget {{ color:{t.text}; font-family:"{family}","Noto Sans",sans-serif; font-size:13px; }}
+        QFrame#nest QWidget {{ color:{t.text}; font-family:Inter,"Noto Sans",sans-serif; font-size:13px; }}
         QFrame#surface {{ background:{t.surface}; border-radius:24px; }}
         QLabel {{ background:transparent; }}
         QFrame#nest QLabel#title {{ font-size:17px; font-weight:600; }}
@@ -507,6 +407,7 @@ class NestView(QFrame):
         QPushButton:hover {{ background:{t.hover}; }}
         QPushButton:focus {{ border:2px solid {t.primary}; }}
         QFrame#nest QPushButton#primary {{ background:{t.primary}; color:{t.on_primary}; font-weight:600; border-radius:20px; }}
+        QFrame#nest QPushButton#primary:hover {{ background:#e1d3ff; }}
         QPushButton:disabled {{ color:{t.muted}; background:{t.raised}; }}
         QFrame#input {{ background:{t.raised}; border-radius:20px; }}
         QTextEdit {{ background:transparent; border:0; padding-top:7px; selection-background-color:{t.primary}; selection-color:{t.on_primary}; }}
@@ -518,12 +419,8 @@ class NestView(QFrame):
         """)
         for button in self.findChildren(QPushButton):
             if button.property("glyph"):
-                button.setIcon(
-                    icon(
-                        button.property("glyph"),
-                        t.on_primary if button.property("primary") else t.primary,
-                    )
-                )
+                primary = bool(button.property("primary"))
+                button.setIcon(icon(button.property("glyph"), t.on_primary if primary else t.primary))
                 button.setIconSize(QSize(22, 22))
         self.brand.setPixmap(icon("leaf", t.on_primary).pixmap(30, 30))
         self.model_icon.setPixmap(icon("model", t.primary).pixmap(26, 26))
@@ -537,19 +434,30 @@ class NestView(QFrame):
             f"QFrame#bubble QLabel {{color:{t.on_primary if user else t.text};background:transparent;}}"
         )
 
-    def set_backend_state(self, connected: bool, model_name: str = "") -> None:
+    def set_backend_state(self, connected: bool, model_name: str = "", detail: str = "") -> None:
         self._connected = bool(connected)
-        if connected:
-            self.subtitle.setText(model_name or self.tr("Model connected"))
-        else:
-            self.subtitle.setText(self.tr("Model not configured"))
+        self.subtitle.setText(model_name if connected and model_name else detail or self.tr("Model not configured"))
         self.model_label.setText(model_name or (self.tr("Connected") if connected else self.tr("Not configured")))
         self.status.setText(self.tr("● Connected  ›") if connected else self.tr("● Disconnected  ›"))
         self.status.setAccessibleName(self.status.text())
         self.configure.setVisible(not connected)
+        self.start_button.setVisible(not connected and bool(model_name))
+        self.start_button.setText(self.tr("Start backend"))
         if hasattr(self, "setup_card"):
             self.setup_card.setVisible(not connected)
         self._sync_send()
+
+    def set_voice_active(self, active: bool) -> None:
+        """Tint the header voice toggle while the hands-free loop is running."""
+        self.voice_button.setProperty("primary", bool(active))
+        self.voice_button.setStyleSheet("" if not active else f"background:{self.theme.primary};")
+        self.voice_button.setIcon(icon("voice", self.theme.on_primary if active else self.theme.primary))
+
+    def set_share_state(self, kind: str, active: bool) -> None:
+        button = self.camera_button if kind == "camera" else self.screen_button
+        button.setStyleSheet("" if not active else f"background:{self.theme.primary};")
+        button.setIcon(icon("camera" if kind == "camera" else "screen",
+                            self.theme.on_primary if active else self.theme.primary))
 
     def set_busy(self, busy: bool) -> None:
         self._busy = busy
@@ -562,6 +470,7 @@ class NestView(QFrame):
 
     def _submit(self) -> None:
         if self.send_button.isEnabled():
+            # Controller owns acceptance, persistence and clearing the draft.
             self.send_requested.emit(self.editor.toPlainText().strip())
 
     def clear_draft(self) -> None:
@@ -605,6 +514,7 @@ class NestView(QFrame):
         return bubble
 
     def update_message(self, message_id: str, text: str) -> None:
+        """Replace full plain-text content, suitable for coalesced streaming."""
         bar = self.scroll.verticalScrollBar()
         near_bottom = bar.maximum() - bar.value() < 40
         self._messages[message_id].setText(text)
@@ -621,6 +531,14 @@ class NestView(QFrame):
         )
         self.setup_card.setVisible(not self._connected)
 
+    def add_notice(self, text: str, message_id: str = "") -> None:
+        """Transient system line (status, capture, errors) with a unique id."""
+        notice_id = message_id or f"sys-{time.time_ns()}"
+        try:
+            self.add_message(notice_id, "system", text)
+        except ValueError:
+            self.update_message(notice_id, text)
+
     def clear_messages(self) -> None:
         self._messages.clear()
         if hasattr(self, "setup_card"):
@@ -636,15 +554,2164 @@ class NestView(QFrame):
         )
 
 
+class NestWindow(QWidget):
+    """Optional frameless desktop shell; do not use when a shell already exists."""
+    def __init__(self, theme: Theme | None = None) -> None:
+        super().__init__()
+        self.setWindowTitle(APP_NAME)
+        self.setWindowFlags(
+            Qt.WindowType.Tool | Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint
+        )
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        self.view = NestView(theme=theme)
+        layout.addWidget(self.view)
+        self.view.close_requested.connect(self.hide)
+        self.resize(440, 650)
+
+
+# --------------------------------------------------------------------------- #
+# Local state (inline so this file can eventually stand alone)
+# --------------------------------------------------------------------------- #
+def state_dir() -> Path:
+    override = os.environ.get("HANAUTA_AI_STATE_DIR", "").strip()
+    base = Path(override).expanduser() if override else Path.home() / ".local" / "state" / "hanauta" / "ai-popup"
+    base.mkdir(parents=True, exist_ok=True)
+    return base
+
+
+def load_settings() -> dict:
+    try:
+        return json.loads((state_dir() / "backend_settings.json").read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def _json_file(name: str) -> dict:
+    try:
+        data = json.loads((state_dir() / name).read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+# --------------------------------------------------------------------------- #
+# Encrypted store — same files the legacy modules wrote, so history survives
+# --------------------------------------------------------------------------- #
+def _chmod_private(path: Path) -> None:
+    try:
+        os.chmod(path, 0o600)
+    except Exception:
+        pass
+
+
+def _cipher():
+    from cryptography.fernet import Fernet
+
+    key_path = state_dir() / "secure_store.key"
+    if not key_path.exists():
+        key_path.write_bytes(Fernet.generate_key())
+    _chmod_private(key_path)
+    return Fernet(key_path.read_bytes())
+
+
+def _secure_db():
+    import sqlite3
+
+    db_path = state_dir() / "secure_store.sqlite3"
+    connection = sqlite3.connect(db_path)
+    connection.execute("CREATE TABLE IF NOT EXISTS secrets (name TEXT PRIMARY KEY, payload BLOB NOT NULL)")
+    connection.execute(
+        "CREATE TABLE IF NOT EXISTS chat_history "
+        "(id INTEGER PRIMARY KEY AUTOINCREMENT, payload BLOB NOT NULL, created_at REAL NOT NULL)"
+    )
+    connection.commit()
+    _chmod_private(db_path)
+    return connection
+
+
+def store_secret(name: str, value: str) -> None:
+    connection = _secure_db()
+    try:
+        if str(value).strip():
+            blob = _cipher().encrypt(json.dumps({"value": value}).encode("utf-8"))
+            connection.execute(
+                "INSERT INTO secrets(name, payload) VALUES(?, ?) "
+                "ON CONFLICT(name) DO UPDATE SET payload=excluded.payload",
+                (name, blob),
+            )
+        else:
+            connection.execute("DELETE FROM secrets WHERE name = ?", (name,))
+        connection.commit()
+    finally:
+        connection.close()
+
+
+def load_secret(name: str) -> str:
+    connection = _secure_db()
+    try:
+        row = connection.execute("SELECT payload FROM secrets WHERE name = ?", (name,)).fetchone()
+    finally:
+        connection.close()
+    if row is None:
+        return ""
+    try:
+        return str(json.loads(_cipher().decrypt(row[0]).decode("utf-8")).get("value", ""))
+    except Exception:
+        return ""
+
+
+def append_history(role: str, body: str) -> None:
+    stamp = time.time()
+    payload = {
+        "role": role,
+        "title": "",
+        "body": body,
+        "meta": time.strftime("%H:%M", time.localtime(stamp)),
+        "created_at": stamp,
+        "chips": [],
+        "audio_path": "",
+        "audio_waveform": [],
+    }
+    connection = _secure_db()
+    try:
+        connection.execute(
+            "INSERT INTO chat_history(payload, created_at) VALUES(?, ?)",
+            (_cipher().encrypt(json.dumps(payload, ensure_ascii=False).encode("utf-8")), stamp),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+
+def load_history() -> list[tuple[str, str]]:
+    connection = _secure_db()
+    try:
+        rows = connection.execute("SELECT payload FROM chat_history ORDER BY id ASC").fetchall()
+    finally:
+        connection.close()
+    items: list[tuple[str, str]] = []
+    for row in rows:
+        try:
+            payload = json.loads(_cipher().decrypt(row[0]).decode("utf-8"))
+        except Exception:
+            continue
+        items.append((str(payload.get("role", "")), str(payload.get("body", ""))))
+    return items
+
+
+def _base_url(host: str) -> str:
+    clean = str(host or "").strip().rstrip("/")
+    if not clean:
+        return ""
+    return clean if clean.startswith(("http://", "https://")) else f"http://{clean}"
+
+
+def _probe(host: str, timeout: float = 2.5) -> bool:
+    url = _base_url(host)
+    if not url:
+        return False
+    try:
+        with urllib.request.urlopen(f"{url}/v1/models", timeout=timeout):
+            return True
+    except Exception:
+        return False
+
+
+@dataclass
+class BackendProfile:
+    """Same shape the legacy modules use, so shared helpers stay compatible."""
+
+    key: str
+    label: str
+    provider: str
+    model: str
+    host: str
+    icon_name: str
+    needs_api_key: bool = False
+    launchable: bool = False
+
+
+@dataclass(frozen=True)
+class Target:
+    key: str
+    label: str
+    host: str
+    model: str
+    configured: bool
+
+
+TITLES = {
+    "lfm3": "LFM3-Omni 2B",
+    "llamacpp": "llama.cpp",
+    "koboldcpp": "KoboldCpp",
+    "ollama": "Ollama",
+}
+
+DEFAULT_HOSTS = {
+    "lfm3": "127.0.0.1:8082",
+    "llamacpp": "127.0.0.1:8080",
+    "koboldcpp": "127.0.0.1:5001",
+    "ollama": "127.0.0.1:11434",
+}
+
+# Local defaults for the capture/voice knobs, so no speech-tool imports are needed.
+VOICE_DEFAULTS: dict[str, object] = {
+    "record_seconds": "5",
+    "silence_threshold": "0.012",
+    "eos_adaptive_enabled": True,
+    "eos_noise_margin": "0.004",
+    "eos_hysteresis": "0.82",
+    "speech_end_silence_ms": "750",
+    "listen_chunk_seconds": "0.75",
+    "min_speech_ms": "260",
+    "asr_language": "en-us",
+    "stop_phrases_language": "en-us",
+    "camera_interval_seconds": "10",
+    "screen_interval_seconds": "30",
+    "hotkey_toggle_voice": "<ctrl>+<alt>+v",
+    "hotkey_toggle_screen": "<ctrl>+<alt>+s",
+    "hotkey_toggle_camera": "<ctrl>+<alt>+c",
+    "capture_hotkeys_enabled": True,
+    # Speech output is on by default: voice mode that never speaks is a bug.
+    "tts_enabled": True,
+    "tts_backend": "espeak",
+    "tts_piper_model": "",
+    "tts_voice": "",
+    "tts_speed": "165",
+    "tts_lfm3_language": "American English",
+    "tts_lfm3_gender": "female",
+    # Never replace LFM3's voice with espeak unless the user asks for it.
+    "tts_fallback": False,
+    # Speakers feed the mic, so interrupting by voice is opt-in.
+    "barge_in_enabled": False,
+    "barge_in_threshold": "0.035",
+}
+
+
+def resolve_target(settings: dict) -> Target:
+    voice = dict(settings.get("_voice_mode", {}) or {})
+    key = str(voice.get("llm_profile", "")).strip()
+    if key not in TITLES:
+        key = "lfm3" if dict(settings.get("lfm3", {}) or {}).get("gguf_path") else ""
+    if not key:
+        for candidate in ("lfm3", "llamacpp", "koboldcpp"):
+            if dict(settings.get(candidate, {}) or {}).get("gguf_path"):
+                key = candidate
+                break
+    payload = dict(settings.get(key, {}) or {}) if key else {}
+    host = str(payload.get("host", "")).strip() or DEFAULT_HOSTS.get(key, "")
+    model = Path(str(payload.get("gguf_path", "")).strip()).name
+    return Target(key, TITLES.get(key, ""), host, model, bool(payload.get("gguf_path") or payload.get("host")))
+
+
+PERSONALITY_PRESETS: dict[str, tuple[str, str]] = {
+    "default": (
+        "Default assistant",
+        "",
+    ),
+    "waifu": (
+        "Waifu",
+        "Persona: a warm, playful companion who is close to the user. Speak casually and "
+        "affectionately, in short sentences, with gentle teasing and the occasional emoji-free "
+        "endearment. Stay genuinely helpful, remember the thread of the conversation, and never "
+        "mention being a model or an assistant.",
+    ),
+    "psychologist": (
+        "Female psychologist",
+        "Persona: a calm female psychologist. Listen first, reflect the user's feelings back in "
+        "your own words, and ask one open question at a time instead of stacking advice. Stay "
+        "warm and non-judgemental. Do not diagnose, prescribe, or discuss medication; if there is "
+        "any sign of crisis, encourage contacting a professional or local emergency service.",
+    ),
+    "coach": (
+        "Male coach",
+        "Persona: a direct male performance coach. Be encouraging but blunt, no filler and no "
+        "flattery. Every reply ends with one concrete next action the user can take today, and you "
+        "hold them accountable for the last one they promised.",
+    ),
+    "custom": (
+        "Custom",
+        "",
+    ),
+}
+
+
+# espeak voice + speed per persona. Only applies when the user left the TTS
+# voice/speed untouched, so an explicit choice in Settings always wins.
+PERSONALITY_VOICES: dict[str, tuple[str, str]] = {
+    "default": ("", ""),
+    "waifu": ("en+f3", "178"),
+    "psychologist": ("en+f2", "152"),
+    "coach": ("en+m3", "168"),
+    "custom": ("", ""),
+}
+
+
+def speech_config(config: dict) -> dict:
+    """TTS config with the persona's espeak voice when none was chosen."""
+    resolved = dict(config)
+    key = str(resolved.get("personality", "default") or "default").strip().lower()
+    voice, speed = PERSONALITY_VOICES.get(key, ("", ""))
+    if voice and not str(resolved.get("tts_voice", "")).strip():
+        resolved["tts_voice"] = voice
+    if speed and str(resolved.get("tts_speed", "") or "").strip() in ("", "165"):
+        resolved["tts_speed"] = speed
+    return resolved
+
+
+def personality_prompt(settings: dict | None = None) -> str:
+    """System-prompt text for the selected persona (empty for the default)."""
+    if settings is None:
+        config = dict(load_settings().get("_voice_mode", {}) or {})
+    else:
+        config = dict(settings.get("_voice_mode", {}) or {})
+    key = str(config.get("personality", "default") or "default").strip().lower()
+    if key == "custom":
+        return str(config.get("personality_prompt", "")).strip()
+    return PERSONALITY_PRESETS.get(key, PERSONALITY_PRESETS["default"])[1]
+
+
+def compose_system_prompt(settings: dict | None = None) -> str:
+    """Base instruction + persona + active character, like the legacy prompt builder."""
+    parts = [
+        "You are Hanauta AI, a concise assistant inside a small desktop popup. "
+        "Answer directly and keep plain sentences; the popup renders plain text."
+    ]
+    persona = personality_prompt(settings)
+    if persona:
+        parts.append(persona)
+    profile = _json_file("user_profile.json")
+    name = str(profile.get("name", "")).strip()
+    if name:
+        parts.append(f"The user's name is {name}.")
+    characters = _json_file("characters.json")
+    active = str(characters.get("active_id", "")).strip()
+    cards = characters.get("characters", characters.get("items", []))
+    if active and isinstance(cards, list):
+        for card in cards:
+            if isinstance(card, dict) and str(card.get("id", "")) == active:
+                fields = [
+                    ("Name", card.get("name")),
+                    ("System prompt", card.get("system_prompt")),
+                    ("Description", card.get("description")),
+                    ("Personality", card.get("personality")),
+                    ("Scenario", card.get("scenario")),
+                ]
+                body = [f"{label}: {value}" for label, value in fields if str(value or "").strip()]
+                if body:
+                    parts.append("Active character:\n" + "\n".join(body))
+                break
+    return "\n\n".join(parts)
+
+
+IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"}
+TEXT_LIMIT = 20_000
+
+
+def _data_url(path: Path) -> str:
+    mime = "image/png" if path.suffix.lower() == ".png" else "image/jpeg"
+    return f"data:{mime};base64," + base64.b64encode(path.read_bytes()).decode("ascii")
+
+
+def build_messages(prompt: str, attachments: list[Path], history: list[dict[str, str]]) -> list[dict]:
+    """System prompt + recent turns + the new user turn (images as data URLs)."""
+    messages: list[dict] = [{"role": "system", "content": compose_system_prompt()}]
+    messages.extend(history[-12:])
+    images = [p for p in attachments if p.suffix.lower() in IMAGE_SUFFIXES]
+    text_files: list[str] = []
+    for path in attachments:
+        if path.suffix.lower() in IMAGE_SUFFIXES or not path.is_file():
+            continue
+        try:
+            text_files.append(f"[{path.name}]\n{path.read_text(encoding='utf-8', errors='ignore')[:TEXT_LIMIT]}")
+        except Exception:
+            continue
+    text = prompt
+    if text_files:
+        text = f"{prompt}\n\nAttached files:\n\n" + "\n\n".join(text_files)
+    if images:
+        content: list[dict] = [{"type": "text", "text": text}]
+        content.extend({"type": "image_url", "image_url": {"url": _data_url(p)}} for p in images)
+        messages.append({"role": "user", "content": content})
+    else:
+        messages.append({"role": "user", "content": text})
+    return messages
+
+
+def stream_chat(
+    host: str,
+    model: str,
+    messages: list[dict],
+    on_delta: Callable[[str], None] | None = None,
+    cancel: threading.Event | None = None,
+    timeout: float = 300.0,
+) -> str:
+    """POST an OpenAI-style completion, forwarding SSE deltas."""
+    request = urllib.request.Request(
+        f"{_base_url(host)}/v1/chat/completions",
+        data=json.dumps(
+            {"model": model or "model", "messages": messages, "stream": True, "temperature": 0.7}
+        ).encode("utf-8"),
+        headers={"Content-Type": "application/json", "User-Agent": "Hanauta AI/1.0"},
+    )
+    answer = ""
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        if "text/event-stream" not in (response.headers.get("Content-Type") or ""):
+            data = json.loads(response.read().decode("utf-8", errors="ignore") or "{}")
+            answer = str(data.get("choices", [{}])[0].get("message", {}).get("content", "") or "")
+            if on_delta and answer:
+                on_delta(answer)
+            return answer
+        for raw in response:
+            if cancel is not None and cancel.is_set():
+                break
+            line = raw.decode("utf-8", errors="ignore").strip()
+            if not line.startswith("data:"):
+                continue
+            payload = line[5:].strip()
+            if payload == "[DONE]":
+                break
+            try:
+                chunk = json.loads(payload)
+            except Exception:
+                continue
+            choices = chunk.get("choices") or []
+            if not choices:
+                continue
+            piece = str((choices[0].get("delta") or {}).get("content") or "")
+            if piece:
+                answer += piece
+                if on_delta:
+                    on_delta(piece)
+    return answer
+
+
+# --------------------------------------------------------------------------- #
+# Workers
+# --------------------------------------------------------------------------- #
+class ChatWorker(QThread):
+    delta = pyqtSignal(str)
+    finished_ok = pyqtSignal(str)
+    failed = pyqtSignal(str)
+
+    def __init__(self, host: str, model: str, messages: list[dict]) -> None:
+        super().__init__()
+        self._host = host
+        self._model = model
+        self._messages = messages
+        self._cancel = threading.Event()
+
+    def cancel(self) -> None:
+        self._cancel.set()
+
+    def run(self) -> None:
+        try:
+            answer = stream_chat(
+                self._host, self._model, self._messages,
+                on_delta=None if self._cancel.is_set() else self.delta.emit,
+                cancel=self._cancel,
+            )
+        except urllib.error.HTTPError as exc:
+            detail = ""
+            try:
+                detail = exc.read().decode("utf-8", errors="ignore")[:300]
+            except Exception:
+                pass
+            self.failed.emit(f"{exc.code} {exc.reason}. {detail}".strip())
+            return
+        except Exception as exc:
+            self.failed.emit(str(exc))
+            return
+        self.finished_ok.emit(answer.strip())
+
+
+class DictationWorker(QThread):
+    """Dictation: record a fixed window, transcribe it with LFM3."""
+
+    finished_ok = pyqtSignal(str)
+    failed = pyqtSignal(str)
+
+    def __init__(self, target: Target, seconds: float = 8.0, language: str = "English") -> None:
+        super().__init__()
+        self._target = target
+        self._seconds = seconds
+        self._language = language
+
+    def run(self) -> None:
+        try:
+            audio = record_microphone_wav(self._seconds)
+            text = transcribe_audio(audio, self._target.host, self._target.model, self._language)
+        except Exception as exc:
+            self.failed.emit(str(exc))
+            return
+        if not str(text).strip():
+            self.failed.emit("No speech detected.")
+            return
+        self.finished_ok.emit(str(text).strip())
+
+
+# --------------------------------------------------------------------------- #
+# Capture overlay — badges plus a chime while camera/screen are shared
+# --------------------------------------------------------------------------- #
+CAPTURE_SOUNDS: dict[str, tuple[tuple[int, ...], float]] = {
+    "camera": ((660, 990), 0.14),
+    "screen": ((520,), 0.16),
+}
+
+
+def capture_sound_path(kind: str) -> Path:
+    """Return the chime for a source, generating it on first use (no assets)."""
+    freqs, duration = CAPTURE_SOUNDS[kind]
+    path = state_dir() / "voice-sounds" / f"capture-{kind}.wav"
+    if path.exists() and path.stat().st_size > 44:
+        return path
+    path.parent.mkdir(parents=True, exist_ok=True)
+    rate = 22050
+    total = max(1, int(rate * duration))
+    frames = bytearray()
+    for index in range(total):
+        moment = index / rate
+        step = min(len(freqs) - 1, int(index / total * len(freqs)))
+        envelope = math.sin(math.pi * (index / max(1, total - 1)))
+        sample = int(11000 * envelope * math.sin(2 * math.pi * freqs[step] * moment))
+        frames += struct.pack("<h", sample)
+    with wave.open(str(path), "wb") as handle:
+        handle.setnchannels(1)
+        handle.setsampwidth(2)
+        handle.setframerate(rate)
+        handle.writeframes(bytes(frames))
+    return path
+
+
+class CaptureOverlay(QWidget):
+    """Click-through badge row: the user must always see when a source is shared."""
+
+    _BADGE = 30
+    _PAD = 8
+    _CAPTION_SECONDS = 4.0
+
+    def __init__(self) -> None:
+        super().__init__(
+            None,
+            Qt.WindowType.Tool
+            | Qt.WindowType.FramelessWindowHint
+            | Qt.WindowType.WindowStaysOnTopHint
+            | Qt.WindowType.WindowTransparentForInput
+            | Qt.WindowType.WindowDoesNotAcceptFocus,
+        )
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
+        self.setWindowTitle("Hanauta capture indicator")
+        self._active: list[str] = []
+        self._caption = ""
+        self._caption_until = 0.0
+        self._sounds: dict[str, object] = {}
+        try:
+            from PyQt6.QtMultimedia import QSoundEffect
+
+            for kind in CAPTURE_SOUNDS:
+                effect = QSoundEffect(self)
+                effect.setSource(QUrl.fromLocalFile(str(capture_sound_path(kind))))
+                effect.setVolume(0.35)
+                self._sounds[kind] = effect
+        except Exception:
+            pass
+        self._timer = QTimer(self)
+        self._timer.setSingleShot(True)
+        self._timer.timeout.connect(self._refresh)
+
+    def flash(self, kind: str) -> None:
+        """First frame of a source: chime + caption, noticed even behind a game."""
+        effect = self._sounds.get(kind)
+        if effect is not None:
+            try:
+                effect.play()  # type: ignore[attr-defined]
+            except Exception:
+                pass
+        self._caption = f"{kind.capitalize()} capture started"
+        self._caption_until = time.time() + self._CAPTION_SECONDS
+        self._timer.start(int(self._CAPTION_SECONDS * 1000) + 200)
+        self._refresh()
+
+    def set_active(self, kinds: list[str]) -> None:
+        self._active = [kind for kind in CAPTURE_SOUNDS if kind in kinds]
+        self._refresh()
+
+    def _refresh(self) -> None:
+        count = max(1, len(self._active))
+        width = self._PAD * 2 + count * (self._BADGE + 8) + 130
+        self.resize(width, self._BADGE + self._PAD * 2)
+        screen = QGuiApplication.primaryScreen()
+        if screen is not None:
+            area = screen.availableGeometry()
+            self.move(area.right() - width - 24, area.bottom() - self.height() - 72)
+        if self._active or time.time() < self._caption_until:
+            self.show()
+            self.update()
+        else:
+            self.hide()
+
+    def paintEvent(self, event) -> None:  # noqa: N802 - Qt name
+        del event
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor(18, 12, 26, 205))
+        painter.drawRoundedRect(QRectF(0, 0, self.width(), self.height()), self.height() / 2, self.height() / 2)
+        x = float(self._PAD)
+        for kind in self._active:
+            badge = QRectF(x, self._PAD, self._BADGE, self._BADGE)
+            painter.setBrush(QColor(255, 255, 255, 26))
+            painter.drawEllipse(badge)
+            painter.setPen(QPen(QColor(235, 230, 250), 2.0, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            if kind == "camera":
+                body = QRectF(badge.left() + 6, badge.top() + 9, badge.width() - 12, badge.height() - 17)
+                painter.drawRoundedRect(body, 3, 3)
+                painter.drawEllipse(QRectF(body.center().x() - 3.4, body.center().y() - 3.4, 6.8, 6.8))
+            else:
+                body = QRectF(badge.left() + 6, badge.top() + 7, badge.width() - 12, badge.height() - 15)
+                painter.drawRoundedRect(body, 2.5, 2.5)
+                painter.drawLine(
+                    int(body.center().x()), int(body.bottom()),
+                    int(body.center().x()), int(badge.bottom() - 4),
+                )
+            x += self._BADGE + 8
+        caption = self._caption if time.time() < self._caption_until else ""
+        if caption:
+            painter.setPen(QColor(225, 220, 240))
+            font = painter.font()
+            font.setPointSize(9)
+            painter.setFont(font)
+            painter.drawText(
+                QRectF(x + 4, 0, self.width() - x - self._PAD, self.height()),
+                int(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft),
+                caption,
+            )
+        painter.end()
+
+
+# --------------------------------------------------------------------------- #
+# Global hotkeys (X11, ctypes; no third-party dependency)
+# --------------------------------------------------------------------------- #
+_MODIFIERS = {"ctrl": 4, "control": 4, "alt": 8, "shift": 1, "super": 64, "meta": 64, "mod4": 64}
+_LOCK_MASK = 2
+_NUM_LOCK_MASK = 16
+_KEY_PRESS = 2
+_GRAB_MODE_ASYNC = 1
+_OFFSET_STATE = 80
+_OFFSET_KEYCODE = 84
+_EVENT_BUFFER = 192
+_OFFSET_ERROR_CODE = 32
+_OFFSET_REQUEST_CODE = 33
+_BAD_ACCESS = 10
+_X_GRAB_KEY_REQUEST = 33
+
+
+def parse_binding(binding: str) -> tuple[int, str] | None:
+    """Parse ``"<ctrl>+<alt>+v"`` into ``(modifier_mask, key_name)``."""
+    raw = str(binding or "").strip().lower().replace("<", "").replace(">", "")
+    tokens = [token for token in raw.replace("+", " ").split() if token]
+    mask = 0
+    key = ""
+    for token in tokens:
+        if token in _MODIFIERS:
+            mask |= _MODIFIERS[token]
+        else:
+            key = token
+    if not key or len(key) > 12:
+        return None
+    return mask, key
+
+
+class GlobalHotkeys(QObject):
+    """Grab key combinations and emit :attr:`triggered` with the action name."""
+
+    triggered = pyqtSignal(str)
+
+    def __init__(self, bindings: dict[str, str], parent: QObject | None = None) -> None:
+        super().__init__(parent)
+        self._bindings = dict(bindings)
+        self._lib = None
+        self._display = None
+        self._notifier = None
+        self._grabs: dict[tuple[int, int], str] = {}
+        self._errors: list[tuple[int, int]] = []
+        self.conflicts: dict[str, str] = {}
+
+    def start(self) -> tuple[bool, str]:
+        import ctypes
+        import ctypes.util
+
+        if not self._bindings:
+            return False, "no hotkeys configured"
+        if not os.environ.get("DISPLAY", "").strip():
+            return False, "no X display (global hotkeys need X11)"
+        try:
+            lib = ctypes.CDLL(ctypes.util.find_library("X11") or "libX11.so.6")
+        except OSError as exc:
+            return False, f"libX11 unavailable: {exc}"
+
+        lib.XOpenDisplay.restype = ctypes.c_void_p
+        lib.XOpenDisplay.argtypes = [ctypes.c_char_p]
+        lib.XStringToKeysym.restype = ctypes.c_ulong
+        lib.XStringToKeysym.argtypes = [ctypes.c_char_p]
+        lib.XKeysymToKeycode.restype = ctypes.c_ubyte
+        lib.XKeysymToKeycode.argtypes = [ctypes.c_void_p, ctypes.c_ulong]
+        lib.XDefaultRootWindow.restype = ctypes.c_ulong
+        lib.XDefaultRootWindow.argtypes = [ctypes.c_void_p]
+        lib.XGrabKey.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_uint, ctypes.c_ulong,
+                                 ctypes.c_int, ctypes.c_int, ctypes.c_int]
+        lib.XNextEvent.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+        lib.XPending.argtypes = [ctypes.c_void_p]
+        lib.XPending.restype = ctypes.c_int
+        lib.XConnectionNumber.argtypes = [ctypes.c_void_p]
+        lib.XConnectionNumber.restype = ctypes.c_int
+        lib.XUngrabKey.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_uint, ctypes.c_ulong]
+        lib.XSync.argtypes = [ctypes.c_void_p, ctypes.c_int]
+
+        display = lib.XOpenDisplay(None)
+        if not display:
+            return False, "could not open the X display"
+
+        def _on_x_error(_dpy, event) -> int:
+            try:
+                codes = ctypes.cast(event, ctypes.POINTER(ctypes.c_ubyte))
+                self._errors.append((int(codes[_OFFSET_REQUEST_CODE]), int(codes[_OFFSET_ERROR_CODE])))
+            except Exception:
+                pass
+            return 0
+
+        self._error_handler = ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_void_p, ctypes.c_void_p)(_on_x_error)
+        lib.XSetErrorHandler.argtypes = [ctypes.c_void_p]
+        lib.XSetErrorHandler(self._error_handler)
+
+        self._lib = lib
+        self._display = display
+        grabbed = 0
+        for action, spec in self._bindings.items():
+            status = self._attempt_grab(action, spec)
+            if status == "ok":
+                grabbed += 1
+            elif status == "conflict":
+                self.conflicts[action] = spec
+        self._notifier = QSocketNotifier(int(lib.XConnectionNumber(display)), QSocketNotifier.Type.Read, self)
+        self._notifier.activated.connect(self._drain)
+        if not grabbed:
+            detail = ", ".join(f"{a} ({s})" for a, s in sorted(self.conflicts.items()))
+            return False, f"hotkey already in use: {detail}" if detail else "no hotkey could be bound"
+        message = f"{grabbed} hotkey(s) active"
+        if self.conflicts:
+            message += "; busy: " + ", ".join(sorted(self.conflicts))
+        return True, message
+
+    def _attempt_grab(self, action: str, spec: str) -> str:
+        import ctypes
+
+        lib, display = self._lib, self._display
+        if lib is None or display is None:
+            return "bad"
+        parsed = parse_binding(spec)
+        if parsed is None:
+            return "bad"
+        mask, key_name = parsed
+        keysym = lib.XStringToKeysym(key_name.encode("utf-8"))
+        keycode = lib.XKeysymToKeycode(display, keysym) if keysym else 0
+        if not keycode:
+            return "bad"
+        root = lib.XDefaultRootWindow(display)
+        self._errors.clear()
+        for extra in (0, _LOCK_MASK, _NUM_LOCK_MASK, _LOCK_MASK | _NUM_LOCK_MASK):
+            lib.XGrabKey(display, keycode, mask | extra, root, False, _GRAB_MODE_ASYNC, _GRAB_MODE_ASYNC)
+        lib.XSync(display, False)
+        if any(req == _X_GRAB_KEY_REQUEST and code == _BAD_ACCESS for req, code in self._errors):
+            return "conflict"
+        self._grabs[(int(keycode), int(mask))] = action
+        return "ok"
+
+    def _drain(self) -> None:
+        import ctypes
+
+        if self._lib is None or self._display is None:
+            return
+        buffer = ctypes.create_string_buffer(_EVENT_BUFFER)
+        while self._lib.XPending(self._display) > 0:
+            self._lib.XNextEvent(self._display, buffer)
+            if ctypes.c_int.from_buffer(buffer, 0).value != _KEY_PRESS:
+                continue
+            state = ctypes.c_uint.from_buffer(buffer, _OFFSET_STATE).value & ~(_LOCK_MASK | _NUM_LOCK_MASK)
+            keycode = ctypes.c_uint.from_buffer(buffer, _OFFSET_KEYCODE).value
+            action = self._grabs.get((int(keycode), int(state)))
+            if action:
+                self.triggered.emit(action)
+
+    def stop(self) -> None:
+        if self._lib is None or self._display is None:
+            return
+        try:
+            root = self._lib.XDefaultRootWindow(self._display)
+            for keycode, mask in self._grabs:
+                self._lib.XUngrabKey(self._display, keycode, mask, root)
+            self._lib.XSync(self._display, False)
+        except Exception:
+            pass
+        if self._notifier is not None:
+            self._notifier.setEnabled(False)
+            self._notifier = None
+        self._grabs.clear()
+        self._lib = None
+        self._display = None
+
+
+# --------------------------------------------------------------------------- #
+# Microphone + speech-to-text through LFM3 (no Whisper, no extra runtimes)
+# --------------------------------------------------------------------------- #
+MIC_SILENT_RMS = 1e-4
+ASR_LANGUAGES = {
+    "en": "English",
+    "en-us": "English",
+    "en-gb": "English",
+    "pt": "Portuguese",
+    "pt-br": "Portuguese",
+    "es": "Spanish",
+    "fr": "French",
+    "de": "German",
+    "it": "Italian",
+}
+
+
+def _asr_language_label(code: str) -> str:
+    """Map a locale code to the label LFM3's ASR instruction expects."""
+    key = str(code or "").strip().lower()
+    return ASR_LANGUAGES.get(key, key.capitalize() or "English")
+
+
+def _alsa_capture_devices() -> list[str]:
+    """ALSA capture devices, USB microphones before onboard analog."""
+    import re
+
+    arecord = shutil.which("arecord")
+    if not arecord:
+        return []
+    try:
+        listing = subprocess.run([arecord, "-l"], capture_output=True, text=True, timeout=5).stdout or ""
+    except Exception:
+        return []
+    ranked: list[tuple[int, str]] = []
+    for line in listing.splitlines():
+        match = re.match(r"card (\d+): \S+ \[([^\]]*)\].*?device (\d+):", line)
+        if not match:
+            continue
+        card, name, index = match.groups()
+        usb = "usb" in f"{name} {line}".lower()
+        ranked.append((0 if usb else 1, f"plughw:{card},{index}"))
+    ranked.sort(key=lambda item: item[0])
+    return [device for _rank, device in ranked]
+
+
+def wav_rms(path: Path) -> float:
+    """Normalised RMS (0..1) of a WAV file, without audioop (gone in 3.13)."""
+    import array
+
+    try:
+        with wave.open(str(path), "rb") as handle:
+            width = handle.getsampwidth()
+            frames = handle.readframes(handle.getnframes())
+    except Exception:
+        return 0.0
+    if not frames or width not in (1, 2, 4):
+        return 0.0
+    if width == 1:
+        samples = [byte - 128 for byte in frames]
+    else:
+        code = "h" if width == 2 else "i"
+        values = array.array(code)
+        values.frombytes(frames[: len(frames) - (len(frames) % width)])
+        samples = [float(value) for value in values]
+    if not samples:
+        return 0.0
+    peak = float(1 << (8 * width - 1))
+    total = sum(sample * sample for sample in samples)
+    return (total / len(samples)) ** 0.5 / peak if total > 0 else 0.0
+
+
+def _voice_recording_rms(path: Path) -> float:
+    return wav_rms(path)
+
+
+def _wav_duration_seconds(path: Path) -> float:
+    return wav_seconds(path)
+
+
+def record_microphone_wav(seconds: float) -> Path:
+    """Record a fixed window, trying the configured and discovered inputs."""
+    target = state_dir() / "voice-recordings" / f"voice_{time.time_ns()}.wav"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    duration = max(0.25, min(30.0, float(seconds or 5.0)))
+    override = str(os.environ.get("HANAUTA_MIC_DEVICE", "")).strip()
+    attempts: list[list[str]] = []
+    for device in ([override] if override else []) + _alsa_capture_devices():
+        attempts.append(
+            ["arecord", "-q", "-D", device, "-f", "S16_LE", "-c", "1", "-r", "16000",
+             "-d", str(max(1, int(round(duration)))), str(target)]
+        )
+    if shutil.which("ffmpeg"):
+        attempts.append(
+            ["ffmpeg", "-y", "-f", "pulse", "-i", "default", "-t", f"{duration:.2f}",
+             "-ac", "1", "-ar", "16000", str(target)]
+        )
+    if shutil.which("arecord"):
+        attempts.append(
+            ["arecord", "-q", "-f", "S16_LE", "-c", "1", "-r", "16000",
+             "-d", str(max(1, int(round(duration)))), str(target)]
+        )
+    if not attempts:
+        raise RuntimeError("Install arecord (alsa-utils) or ffmpeg to record audio.")
+    silent: Path | None = None
+    for command in attempts:
+        try:
+            subprocess.run(command, capture_output=True, timeout=duration + 4, check=True)
+        except Exception:
+            continue
+        if not target.exists() or target.stat().st_size <= 44:
+            continue
+        if wav_rms(target) > MIC_SILENT_RMS:
+            return target
+        silent = target
+    if silent is not None:
+        raise RuntimeError(
+            "Microphone captured only silence. Check the input device or set HANAUTA_MIC_DEVICE "
+            "to a device from `arecord -l`."
+        )
+    raise RuntimeError("Microphone recording failed.")
+
+
+def matches_stop_phrase(text: str, language: str = "en-us") -> bool:
+    """True when the utterance is one of the configured stop expressions."""
+    import re
+    import unicodedata
+
+    path = Path(__file__).resolve().parent / "voice-stop-expressions.json"
+    try:
+        expressions = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return False
+    phrases = expressions.get(str(language or "en-us").lower()) or expressions.get("en-us") or []
+    if not phrases:
+        return False
+
+    def _norm(value: str) -> str:
+        clean = unicodedata.normalize("NFKD", str(value).strip().lower())
+        clean = "".join(char for char in clean if not unicodedata.combining(char))
+        return re.sub(r"[^a-z0-9\s]+", " ", clean).strip()
+
+    spoken = _norm(text)
+    if not spoken:
+        return False
+    for phrase in phrases:
+        candidate = _norm(phrase)
+        if candidate and (spoken == candidate or spoken.startswith(candidate + " ")):
+            return True
+    return False
+
+
+def asr_request(model: str, audio_b64: str, language: str = "English") -> dict:
+    """OpenAI-style completion that asks LFM3 to transcribe one audio clip."""
+    return {
+        "model": model or "model",
+        "stream": False,
+        "temperature": 0.0,
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": f"Perform ASR in {language}. Return only the transcribed text."},
+                    {"type": "input_audio", "input_audio": {"data": audio_b64, "format": "wav"}},
+                ],
+            }
+        ],
+    }
+
+
+def transcribe_audio(path: Path, host: str, model: str, language: str = "English") -> str:
+    """Speech-to-text with LFM3-Omni's audio encoder (no Whisper involved)."""
+    audio = Path(path).read_bytes()
+    if not audio:
+        return ""
+    body = json.dumps(asr_request(model, base64.b64encode(audio).decode("ascii"), language))
+    request = urllib.request.Request(
+        f"{_base_url(host)}/v1/chat/completions",
+        data=body.encode("utf-8"),
+        headers={"Content-Type": "application/json", "User-Agent": "Hanauta AI/1.0"},
+    )
+    with urllib.request.urlopen(request, timeout=180) as response:
+        payload = json.loads(response.read().decode("utf-8", errors="ignore") or "{}")
+    choices = payload.get("choices") or [{}]
+    content = (choices[0].get("message") or {}).get("content") or ""
+    return " ".join(str(content).split()).strip()
+
+
+def wav_seconds(path: Path) -> float:
+    try:
+        with wave.open(str(path), "rb") as handle:
+            return handle.getnframes() / max(1, handle.getframerate())
+    except Exception:
+        return 1.0
+
+
+def _combine_wavs(parts: list[Path]) -> Path:
+    target = state_dir() / "voice-recordings" / f"voice_concat_{time.time_ns()}.wav"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        with wave.open(str(target), "wb") as dst:
+            written = False
+            for part in parts:
+                with wave.open(str(part), "rb") as src:
+                    if not written:
+                        dst.setnchannels(src.getnchannels())
+                        dst.setsampwidth(src.getsampwidth())
+                        dst.setframerate(src.getframerate())
+                        written = True
+                    frames = src.readframes(src.getnframes() or 0)
+                    if frames:
+                        dst.writeframes(frames)
+        if target.exists() and target.stat().st_size > 44:
+            return target
+    except Exception:
+        pass
+    return parts[-1]
+
+
+def record_until_silence(config: dict, running: Callable[[], bool] | None = None) -> Path:
+    """Best-effort end-of-speech capture from repeated short recordings."""
+    max_seconds = min(30.0, max(1.0, float(config.get("record_seconds", 5) or 5)))
+    stop_silence_ms = max(0, int(float(config.get("speech_end_silence_ms", 750) or 0)))
+    chunk = min(3.0, max(0.25, float(config.get("listen_chunk_seconds", 0.75) or 0.75)))
+    min_speech_ms = max(0, int(float(config.get("min_speech_ms", 260) or 0)))
+    threshold = float(config.get("silence_threshold", 0.012) or 0.012)
+    hysteresis = float(config.get("eos_hysteresis", 0.82) or 0.82)
+    adaptive = bool(config.get("eos_adaptive_enabled", True))
+    margin = float(config.get("eos_noise_margin", 0.004) or 0.0)
+    floor = max(0.0, threshold * 0.35)
+    alive = running or (lambda: True)
+
+    start = time.time()
+    silence_ms = 0
+    speech_ms = 0
+    speech_seen = False
+    parts: list[Path] = []
+    while alive() and (time.time() - start) < max_seconds:
+        part = record_microphone_wav(chunk)
+        parts.append(part)
+        duration = _wav_duration_seconds(part) or chunk
+        rms = _voice_recording_rms(part)
+        if adaptive and ((not speech_seen) or rms < threshold * hysteresis):
+            floor = rms if floor <= 0 else floor * 0.92 + rms * 0.08
+        effective = min(threshold * 4.0, max(threshold, floor + margin)) if adaptive else threshold
+        if rms >= effective:
+            speech_seen = True
+            speech_ms += int(duration * 1000)
+            silence_ms = 0
+        elif speech_seen:
+            silence_ms = silence_ms + int(duration * 1000) if rms < effective * hysteresis else 0
+        if stop_silence_ms and speech_seen and speech_ms >= min_speech_ms and silence_ms >= stop_silence_ms:
+            break
+    if not parts:
+        raise RuntimeError("Microphone recording failed.")
+    return _combine_wavs(parts)
+
+
+class VoiceLoopWorker(QThread):
+    """Hands-free loop: listen -> LFM3 speech-to-text -> LFM3 reply (text only)."""
+
+    status = pyqtSignal(str)
+    transcript = pyqtSignal(str)
+    reply = pyqtSignal(str, str)
+    audio_ready = pyqtSignal(str, float)
+    interrupted = pyqtSignal()
+    stop_requested = pyqtSignal()
+    failed = pyqtSignal(str)
+
+    def __init__(self, settings: dict, target: Target, config: dict) -> None:
+        super().__init__()
+        self._settings = settings
+        self._target = target
+        self._config = dict(config)
+        self._turns: list[dict[str, str]] = []
+        self._running = True
+
+    def stop(self) -> None:
+        self._running = False
+
+    def refresh_config(self, config: dict) -> None:
+        """Adopt a new persona/voice without restarting the listening loop."""
+        self._config = dict(config)
+
+    def run(self) -> None:
+        language = _asr_language_label(str(self._config.get("asr_language", "en-us")))
+        stop_language = str(self._config.get("stop_phrases_language", "en-us"))
+        while self._running:
+            try:
+                self.status.emit("Listening")
+                audio = record_until_silence(self._config, lambda: self._running)
+                if not self._running:
+                    break
+                self.status.emit("Transcribing")
+                text = transcribe_audio(audio, self._target.host, self._target.model, language).strip()
+                if not text:
+                    continue
+                self.transcript.emit(text)
+                if matches_stop_phrase(text, stop_language):
+                    self.status.emit("Stopped by phrase")
+                    self.stop_requested.emit()
+                    break
+                self.status.emit("Thinking")
+                answer = stream_chat(
+                    self._target.host,
+                    self._target.model,
+                    build_messages(text, [], self._turns),
+                ).strip()
+                if not answer:
+                    continue
+                self._turns.append({"role": "user", "content": text})
+                self._turns.append({"role": "assistant", "content": answer})
+                self._turns = self._turns[-12:]
+                self.reply.emit(answer, "")
+                if bool(self._config.get("tts_enabled", False)):
+                    speech = speech_config(self._config)
+                    spoken = synthesize_speech(answer, speech)
+                    if spoken is None:
+                        self.status.emit(
+                            "No speech — " + lfm3_voice_error()
+                            if str(speech.get("tts_backend", "")) == "lfm3"
+                            else "No speech — check Settings → Voice (" + str(speech.get("tts_backend", "espeak")) + ")"
+                        )
+                    if spoken is not None:
+                        seconds = wav_seconds(spoken)
+                        self.status.emit("Speaking")
+                        self.audio_ready.emit(str(spoken), seconds)
+                        barge_in = bool(self._config.get("barge_in_enabled", False))
+                        deadline = time.time() + min(60.0, seconds + 0.8)
+                        while self._running and time.time() < deadline:
+                            if not barge_in:
+                                # Without barge-in the reply plays to the end; listening is
+                                # otherwise killed by speaker echo after the first chunk.
+                                time.sleep(0.2)
+                                continue
+                            try:
+                                sample = record_microphone_wav(0.55)
+                                threshold = float(self._config.get("barge_in_threshold", 0.035) or 0.035)
+                                if wav_rms(sample) >= threshold:
+                                    self.interrupted.emit()
+                                    break
+                            except Exception:
+                                time.sleep(0.2)
+                self.status.emit("Ready")
+            except RuntimeError as exc:
+                self.status.emit(str(exc))
+                time.sleep(1.5)
+            except Exception as exc:
+                self.failed.emit(str(exc).strip() or exc.__class__.__name__)
+                time.sleep(0.8)
+        self.status.emit("Voice mode stopped")
+
+
+# --------------------------------------------------------------------------- #
+# llama.cpp process control (absorbed from the legacy package)
+# --------------------------------------------------------------------------- #
+def _path_or_none(value: object) -> Path | None:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    path = Path(raw).expanduser()
+    return path if path.is_file() else None
+
+
+def build_server_command(payload: dict, binary: Path, model: Path) -> list[str]:
+    """argv for llama-server, matching the flags the legacy launcher produced."""
+    from urllib.parse import urlparse
+
+    command = [str(binary), "-m", str(model)]
+    context = str(payload.get("llama_context", "")).strip()
+    if context:
+        try:
+            value = int(float(context))
+        except (TypeError, ValueError):
+            value = 0
+        if value >= 256:
+            command.extend(["-c", str(value)])
+    host = str(payload.get("host", "")).strip()
+    if host:
+        parsed = urlparse(_base_url(host))
+        if parsed.hostname:
+            command.extend(["--host", parsed.hostname])
+        if parsed.port:
+            command.extend(["--port", str(parsed.port)])
+    mmproj = _path_or_none(payload.get("mmproj_path"))
+    if mmproj is not None:
+        command.extend(["--mmproj", str(mmproj)])
+    if bool(payload.get("llama_jinja", True)):
+        command.append("--jinja")
+    if bool(payload.get("llama_reasoning_off", "lfm3" in model.name.lower())):
+        command.extend(["--reasoning", "off"])
+    if bool(payload.get("llama_flash_attn", False)):
+        # The LFM3 pin declares a value for --flash-attn; a bare flag aborts it.
+        command.extend(["--flash-attn", "on"])
+    if str(payload.get("device", "cpu")).lower() == "gpu":
+        command.extend(["--gpu-layers", str(payload.get("llama_gpu_layers", "99") or "99")])
+    extra = payload.get("llama_extra_flags", [])
+    if isinstance(extra, list):
+        command.extend(str(flag) for flag in extra if str(flag).strip())
+    return command
+
+
+def server_status(host: str) -> tuple[bool, str]:
+    if not str(host or "").strip():
+        return False, "no host configured"
+    if _probe(host):
+        return True, f"server active at {host}"
+    return False, "server inactive"
+
+
+LFM3_REPO = "abliter8-ai/lfm3-2b-omni-abliter8-gguf"
+LFM3_QUANT_LABELS = {"q6_k": "Q6_K", "q8_0": "Q8_0", "q4_k_m": "Q4_K_M", "q4_0": "Q4_0"}
+LFM3_MMPROJ_FILE = "mmproj-LFM3-Omni-2B-Abliter8-BF16.gguf"
+
+
+def llm_cache_dir() -> Path:
+    return Path.home() / ".cache" / "hanauta-ai-popup" / "llm-models" / LFM3_REPO.replace("/", "--")
+
+
+def find_cached_weight(hint: str, prefix: str = "") -> Path | None:
+    cache = llm_cache_dir()
+    if not cache.is_dir():
+        return None
+    for path in sorted(cache.glob("*.gguf")):
+        name = path.name.lower()
+        if prefix and not name.startswith(prefix):
+            continue
+        if hint.lower() in name:
+            return path
+    return None
+
+
+def download_hf_file(filename: str, target: Path, progress=None) -> Path:
+    """Fetch one file from the pinned repo, streaming to a .part file."""
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if target.is_file() and target.stat().st_size > 0:
+        return target
+    if progress:
+        progress(f"Downloading {filename}")
+    url = f"https://huggingface.co/{LFM3_REPO}/resolve/main/{filename}?download=true"
+    part = target.with_name(target.name + ".part")
+    request = urllib.request.Request(url, headers={"User-Agent": "Hanauta AI/1.0"})
+    with urllib.request.urlopen(request, timeout=1800) as response, part.open("wb") as handle:
+        while True:
+            chunk = response.read(1024 * 1024)
+            if not chunk:
+                break
+            handle.write(chunk)
+    part.replace(target)
+    return target
+
+
+def ensure_lfm3_weights(payload: dict, progress=None) -> tuple[Path | None, Path | None, str]:
+    """Adopt cached LFM3 weights, downloading them only when nothing is on disk."""
+    cache = llm_cache_dir()
+    cache.mkdir(parents=True, exist_ok=True)
+    notes: list[str] = []
+    gguf = _path_or_none(payload.get("gguf_path"))
+    if gguf is None:
+        for quant in LFM3_QUANT_LABELS:
+            gguf = find_cached_weight(quant)
+            if gguf is not None:
+                notes.append(f"using cached {gguf.name}")
+                break
+        if gguf is None:
+            quant = "q6_k"
+            try:
+                gguf = download_hf_file(
+                    f"LFM3-Omni-2B-Abliter8-{LFM3_QUANT_LABELS[quant]}.gguf",
+                    cache / f"LFM3-Omni-2B-Abliter8-{LFM3_QUANT_LABELS[quant]}.gguf",
+                    progress,
+                )
+                notes.append(f"downloaded {gguf.name}")
+            except Exception as exc:
+                return None, None, f"weights unavailable: {exc}"
+        payload["gguf_path"] = str(gguf)
+    mmproj = _path_or_none(payload.get("mmproj_path")) or find_cached_weight("mmproj")
+    if mmproj is None:
+        try:
+            mmproj = download_hf_file(LFM3_MMPROJ_FILE, cache / LFM3_MMPROJ_FILE, progress)
+            notes.append("downloaded mmproj")
+        except Exception:
+            notes.append("mmproj unavailable: image and audio input will be off")
+    if mmproj is not None:
+        payload["mmproj_path"] = str(mmproj)
+    return gguf, mmproj, "; ".join(notes)
+
+
+def port_is_busy(port: int, host: str = "127.0.0.1") -> bool:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        probe.settimeout(0.3)
+        try:
+            probe.connect((host, int(port)))
+            return True
+        except OSError:
+            return False
+
+
+def pick_free_port(start: int, attempts: int = 25) -> int | None:
+    for port in range(max(1, int(start)), max(1, int(start)) + attempts):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+            try:
+                probe.bind(("127.0.0.1", port))
+            except OSError:
+                continue
+            return port
+    return None
+
+
+def bundled_llama_tts() -> Path | None:
+    """The llama-tts tool beside the bundled runtime, when this build has one."""
+    root = Path(__file__).resolve().parent
+    runtime_root = Path.home() / ".cache" / "hanauta-ai-popup" / "runtimes" / "lfm3-llama-cpp"
+    candidates = [
+        root / "vendor" / "llama-lfm3" / "llama-tts",
+        root / "vendor" / "llama-lfm3" / "build" / "bin" / "llama-tts",
+        root / "build" / "bin" / "llama-tts",
+    ]
+    if runtime_root.is_dir():
+        candidates.extend(sorted(runtime_root.glob("*/llama-tts")))
+        candidates.extend(sorted(runtime_root.glob("*/bin/llama-tts")))
+    for candidate in candidates:
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return candidate
+    return None
+
+
+def bundled_llama_server() -> Path | None:
+    """The llama-server that ships with the plugin, then any installed runtime."""
+    root = Path(__file__).resolve().parent
+    runtime_root = Path.home() / ".cache" / "hanauta-ai-popup" / "runtimes" / "lfm3-llama-cpp"
+    candidates = [
+        root / "vendor" / "llama-lfm3" / "llama-server",
+        root / "vendor" / "llama-lfm3" / "build" / "bin" / "llama-server",
+        root / "build" / "bin" / "llama-server",
+    ]
+    if runtime_root.is_dir():
+        candidates.extend(sorted(runtime_root.glob("*/bin/llama-server")))
+        candidates.extend(sorted(runtime_root.glob("*/llama-server")))
+        candidates.extend(sorted(runtime_root.glob("llama-server")))
+    for candidate in candidates:
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return candidate
+    return None
+
+
+def launch_server(payload: dict) -> tuple[bool, str]:
+    """Start llama-server ourselves when both the binary and weights exist.
+
+    A bundled runtime is adopted when no path was chosen, so the popup can start
+    LFM3 without making the user point at a binary. Weights that are still
+    missing stay with the legacy launcher, which can download them.
+    """
+    binary = _path_or_none(payload.get("binary_path")) or bundled_llama_server()
+    if binary is None:
+        return False, (
+            "No llama-server runtime found. Run scripts/build_llama_lfm3.sh or pick the binary in Settings."
+        )
+    payload["binary_path"] = str(binary)
+    model = _path_or_none(payload.get("gguf_path"))
+    weight_note = ""
+    if model is None:
+        model, _mmproj, weight_note = ensure_lfm3_weights(payload)
+        weight_note = f" ({weight_note})" if weight_note else ""
+        if model is None:
+            return False, "Set the GGUF model path in Settings first."
+    # Another process may hold the configured port (a stale server, another app);
+    # llama-server exits immediately at bind, so move to the next free port.
+    from urllib.parse import urlparse
+
+    note = ""
+    parsed = urlparse(_base_url(payload.get("host", "")))
+    if parsed.port and port_is_busy(parsed.port, parsed.hostname or "127.0.0.1"):
+        free = pick_free_port(parsed.port + 1)
+        if free is None:
+            return False, f"Port {parsed.port} is busy and no free port was found."
+        payload["host"] = f"{parsed.hostname or '127.0.0.1'}:{free}"
+        note = f" (port {parsed.port} was busy, moved to {free})"
+    command = build_server_command(payload, binary, model)
+    env = dict(os.environ)
+    library_path = str(binary.parent)
+    existing = env.get("LD_LIBRARY_PATH", "").strip()
+    env["LD_LIBRARY_PATH"] = f"{library_path}:{existing}" if existing else library_path
+    log_path = state_dir() / "llama-server.log"
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        with log_path.open("ab") as log:
+            process = subprocess.Popen(
+                command,
+                stdout=log,
+                stderr=log,
+                start_new_session=True,
+                env=env,
+            )
+    except Exception as exc:
+        return False, f"Unable to start llama-server: {exc}"
+    payload["llamacpp_pid"] = int(process.pid or 0)
+    try:
+        payload["llamacpp_pgid"] = int(os.getpgid(int(process.pid or 0)))
+    except Exception:
+        payload["llamacpp_pgid"] = 0
+    return True, f"Started {binary.name} (pid {process.pid}){note}{weight_note}, log: {log_path.name}"
+
+
+def stop_server(payload: dict) -> tuple[bool, str]:
+    import signal
+
+    pid = int(payload.get("llamacpp_pid", 0) or 0)
+    pgid = int(payload.get("llamacpp_pgid", 0) or 0)
+    if not pid and not pgid:
+        return False, "No tracked server process."
+    try:
+        os.killpg(pgid or pid, signal.SIGTERM)
+    except ProcessLookupError:
+        payload["llamacpp_pid"] = 0
+        payload["llamacpp_pgid"] = 0
+        return False, "Server was already stopped."
+    except Exception as exc:
+        return False, f"Unable to stop the server: {exc}"
+    payload["llamacpp_pid"] = 0
+    payload["llamacpp_pgid"] = 0
+    return True, "Server stopped."
+
+
+# --------------------------------------------------------------------------- #
+# Settings dialog (native, no legacy dependency)
+# --------------------------------------------------------------------------- #
+def save_settings(settings: dict) -> bool:
+    """Write backend settings; False means the disk write failed (never silent)."""
+    try:
+        path = state_dir() / "backend_settings.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(settings or {}, ensure_ascii=False, indent=2), encoding="utf-8")
+        return True
+    except Exception:
+        return False
+
+
+# --------------------------------------------------------------------------- #
+# Settings window — absorbed from hanauta_ai_settings.py (MD3 rail + cards)
+# --------------------------------------------------------------------------- #
+SETTINGS_SECTIONS = [
+    ("backends", "Backends", "device"),
+    ("tokens", "Tokens", "document"),
+    ("voice", "Voice", "speaker"),
+    ("skills", "Skills", "settings"),
+    ("benchmarking", "Benchmarking", "sliders"),
+    ("storage", "Storage", "folder"),
+]
+
+SETTINGS_STYLE = '''
+QFrame#settingsRoot {background:#141218;border-radius:24px;}
+QFrame#settingsRoot QWidget {color:#f7f4ff;font-family:"Inter","Noto Sans","DejaVu Sans";font-size:12px;}
+QFrame#sidebar {background:#1b1821;border-radius:18px;}
+QFrame#card {background:#211e27;border-radius:18px;}
+QLabel {background:transparent;}
+QFrame#settingsRoot QLabel#heading {font-size:23px;font-weight:700;}
+QFrame#settingsRoot QLabel#sectionTitle {font-size:15px;font-weight:600;}
+QFrame#settingsRoot QLabel#brand {font-size:17px;font-weight:700;padding:8px;}
+QFrame#settingsRoot QLabel#muted {color:#bdb4ca;font-size:11px;}
+QPushButton,QToolButton {background:#302b3a;border:0;border-radius:12px;padding:8px;}
+QPushButton:hover,QToolButton:hover {background:#40384e;}
+QPushButton:focus,QToolButton:focus,QLineEdit:focus,QComboBox:focus,QSpinBox:focus {border:1px solid #d0bcff;}
+QFrame#settingsRoot QPushButton#primary,QFrame#settingsRoot QToolButton#nav:checked {background:#d0bcff;color:#381e72;font-weight:600;}
+QToolButton#nav {text-align:left;padding:8px;}
+QFrame#settingsRoot QToolButton#hamburger {font-size:23px;}
+QFrame#settingsRoot QPushButton#close {font-size:23px;}
+QLineEdit,QComboBox,QSpinBox {background:#302b3a;border:1px solid #40384e;border-radius:10px;padding:8px;min-height:18px;selection-background-color:#d0bcff;selection-color:#381e72;}
+QComboBox QAbstractItemView {background:#302b3a;color:#f7f4ff;selection-background-color:#d0bcff;selection-color:#381e72;}
+QCheckBox {spacing:7px;}
+QCheckBox::indicator {width:20px;height:20px;border:1px solid #5b5268;border-radius:6px;background:#302b3a;}
+QCheckBox::indicator:checked {background:#d0bcff;border-color:#d0bcff;}
+QCheckBox::indicator:disabled {background:#29262f;border-color:#40384e;}
+QFrame#settingsRoot QWidget:disabled {color:#81798c;}
+QScrollArea,QScrollArea>QWidget>QWidget,QStackedWidget {background:transparent;border:0;}
+QScrollBar:vertical {width:6px;background:transparent;}
+QScrollBar::handle:vertical {background:#6d5a88;border-radius:3px;min-height:28px;}
+QScrollBar::add-line:vertical,QScrollBar::sub-line:vertical {height:0;}
+'''
+
+
+def settings_icon(name: str, color: str) -> QIcon:
+    """Original line-icon fallbacks for the settings rail."""
+    pix = QPixmap(48, 48)
+    pix.fill(Qt.GlobalColor.transparent)
+    p = QPainter(pix)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing)
+    p.scale(2, 2)
+    pen = QPen(QColor(color), 1.7)
+    pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+    pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+    p.setPen(pen)
+    path = QPainterPath()
+
+    def lines(points):
+        path.moveTo(*points[0])
+        for point in points[1:]:
+            path.lineTo(*point)
+
+    if name == "device":
+        p.drawRoundedRect(6, 1, 12, 22, 2, 2)
+        p.drawLine(10, 19, 14, 19)
+    elif name == "document":
+        lines([(5, 2), (15, 2), (20, 7), (20, 22), (5, 22), (5, 2)])
+        p.drawLine(8, 12, 17, 12)
+        p.drawLine(8, 17, 17, 17)
+    elif name in ("settings", "sliders"):
+        for y, x in ((5, 8), (12, 16), (19, 10)):
+            p.drawLine(3, y, 21, y)
+            p.drawEllipse(x - 2, y - 2, 4, 4)
+    elif name == "folder":
+        lines([(2, 6), (10, 6), (12, 9), (22, 9), (21, 21), (3, 21), (2, 6)])
+    elif name == "power":
+        p.drawArc(3, 3, 18, 18, 130 * 16, 280 * 16)
+        p.drawLine(12, 1, 12, 12)
+    else:
+        p.drawEllipse(4, 4, 16, 16)
+        p.drawLine(5, 18, 19, 6)
+    p.drawPath(path)
+    p.end()
+    pix.setDevicePixelRatio(2)
+    return QIcon(pix)
+
+
+class SettingsSidebar(QFrame):
+    section_requested = pyqtSignal(str)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("sidebar")
+        self.pinned = False
+        self._width = 64
+        self._keyboard_focus = False
+        self.setFixedWidth(64)
+        self.animation = QPropertyAnimation(self, b"railWidth", self)
+        self.animation.setDuration(180)
+        self.animation.setEasingCurve(QEasingCurve.Type.OutCubic)
+        self.leave_timer = QTimer(self)
+        self.leave_timer.setSingleShot(True)
+        self.leave_timer.setInterval(220)
+        self.leave_timer.timeout.connect(self._maybe_collapse)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(8, 12, 8, 12)
+        layout.setSpacing(7)
+        self.hamburger = QToolButton()
+        self.hamburger.setText("☰")
+        self.hamburger.setObjectName("hamburger")
+        self.hamburger.setFixedSize(44, 44)
+        self.hamburger.setCheckable(True)
+        self.hamburger.setAccessibleName("Expand sidebar")
+        self.hamburger.setToolTip("Expand / pin sidebar")
+        self.hamburger.clicked.connect(self._toggle_pin)
+        layout.addWidget(self.hamburger)
+        self.brand = QLabel("Hanauta AI")
+        self.brand.setObjectName("brand")
+        layout.addWidget(self.brand)
+        self.buttons = {}
+        for key, title, glyph in SETTINGS_SECTIONS:
+            button = QToolButton()
+            button.setText(title)
+            button.setToolTip(title)
+            button.setAccessibleName(title)
+            button.setProperty("glyph", glyph)
+            button.setObjectName("nav")
+            button.setCheckable(True)
+            button.setChecked(key == "backends")
+            button.setMinimumHeight(46)
+            button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+            button.setIconSize(QSize(23, 23))
+            button.installEventFilter(self)
+            button.clicked.connect(lambda checked=False, k=key: self.select(k))
+            self.buttons[key] = button
+            layout.addWidget(button)
+        layout.addStretch()
+        self._set_width(64)
+        self.recolor()
+
+    def recolor(self):
+        for button in self.buttons.values():
+            button.setIcon(
+                settings_icon(button.property("glyph"), "#381e72" if button.isChecked() else "#d0bcff")
+            )
+
+    def select(self, key):
+        for name, button in self.buttons.items():
+            button.setChecked(name == key)
+        self.recolor()
+        self.section_requested.emit(key)
+
+    def _set_width(self, value):
+        self._width = int(value)
+        self.setFixedWidth(self._width)
+        expanded = self._width >= 145
+        self.brand.setVisible(expanded)
+        for button in self.buttons.values():
+            button.setToolButtonStyle(
+                Qt.ToolButtonStyle.ToolButtonTextBesideIcon if expanded else Qt.ToolButtonStyle.ToolButtonIconOnly
+            )
+        self.updateGeometry()
+
+    railWidth = pyqtProperty(int, fget=lambda self: self._width, fset=_set_width)
+
+    def expand(self):
+        self.leave_timer.stop()
+        self._animate(220)
+
+    def _animate(self, width):
+        self.animation.stop()
+        self.animation.setStartValue(self._width)
+        self.animation.setEndValue(width)
+        self.animation.start()
+
+    def reset(self):
+        self.leave_timer.stop()
+        self.animation.stop()
+        self.pinned = False
+        self.hamburger.setChecked(False)
+        self.hamburger.setAccessibleName("Expand sidebar")
+        self._set_width(64)
+
+    def _toggle_pin(self, checked):
+        self.pinned = checked
+        self.leave_timer.stop()
+        self.hamburger.setAccessibleName("Collapse sidebar" if checked else "Expand sidebar")
+        self._animate(220 if checked else 64)
+
+    def _maybe_collapse(self):
+        focus = QApplication.focusWidget()
+        keyboard_inside = (
+            self._keyboard_focus and focus is not None and focus in self.buttons.values() and focus.hasFocus()
+        )
+        if not self.pinned and not self.underMouse() and not keyboard_inside:
+            self._animate(64)
+
+    def eventFilter(self, watched, event):
+        if watched in self.buttons.values():
+            if event.type() == QEvent.Type.Enter:
+                self._keyboard_focus = False
+                self.expand()
+            elif event.type() == QEvent.Type.FocusIn:
+                self._keyboard_focus = event.reason() in (
+                    Qt.FocusReason.TabFocusReason,
+                    Qt.FocusReason.BacktabFocusReason,
+                )
+                if self._keyboard_focus:
+                    self.expand()
+            elif event.type() in (QEvent.Type.Leave, QEvent.Type.FocusOut):
+                if event.type() == QEvent.Type.FocusOut:
+                    self._keyboard_focus = False
+                self.leave_timer.start()
+        return super().eventFilter(watched, event)
+
+    def enterEvent(self, event):
+        self.leave_timer.stop()
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):
+        self.leave_timer.start()
+        super().leaveEvent(event)
+
+
+class SettingsView(QFrame):
+    """Sidebar + cards, no I/O: the dialog applies values to the backend settings."""
+
+    save_requested = pyqtSignal(dict)
+    test_requested = pyqtSignal(dict)
+    process_requested = pyqtSignal(str)
+    section_requested = pyqtSignal(str)
+    backend_selected = pyqtSignal(str)
+    close_requested = pyqtSignal()
+    activation_requested = pyqtSignal(bool)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("settingsRoot")
+        self.setMinimumSize(760, 580)
+        self._loading = True
+        self.fields = {}
+        self._page_indexes = {}
+        root = QHBoxLayout(self)
+        root.setContentsMargins(10, 10, 10, 10)
+        root.setSpacing(12)
+        self.sidebar = SettingsSidebar()
+        root.addWidget(self.sidebar)
+        main = QVBoxLayout()
+        main.setSpacing(10)
+        root.addLayout(main, 1)
+        header = QHBoxLayout()
+        self.title = QLabel("Backend settings")
+        self.title.setObjectName("heading")
+        header.addWidget(self.title, 1)
+        close = QPushButton("×")
+        close.setObjectName("close")
+        close.setAccessibleName("Close settings")
+        close.setFixedSize(36, 36)
+        close.clicked.connect(self.close_requested.emit)
+        header.addWidget(close)
+        main.addLayout(header)
+        self.description = QLabel("Configure each backend and make it available in the popup.")
+        self.description.setObjectName("muted")
+        self.description.setWordWrap(True)
+        main.addWidget(self.description)
+        self.stack = QStackedWidget()
+        main.addWidget(self.stack, 1)
+
+        backends = QWidget()
+        backend_layout = QVBoxLayout(backends)
+        backend_layout.setContentsMargins(0, 0, 0, 0)
+        backend_layout.setSpacing(10)
+        summary, sl = self.card()
+        summary_row = QHBoxLayout()
+        self.backend = QComboBox()
+        self.backend.setMinimumWidth(160)
+        self.backend.currentIndexChanged.connect(
+            lambda _index: self.backend_selected.emit(str(self.backend.currentData()))
+        )
+        summary_row.addWidget(self.backend, 1)
+        self.process_status = QLabel("●  Stopped")
+        summary_row.addWidget(self.process_status)
+        self.active = QCheckBox("Use in popup")
+        self.active.setEnabled(False)
+        self.active.setToolTip("Availability is controlled by the backend service.")
+        self.active.clicked.connect(self.activation_requested.emit)
+        summary_row.addWidget(self.active)
+        sl.addLayout(summary_row)
+        backend_layout.addWidget(summary)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        backend_layout.addWidget(scroll, 1)
+        body = QWidget()
+        scroll.setWidget(body)
+        body_layout = QVBoxLayout(body)
+        body_layout.setContentsMargins(0, 0, 5, 0)
+        body_layout.setSpacing(10)
+
+        connection, cl = self.card("Connection")
+        grid = QGridLayout()
+        grid.setHorizontalSpacing(12)
+        grid.setVerticalSpacing(9)
+        grid.addWidget(self.field("backend_name", "Backend name", ""), 0, 0)
+        grid.addWidget(self.field("model_id", "Model ID", ""), 0, 1)
+        grid.addWidget(self.field("endpoint", "Endpoint", DEFAULT_HOSTS["lfm3"]), 1, 0)
+        grid.addWidget(self.path_field("executable", "Server executable", ""), 1, 1)
+        device = QWidget()
+        dl = QVBoxLayout(device)
+        dl.setContentsMargins(0, 0, 0, 0)
+        dl.addWidget(QLabel("Compute device"))
+        self.compute = QComboBox()
+        self.compute.addItems(["CPU", "GPU"])
+        self.compute.currentTextChanged.connect(self.mark_dirty)
+        dl.addWidget(self.compute)
+        grid.addWidget(device, 2, 0)
+        controls = QWidget()
+        controls_layout = QHBoxLayout(controls)
+        controls_layout.setContentsMargins(0, 18, 0, 0)
+        for name in ("Start", "Restart", "Stop"):
+            button = QPushButton(name)
+            button.setMinimumHeight(38)
+            button.clicked.connect(
+                lambda checked=False, key=name.lower(): self.process_requested.emit(key)
+            )
+            controls_layout.addWidget(button)
+        grid.addWidget(controls, 2, 1)
+        cl.addLayout(grid)
+        body_layout.addWidget(connection)
+
+        model, ml = self.card("Model")
+        ml.addWidget(self.path_field("model_path", "GGUF model path", ""))
+        ml.addWidget(self.path_field("mmproj_path", "mmproj (vision + audio)", ""))
+        self.model_info = QLabel("Speech input uses this model's audio encoder — no Whisper install.")
+        self.model_info.setObjectName("muted")
+        self.model_info.setWordWrap(True)
+        ml.addWidget(self.model_info)
+        self.token_saver = QCheckBox("Token saver — compress voice prompts before the LLM")
+        self.token_saver.setChecked(True)
+        self.token_saver.toggled.connect(self.mark_dirty)
+        ml.addWidget(self.token_saver)
+        speech_note = QLabel("Speech output (backend, voice, speed) lives on the Voice page.")
+        speech_note.setObjectName("muted")
+        ml.addWidget(speech_note)
+        body_layout.addWidget(model)
+
+        tuning, tl = self.card("llama.cpp Runtime tuning")
+        switches = QHBoxLayout()
+        self.flash = QCheckBox("Flash Attention")
+        self.mtp = QCheckBox("MTP / speculative decoding")
+        self.flash.toggled.connect(self.mark_dirty)
+        self.mtp.toggled.connect(self._mtp_changed)
+        switches.addWidget(self.flash)
+        switches.addWidget(self.mtp)
+        tl.addLayout(switches)
+        self.draft_widget = self.path_field("draft_path", "Draft model GGUF", "")
+        self.draft_widget.setEnabled(False)
+        tl.addWidget(self.draft_widget)
+        numbers = QHBoxLayout()
+        for index, value in enumerate((16, 8192, 99), 1):
+            container = QWidget()
+            layout = QVBoxLayout(container)
+            layout.setContentsMargins(0, 0, 0, 0)
+            labels = {1: "Batch size", 2: "Context", 3: "GPU layers"}
+            layout.addWidget(QLabel(labels[index]))
+            spin = QSpinBox()
+            spin.setRange(-1, 2147483647)
+            spin.setValue(value)
+            spin.setAccessibleName(labels[index])
+            spin.valueChanged.connect(self.mark_dirty)
+            self.fields[f"parameter_{index}"] = spin
+            layout.addWidget(spin)
+            numbers.addWidget(container)
+        tl.addLayout(numbers)
+        note = QLabel("Batch size, context and GPU layers map to llama-server flags.")
+        note.setObjectName("muted")
+        note.setWordWrap(True)
+        tl.addWidget(note)
+        body_layout.addWidget(tuning)
+        body_layout.addStretch()
+
+        self._page_indexes["backends"] = self.stack.addWidget(backends)
+        for key, title, _glyph in SETTINGS_SECTIONS[1:]:
+            placeholder = QWidget()
+            pl = QVBoxLayout(placeholder)
+            label = QLabel(f"{title}\nThis page keeps the existing Hanauta settings for now.")
+            label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            pl.addWidget(label)
+            self._page_indexes[key] = self.stack.addWidget(placeholder)
+
+        footer, fl = self.card()
+        footer_row = QHBoxLayout()
+        self.validation = QLabel("○  Not validated")
+        self.saved = QLabel("Changes saved")
+        self.saved.setObjectName("muted")
+        footer_row.addWidget(self.validation)
+        footer_row.addWidget(self.saved)
+        footer_row.addStretch()
+        test = QPushButton("Test connection")
+        test.clicked.connect(lambda: self.test_requested.emit(self.values()))
+        close_button = QPushButton("Close")
+        close_button.clicked.connect(self.close_requested.emit)
+        save = QPushButton("Save changes")
+        save.setObjectName("primary")
+        save.clicked.connect(lambda: self.save_requested.emit(self.values()))
+        for button in (test, close_button, save):
+            button.setMinimumHeight(40)
+            footer_row.addWidget(button)
+        fl.addLayout(footer_row)
+        main.addWidget(footer)
+
+        self.sidebar.section_requested.connect(self._navigate)
+        self.setStyleSheet(SETTINGS_STYLE)
+        self._loading = False
+
+    def card(self, title=None):
+        frame = QFrame()
+        frame.setObjectName("card")
+        layout = QVBoxLayout(frame)
+        layout.setContentsMargins(14, 12, 14, 12)
+        layout.setSpacing(10)
+        if title:
+            label = QLabel(title)
+            label.setObjectName("sectionTitle")
+            layout.addWidget(label)
+        return frame, layout
+
+    def field(self, key, label, value):
+        container = QWidget()
+        layout = QVBoxLayout(container)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(5)
+        layout.addWidget(QLabel(label))
+        edit = QLineEdit(str(value))
+        edit.setAccessibleName(label)
+        edit.setToolTip(str(value))
+        edit.textChanged.connect(lambda text, e=edit: (e.setToolTip(text), self.mark_dirty()))
+        self.fields[key] = edit
+        layout.addWidget(edit)
+        return container
+
+    def path_field(self, key, label, value):
+        container = self.field(key, label, value)
+        edit = self.fields[key]
+        container.layout().removeWidget(edit)
+        row = QHBoxLayout()
+        row.addWidget(edit, 1)
+        browse = QPushButton()
+        browse.setIcon(settings_icon("folder", "#d0bcff"))
+        browse.setFixedSize(38, 36)
+        browse.setToolTip("Browse " + label)
+        browse.setAccessibleName("Browse " + label)
+        browse.clicked.connect(lambda: self._browse(key, label))
+        row.addWidget(browse)
+        container.layout().addLayout(row)
+        return container
+
+    def _browse(self, key, label):
+        current = str(Path(self.fields[key].text()).expanduser())
+        pattern = "All files (*)" if key == "executable" else "GGUF models (*.gguf);;All files (*)"
+        path, _ = QFileDialog.getOpenFileName(self, label, current, pattern)
+        if path:
+            self.fields[key].setText(path)
+
+    def _mtp_changed(self, value):
+        self.draft_widget.setEnabled(value)
+        self.mark_dirty()
+
+    def mark_dirty(self, *_):
+        if not self._loading:
+            self.saved.setText("Unsaved changes")
+
+    def mark_saved(self):
+        self.saved.setText("Changes saved")
+
+    def set_validation(self, text):
+        self.validation.setText(text)
+
+    def set_backend_state(self, status, can_activate=False, active=False):
+        self.process_status.setText("●  " + status)
+        self.active.setEnabled(can_activate)
+        self.active.setChecked(active)
+
+    def populate_backends(self, items):
+        self.backend.blockSignals(True)
+        self.backend.clear()
+        for key, title in items:
+            self.backend.addItem(title, key)
+        self.backend.blockSignals(False)
+
+    def values(self):
+        data = {
+            key: (widget.value() if isinstance(widget, QSpinBox) else widget.text())
+            for key, widget in self.fields.items()
+        }
+        data.update(
+            backend_id=self.backend.currentData(),
+            compute=self.compute.currentText(),
+            active=self.active.isChecked(),
+            token_saver=self.token_saver.isChecked(),
+            flash_attention=self.flash.isChecked(),
+            speculative=self.mtp.isChecked(),
+        )
+        return data
+
+    def load_values(self, data):
+        self._loading = True
+        try:
+            for key, widget in self.fields.items():
+                if key in data:
+                    if isinstance(widget, QSpinBox):
+                        widget.setValue(int(data[key]))
+                    else:
+                        widget.setText(str(data[key]))
+            self.compute.setCurrentText(str(data.get("compute", "CPU")))
+            self.token_saver.setChecked(bool(data.get("token_saver", True)))
+            self.flash.setChecked(bool(data.get("flash_attention", False)))
+            self.mtp.setChecked(bool(data.get("speculative", False)))
+            self.draft_widget.setEnabled(bool(data.get("speculative", False)))
+            self.active.setChecked(bool(data.get("active", False)))
+            if "backend_id" in data:
+                index = self.backend.findData(data["backend_id"])
+                if index >= 0:
+                    blocked = self.backend.blockSignals(True)
+                    self.backend.setCurrentIndex(index)
+                    self.backend.blockSignals(blocked)
+        finally:
+            self._loading = False
+        self.mark_saved()
+
+    def set_section_widget(self, key, widget):
+        """Replace Tokens/Skills/Benchmarking/Storage with production pages."""
+        if key == "backends" or key not in self._page_indexes:
+            raise ValueError("Unknown or reserved section")
+        index = self._page_indexes[key]
+        old = self.stack.widget(index)
+        selected = self.stack.currentWidget() is old
+        self.stack.removeWidget(old)
+        old.deleteLater()
+        self.stack.insertWidget(index, widget)
+        if selected:
+            self.stack.setCurrentIndex(index)
+
+    def _navigate(self, key):
+        self.stack.setCurrentIndex(self._page_indexes[key])
+        self.title.setText(
+            "Backend settings" if key == "backends" else {k: t for k, t, _g in SETTINGS_SECTIONS}[key]
+        )
+        self.section_requested.emit(key)
+
+    def showEvent(self, event):
+        self.sidebar.reset()
+        super().showEvent(event)
+
+
+def migrate_voice_engine(settings: dict) -> bool:
+    """One-time switch: LFM3's own voice replaces the old espeak default."""
+    voice = dict(settings.get("_voice_mode", {}) or {})
+    if voice.get("tts_engine_migrated"):
+        return False
+    if str(voice.get("tts_backend", "") or "espeak").strip().lower() == "espeak":
+        voice["tts_backend"] = "lfm3"
+        voice.setdefault("tts_fallback", False)
+    voice["tts_engine_migrated"] = True
+    settings["_voice_mode"] = voice
+    return True
+
+
+def settings_values(settings: dict, key: str) -> dict:
+    """Runtime settings -> settings-view field values."""
+
+    def _int(value, fallback: int) -> int:
+        try:
+            return int(float(str(value)))
+        except (TypeError, ValueError):
+            return fallback
+
+    payload = dict(settings.get(key, {}) or {})
+    voice = dict(settings.get("_voice_mode", {}) or {})
+    return {
+        "backend_id": key,
+        "backend_name": TITLES.get(key, key),
+        "model_id": Path(str(payload.get("gguf_path", ""))).name or TITLES.get(key, key),
+        "endpoint": str(payload.get("host", "")) or DEFAULT_HOSTS.get(key, ""),
+        "executable": str(payload.get("binary_path", "")) or str(bundled_llama_server() or ""),
+        "model_path": str(payload.get("gguf_path", "")),
+        "mmproj_path": str(payload.get("mmproj_path", "")),
+        "draft_path": str(payload.get("llama_mtp_draft_model", "")),
+        "compute": "GPU" if str(payload.get("device", "cpu")).lower() == "gpu" else "CPU",
+        "flash_attention": bool(payload.get("llama_flash_attn", False)),
+        "speculative": bool(payload.get("llama_mtp_enabled", False)),
+        "parameter_1": _int(payload.get("llama_n_batch", 16), 16),
+        "parameter_2": _int(payload.get("llama_context", 8192), 8192),
+        "parameter_3": _int(payload.get("llama_gpu_layers", 99), 99),
+        "token_saver": bool(voice.get("token_saver_enabled", True)),
+        "active": bool(payload.get("enabled", True)),
+    }
+
+
+def apply_values(settings: dict, key: str, values: dict) -> None:
+    """Settings-view field values -> runtime settings (only mapped keys change)."""
+    payload = dict(settings.get(key, {}) or {})
+    payload.update(
+        {
+            "host": str(values.get("endpoint", "")).strip(),
+            "binary_path": str(values.get("executable", "")).strip(),
+            "gguf_path": str(values.get("model_path", "")).strip(),
+            "mmproj_path": str(values.get("mmproj_path", "")).strip(),
+            "llama_mtp_draft_model": str(values.get("draft_path", "")).strip(),
+            "device": "gpu" if str(values.get("compute", "CPU")).lower() == "gpu" else "cpu",
+            "llama_flash_attn": bool(values.get("flash_attention", False)),
+            "llama_mtp_enabled": bool(values.get("speculative", False)),
+            "llama_n_batch": str(values.get("parameter_1", "")).strip(),
+            "llama_context": str(values.get("parameter_2", "")).strip(),
+            "llama_gpu_layers": str(values.get("parameter_3", "")).strip(),
+        }
+    )
+    settings[key] = payload
+    voice = dict(settings.get("_voice_mode", {}) or {})
+    voice["token_saver_enabled"] = bool(values.get("token_saver", True))
+    settings["_voice_mode"] = voice
+
+
+class SettingsDialog(QDialog):
+    """Hosts the absorbed MD3 settings view and applies it to backend settings."""
+
+    def __init__(self, settings: dict, theme: Theme, parent=None) -> None:
+        super().__init__(parent)
+        del theme  # the absorbed view carries its own MD3 palette
+        self.settings_data = json.loads(json.dumps(settings or {}))
+        self.setWindowTitle("Hanauta AI · Settings")
+        self.resize(1120, 870)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        self.view = SettingsView()
+        layout.addWidget(self.view)
+        keys = [key for key in ("lfm3", "llamacpp", "koboldcpp") if key in self.settings_data] or ["lfm3"]
+        self.view.populate_backends([(key, TITLES.get(key, key)) for key in keys])
+        self._loaded_key = keys[0]
+        self.view.load_values(settings_values(self.settings_data, self._loaded_key))
+        target = resolve_target(self.settings_data)
+        self.view.set_section_widget("tokens", TokensPage(self.settings_data))
+        self.view.set_section_widget("voice", VoicePage(self.settings_data))
+        self.view.set_section_widget("skills", SkillsPage(self.settings_data))
+        self.view.set_section_widget("benchmarking", BenchmarkPage(target))
+        self.view.set_section_widget("storage", StoragePage())
+        self.view.close_requested.connect(self.reject)
+        self.view.backend_selected.connect(self._switch)
+        self.view.save_requested.connect(self._save)
+        self.view.process_requested.connect(self._process)
+        self.view.test_requested.connect(self._test)
+        alive = _probe(str(self.settings_data.get(self._loaded_key, {}).get("host", "")))
+        self.view.set_backend_state("Running" if alive else "Stopped")
+
+    def backend_key(self) -> str:
+        return str(self.view.backend.currentData() or self._loaded_key)
+
+    def _switch(self, key: str) -> None:
+        apply_values(self.settings_data, self._loaded_key, self.view.values())
+        self._loaded_key = str(key or self._loaded_key)
+        self.view.load_values(settings_values(self.settings_data, self._loaded_key))
+
+    def _save(self, values: dict) -> None:
+        """Persist and re-read: the view must show what the file actually holds."""
+        apply_values(self.settings_data, self._loaded_key, values)
+        written = save_settings(self.settings_data)
+        if written:
+            persisted = load_settings()
+            self.settings_data.clear()
+            self.settings_data.update(persisted)
+            self.view.load_values(settings_values(self.settings_data, self._loaded_key))
+            self.view.set_validation("● Saved to backend_settings.json")
+        else:
+            self.view.set_validation("○ Could not write backend_settings.json")
+        self.view.mark_saved()
+
+    def _process(self, action: str) -> None:
+        apply_values(self.settings_data, self._loaded_key, self.view.values())
+        save_settings(self.settings_data)
+        payload = dict(self.settings_data.get(self._loaded_key, {}) or {})
+        if action == "stop":
+            ok, message = stop_server(payload)
+        else:
+            if action == "restart":
+                stop_server(payload)
+                time.sleep(0.4)
+            ok, message = launch_server(payload)
+        self.settings_data[self._loaded_key] = payload
+        save_settings(self.settings_data)
+        self.view.set_backend_state("Running" if ok else "Stopped")
+        self.view.set_validation(("● " if ok else "○ ") + message)
+
+    def _test(self, values: dict) -> None:
+        apply_values(self.settings_data, self._loaded_key, values)
+        host = str(values.get("endpoint", "")).strip()
+        alive = _probe(host)
+        self.view.set_validation("● Connected" if alive else "○ Unreachable")
+
+
 # --------------------------------------------------------------------------- #
 # History dialog
 # --------------------------------------------------------------------------- #
 class HistoryDialog(QDialog):
-    def __init__(self, items: list[ChatItemData], theme: Theme, parent=None) -> None:
+    def __init__(self, rows: list[tuple[str, str]], theme: Theme, parent=None) -> None:
         super().__init__(parent)
         self.setWindowTitle("Chat history")
         self.setMinimumSize(420, 460)
-        self.selected_item: ChatItemData | None = None
+        self.selected_index = -1
         self.setStyleSheet(
             f"QDialog{{background:{theme.background};}} QLabel{{color:{theme.text};}}"
             f"QListWidget{{background:{theme.surface}; border:0; border-radius:16px; padding:6px; color:{theme.text};}}"
@@ -657,12 +2724,8 @@ class HistoryDialog(QDialog):
         title.setStyleSheet("font-size:16px; font-weight:600;")
         layout.addWidget(title)
         self.list = QListWidget()
-        for index, item in enumerate(items):
-            text = f"{item.role}: {item.body[:90]}"
-            row = QListWidgetItem(text)
-            row.setData(Qt.ItemDataRole.UserRole, index)
-            self.list.addItem(row)
-        self.items = items
+        for role, body in rows:
+            self.list.addItem(QListWidgetItem(f"{role}: {body[:90]}"))
         self.list.itemActivated.connect(lambda _i: self._accept())
         self.list.itemDoubleClicked.connect(lambda _i: self._accept())
         layout.addWidget(self.list, 1)
@@ -676,255 +2739,2720 @@ class HistoryDialog(QDialog):
     def _accept(self) -> None:
         row = self.list.currentRow()
         if row >= 0:
-            self.selected_item = self.items[row]
+            self.selected_index = row
             self.accept()
 
 
 # --------------------------------------------------------------------------- #
-# Window: real wiring
+# Controller — every side effect of the view lands here
 # --------------------------------------------------------------------------- #
-class PopupWindow(QWidget):
+class PopupController(QWidget):
     def __init__(self) -> None:
         super().__init__()
-        self.setWindowTitle("Hanauta AI")
+        self.setWindowTitle(APP_NAME)
         self.setStyleSheet("background: transparent;")
         self.resize(440, 650)
 
-        self.settings = load_backend_settings()
-        self.theme = theme_from_palette()
-        self.view = NestView(theme=self.theme)
+        self.settings = load_settings()
+        if migrate_voice_engine(self.settings):
+            save_settings(self.settings)
+        self.view = NestView(theme=Theme())
+        # One window, two pages: chat and the voice stage. Voice mode swaps the
+        # page instead of opening a second window.
+        self.stage = VoiceStage()
+        self.stack = QStackedWidget()
+        self.stack.addWidget(self.view)
+        self.stack.addWidget(self.stage)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.addWidget(self.view)
+        layout.addWidget(self.stack)
+        self._chat_size = self.size()
+        self._voice_page_active = False
 
-        self._attachments: list[Path] = []
-        self._worker: ChatWorker | None = None
-        self._dictation: DictationWorker | None = None
-        self._pending_id = ""
-        self._pending_text = ""
-        self._last_flush = 0.0
-        self._history: list[ChatItemData] = []
+        self.attachments: list[Path] = []
+        self.turns: list[dict[str, str]] = []
+        self.chat_worker: ChatWorker | None = None
+        self.dictation: DictationWorker | None = None
+        self.pending_id = ""
+        self.pending_text = ""
+        self.flush_timer = QTimer(self)
+        self.flush_timer.setInterval(STREAM_INTERVAL_MS)
+        self.flush_timer.timeout.connect(self.flush_pending)
 
         self.view.send_requested.connect(self.accept_message)
         self.view.configure_requested.connect(self.open_settings)
+        self.view.start_requested.connect(self.start_backend)
         self.view.history_requested.connect(self.open_history)
         self.view.attachment_requested.connect(self.attach_file)
         self.view.microphone_requested.connect(self.dictate)
-        self.view.screen_requested.connect(self.attach_screen)
+        self.view.screen_requested.connect(lambda: self.toggle_share("screen"))
+        self.view.camera_requested.connect(lambda: self.toggle_share("camera"))
+        self.view.voice_requested.connect(self.toggle_voice)
         self.view.close_requested.connect(self.hide)
+        self.stage.action_requested.connect(self._voice_action)
+        self.stage.microphone_changed.connect(self._voice_microphone)
+        self.stage.context_changed.connect(self._voice_context)
+        self.stage.personality_changed.connect(self._voice_personality)
 
-        self.refresh_backend()
+        self.voice_worker: VoiceLoopWorker | None = None
+        self._voice_threads: list[VoiceLoopWorker] = []
+        self._last_user_text = ""
+        self._last_reply_text = ""
+        self.player = TtsPlayer(self)
+        self.overlay = CaptureOverlay()
+        self.sharing: dict[str, bool] = {"camera": False, "screen": False}
+        self.frame_attachments: dict[str, Path] = {}
+        self.capture_timers: dict[str, QTimer] = {}
+        for kind in ("camera", "screen"):
+            timer = QTimer(self)
+            timer.timeout.connect(lambda k=kind: self.capture_frame(k))
+            self.capture_timers[kind] = timer
+        self.hotkeys = GlobalHotkeys({})
+        self.setup_hotkeys()
+
         self.restore_history()
+        self.refresh_backend()
+
+    # -- hotkeys ---------------------------------------------------------- #
+    def setup_hotkeys(self) -> None:
+        config = self.voice_config()
+        if not bool(config.get("capture_hotkeys_enabled", True)):
+            return
+        bindings = {
+            "voice": str(config.get("hotkey_toggle_voice", "<ctrl>+<alt>+v")),
+            "camera": str(config.get("hotkey_toggle_camera", "<ctrl>+<alt>+c")),
+            "screen": str(config.get("hotkey_toggle_screen", "<ctrl>+<alt>+s")),
+        }
+        self.hotkeys.stop()
+        self.hotkeys = GlobalHotkeys({key: spec for key, spec in bindings.items() if parse_binding(spec)})
+        self.hotkeys.triggered.connect(self._on_hotkey)
+        ok, message = self.hotkeys.start()
+        if not ok:
+            self.view.add_notice(f"Hotkeys: {message}")
+
+    def _on_hotkey(self, action: str) -> None:
+        if action == "voice":
+            self.toggle_voice()
+        elif action in ("camera", "screen"):
+            self.toggle_share(action)
 
     # -- backend ---------------------------------------------------------- #
     def refresh_backend(self) -> None:
-        self.settings = load_backend_settings()
-        label, host, model, _key = resolve_llm(self.settings)
-        alive = False
-        if host:
-            try:
-                with urllib.request.urlopen(f"{_base_url(host)}/v1/models", timeout=2.5):
-                    alive = True
-            except Exception:
-                alive = False
-        pretty = f"{label} · {model}" if label and model else (label or "")
-        self.view.set_backend_state(alive, pretty)
-        if not alive:
+        self.settings = load_settings()
+        target = resolve_target(self.settings)
+        if not target.configured:
+            self.view.set_backend_state(False, "", self.tr("Model not configured"))
             self.view.show_setup_card()
+            return
+        # Adopt the bundled runtime once, so Settings shows a real path and Start works.
+        payload = dict(self.settings.get(target.key, {}) or {}) if target.key else {}
+        if target.key and not _path_or_none(payload.get("binary_path")):
+            bundled = bundled_llama_server()
+            if bundled is not None:
+                payload["binary_path"] = str(bundled)
+                self.settings[target.key] = payload
+                save_settings(self.settings)
+        pretty = f"{target.label} · {target.model}" if target.model else target.label
+        alive = _probe(target.host) if target.host else False
+        self.view.set_backend_state(alive, pretty, self.tr("Backend stopped"))
+        if not alive:
+            self.view.add_notice(self.tr("Backend stopped — press Start backend."))
+
+    def start_backend(self) -> None:
+        """Start or stop the text backend; the button doubles as a toggle."""
+        target = resolve_target(self.settings)
+        if not target.key:
+            self.open_settings()
+            return
+        payload = dict(self.settings.get(target.key, {}) or {})
+        if not payload:
+            self.open_settings()
+            return
+        if _probe(target.host):
+            self.view.add_notice(f"{target.label} is already running at {target.host}")
+            self.refresh_backend()
+            return
+        ok, message = launch_server(payload)
+        if ok:
+            self.settings[target.key] = payload
+            save_settings(self.settings)
+            self.view.add_notice(message)
+            # The server needs a moment before /v1/models answers.
+            QTimer.singleShot(1500, self.refresh_backend)
+            return
+        self.view.add_notice(f"Backend start failed: {message}")
+        self.refresh_backend()
 
     def open_settings(self) -> None:
-        from hanauta_aipopup.ui_backend_settings import BackendSettingsDialog
-
-        profiles = [
-            BackendProfile("lfm3", "LFM3-Omni 2B", "openai_compat", "lfm3-omni-2b", "127.0.0.1:8082", "koboldcpp", False, True),
-            BackendProfile("llamacpp", "llama.cpp", "openai_compat", "llama", "127.0.0.1:8080", "koboldcpp", False, True),
-            BackendProfile("koboldcpp", "KoboldCpp", "openai_compat", "kobold", "127.0.0.1:5001", "koboldcpp", False, True),
-        ]
-        dialog = BackendSettingsDialog(profiles, self.settings, str(load_ui_font() or "Noto Sans"), self)
+        # Always start from disk: a previous Save may not have closed the dialog.
+        self.settings = load_settings()
+        dialog = SettingsDialog(self.settings, self.view.theme, self)
         dialog.exec()
+        self.settings = load_settings()
+        self.setup_hotkeys()
         self.refresh_backend()
 
     # -- conversation ----------------------------------------------------- #
-    def restore_history(self) -> None:
-        try:
-            items = secure_load_chat_history()
-        except Exception:
+    def accept_message(self, text: str) -> None:
+        target = resolve_target(self.settings)
+        if not text.strip() or not target.host or self.chat_worker is not None:
             return
-        for index, item in enumerate(items[-40:]):
+        user_id = f"u{int(time.time() * 1000)}"
+        self.view.add_message(user_id, "user", text)
+        self.view.clear_draft()
+        self.view.set_busy(True)
+        self._persist("user", text)
+        self.turns.append({"role": "user", "content": text})
+
+        messages = build_messages(text, self.attachments, self.turns[:-1])
+        # Shared frames stay attached: the next turn still shows the same screen.
+        frames = set(self.frame_attachments.values())
+        self.attachments = [path for path in self.attachments if path in frames]
+        self.refresh_attachments()
+        self.pending_id = f"a{int(time.time() * 1000)}"
+        self.pending_text = ""
+        self.view.add_message(self.pending_id, "assistant", "…")
+        worker = ChatWorker(target.host, target.model, messages)
+        self.chat_worker = worker
+        worker.delta.connect(self.on_delta)
+        worker.finished_ok.connect(self.on_answer)
+        worker.failed.connect(self.on_error)
+        worker.start()
+
+    def on_delta(self, piece: str) -> None:
+        self.pending_text += piece
+        if not self.flush_timer.isActive():
+            self.flush_timer.start()
+
+    def flush_pending(self) -> None:
+        if not self.pending_id:
+            self.flush_timer.stop()
+            return
+        if not self.pending_text:
+            return
+        self.view.update_message(self.pending_id, self.pending_text)
+
+    def on_answer(self, text: str) -> None:
+        self.flush_timer.stop()
+        if self.pending_id:
+            self.view.update_message(self.pending_id, text or self.tr("(empty reply)"))
+        self._persist("assistant", text)
+        self.turns.append({"role": "assistant", "content": text})
+        self.pending_id = ""
+        self.pending_text = ""
+        self.chat_worker = None
+        self.view.set_busy(False)
+
+    def on_error(self, message: str) -> None:
+        self.flush_timer.stop()
+        if self.pending_id:
+            self.view.update_message(self.pending_id, f"⚠ {message}")
+        self.pending_id = ""
+        self.pending_text = ""
+        self.chat_worker = None
+        self.view.set_busy(False)
+        self.view.add_notice(message)
+        self.refresh_backend()
+
+    def _persist(self, role: str, body: str) -> None:
+        """Encrypted store first; a plain JSONL file only if crypto is unavailable."""
+        try:
+            append_history(role, body)
+            return
+        except Exception:
+            pass
+        try:
+            with (state_dir() / "chat.jsonl").open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps({"role": role, "body": body, "ts": time.time()}) + "\n")
+        except Exception:
+            pass
+
+    def history_rows(self) -> list[tuple[str, str]]:
+        try:
+            return load_history()
+        except Exception:
+            pass
+        rows: list[tuple[str, str]] = []
+        try:
+            for line in (state_dir() / "chat.jsonl").read_text(encoding="utf-8").splitlines():
+                payload = json.loads(line)
+                rows.append((str(payload.get("role", "")), str(payload.get("body", ""))))
+        except Exception:
+            pass
+        return rows
+
+    def restore_history(self) -> None:
+        for index, (role, body) in enumerate(self.history_rows()[-40:]):
+            if role not in ("user", "assistant", "system"):
+                continue
             try:
-                self.view.add_message(f"h{index}", item.role, item.body, item.meta)
+                self.view.add_message(f"h{index}", role, body)
             except ValueError:
                 continue
+        self.turns = [
+            {"role": role, "content": body}
+            for role, body in self.history_rows()[-12:]
+            if role in ("user", "assistant")
+        ]
 
     def open_history(self) -> None:
-        try:
-            items = secure_load_chat_history()
-        except Exception:
-            items = []
-        if not items:
-            self.view.add_message(f"sys{int(time.time())}", "system", "No archived messages yet.")
+        rows = self.history_rows()
+        if not rows:
+            self.view.add_notice(self.tr("No archived messages yet."))
             return
-        dialog = HistoryDialog(items, self.theme, self)
-        if dialog.exec() == QDialog.DialogCode.Accepted and dialog.selected_item is not None:
+        dialog = HistoryDialog(rows, self.view.theme, self)
+        if dialog.exec() == QDialog.DialogCode.Accepted and dialog.selected_index >= 0:
+            role, body = rows[dialog.selected_index]
             self.view.clear_messages()
-            self.view.add_message(
-                f"r{int(time.time())}",
-                dialog.selected_item.role,
-                dialog.selected_item.body,
-                dialog.selected_item.meta,
-            )
+            self.view.add_message(f"r{int(time.time())}", role if role in ("user", "assistant", "system") else "system", body)
 
+    # -- attachments ------------------------------------------------------ #
     def attach_file(self) -> None:
         path, _ = QFileDialog.getOpenFileName(self, "Attach file")
         if not path:
             return
-        self._attachments.append(Path(path))
-        names = ", ".join(p.name for p in self._attachments)
+        self.attachments.append(Path(path))
+        names = ", ".join(p.name for p in self.attachments)
         self.view.editor.setPlaceholderText(f"Attached: {names}")
 
-    def attach_screen(self) -> None:
-        screen = QApplication.primaryScreen()
-        if screen is None:
+    def toggle_share(self, kind: str) -> None:
+        """Camera/screen sharing: auto capture on an interval, badge + chime visible."""
+        interval = self._interval_for(kind)
+        if self.sharing.get(kind):
+            self.sharing[kind] = False
+            self.capture_timers[kind].stop()
+            self.view.set_share_state(kind, False)
+            self.overlay.set_active([name for name, on in self.sharing.items() if on])
+            self.frame_attachments.pop(kind, None)
+            self.refresh_attachments()
+            self.view.add_notice(f"{kind.capitalize()} sharing off")
+            self._sync_voice_context()
             return
-        SCREENSHOT_DIR.mkdir(parents=True, exist_ok=True)
-        target = SCREENSHOT_DIR / f"screen_{int(time.time() * 1000)}.png"
-        if not screen.grabWindow(0).save(str(target), "PNG"):
-            self.view.add_message(f"sys{int(time.time())}", "system", "Screen capture failed.")
+        self.sharing[kind] = True
+        self.view.set_share_state(kind, True)
+        self.overlay.set_active([name for name, on in self.sharing.items() if on])
+        self.capture_frame(kind, chime=True)
+        self.capture_timers[kind].start(int(interval * 1000))
+        self.view.add_notice(f"{kind.capitalize()} sharing on — a frame every {int(interval)}s")
+        self._sync_voice_context()
+
+    def _sync_voice_context(self) -> None:
+        stage = self._voice_stage()
+        if stage is not None:
+            stage.set_context(bool(self.sharing.get("screen")))
+
+    def _interval_for(self, kind: str) -> float:
+        config = self.voice_config()
+        key = "camera_interval_seconds" if kind == "camera" else "screen_interval_seconds"
+        try:
+            raw = float(config.get(key, 10 if kind == "camera" else 30) or 0)
+        except (TypeError, ValueError):
+            raw = 10.0 if kind == "camera" else 30.0
+        # Never capture faster than this, even if the settings ask for less.
+        return max(5.0, raw)
+
+    def capture_frame(self, kind: str, chime: bool = False) -> None:
+        config = self.voice_config()
+        config[f"{kind}_enabled"] = True
+        try:
+            path = capture_snapshot(config) if kind == "camera" else capture_screenshot(config)
+        except Exception as exc:
+            self.view.add_notice(f"{kind.capitalize()} capture failed: {exc}")
             return
-        self._attachments.append(target)
-        self.view.add_message(
-            f"sys{int(time.time())}", "system", f"Screen context attached: {target.name}"
+        self.frame_attachments[kind] = Path(path)
+        if chime:
+            self.overlay.flash(kind)
+        self.refresh_attachments()
+
+    def refresh_attachments(self) -> None:
+        frames = list(self.frame_attachments.values())
+        self.attachments = [p for p in self.attachments if p in frames] + frames
+        names = ", ".join(path.name for path in self.attachments)
+        self.view.editor.setPlaceholderText(
+            f"Attached: {names}" if names else self.tr("Message the model…  Enter sends, Shift+Enter adds a line")
         )
 
-    def dictate(self) -> None:
-        from hanauta_aipopup.tts import _voice_mode_settings
-        from hanauta_aipopup.voice import _voice_mode_defaults
+    # -- voice mode ------------------------------------------------------- #
+    def voice_config(self) -> dict:
+        config = dict(VOICE_DEFAULTS)
+        config.update(dict(self.settings.get("_voice_mode", {}) or {}))
+        return config
 
-        if self._dictation is not None and self._dictation.isRunning():
+    def build_profiles(self) -> dict:
+        profiles = {}
+        for key in ("lfm3", "llamacpp", "koboldcpp", "ollama"):
+            payload = dict(self.settings.get(key, {}) or {})
+            if not payload:
+                continue
+            profiles[key] = BackendProfile(
+                key,
+                TITLES.get(key, key),
+                "openai_compat",
+                Path(str(payload.get("gguf_path", key))).name or key,
+                str(payload.get("host", DEFAULT_HOSTS.get(key, ""))) or DEFAULT_HOSTS.get(key, ""),
+                "koboldcpp",
+                False,
+                True,
+            )
+        return profiles
+
+    def toggle_voice(self) -> None:
+        if self.voice_worker is not None or self._voice_page_active:
+            self.stop_voice()
             return
-        config = _voice_mode_settings(self.settings) if self.settings else _voice_mode_defaults()
-        profiles = {"lfm3": self.profile_for("lfm3")}
-        self.view.add_message(f"sys{int(time.time())}", "system", "Listening for dictation…")
-        worker = DictationWorker(config, profiles, self.settings)
-        self._dictation = worker
+        self.start_voice()
+
+    def start_voice(self) -> None:
+        """Open the Yuna stage and start the hands-free listen/answer loop."""
+        self.settings = load_settings()
+        target = resolve_target(self.settings)
+        if not target.configured or not target.host:
+            self.view.add_notice("Configure LFM3 before using voice mode.")
+            return
+        if not _probe(target.host):
+            self.view.add_notice("LFM3 is not running — press Start backend.")
+            return
+        stage = self.open_voice_stage()
+        if self.voice_worker is not None:
+            return
+        worker = VoiceLoopWorker(dict(self.settings), target, self.voice_config())
+        self.voice_worker = worker
+        worker.status.connect(self._voice_status)
+        worker.transcript.connect(self._voice_transcript)
+        worker.reply.connect(self._voice_reply)
+        worker.audio_ready.connect(self._voice_audio)
+        worker.interrupted.connect(self._voice_interrupted)
+        worker.failed.connect(lambda message: self._voice_status(f"Voice mode: {message}"))
+        worker.stop_requested.connect(self.stop_voice)
+        worker.finished.connect(lambda w=worker: self._forget_voice_thread(w))
+        self.view.set_voice_active(True)
+        stage.set_microphone(True)
+        worker.start()
+
+    def stop_voice(self) -> None:
+        """Stop listening, silence speech and close the stage."""
+        worker, self.voice_worker = self.voice_worker, None
+        if worker is not None:
+            self._retire_voice_worker(worker)
+        self.player.stop()
+        self.view.set_voice_active(False)
+        self.show_chat_page()
+        self.view.add_notice("Voice mode off", "voice-status")
+
+    def _retire_voice_worker(self, worker: VoiceLoopWorker) -> None:
+        """Keep a Python reference until QThread reports finished."""
+        if worker not in self._voice_threads:
+            self._voice_threads.append(worker)
+        worker.stop()
+
+    def _forget_voice_thread(self, worker: VoiceLoopWorker) -> None:
+        self._voice_threads = [item for item in self._voice_threads if item is not worker]
+
+    def open_voice_stage(self) -> VoiceStage:
+        """Show the stage as this window's page, the way a single-page app would."""
+        if not self._voice_page_active:
+            self._chat_size = self.size()
+            self._voice_page_active = True
+            self.setWindowTitle(f"{APP_NAME} · Voice")
+            screen = QGuiApplication.primaryScreen()
+            available = screen.availableGeometry() if screen is not None else None
+            width = max(self.width(), 540)
+            height = max(self.height(), 880)
+            if available is not None:
+                width, height = min(width, available.width()), min(height, available.height())
+            self.resize(width, height)
+        self.stack.setCurrentWidget(self.stage)
+        stage = self.stage
+        stage.set_context(bool(self.sharing.get("screen")))
+        stage.set_transcripts(self._last_user_text, self._last_reply_text)
+        stage.set_personality(str(self.voice_config().get("personality", "default")))
+        stage.set_status("Voice mode · ready")
+        return stage
+
+    def show_chat_page(self) -> None:
+        """Return to the chat page and the size it had before voice mode."""
+        if not self._voice_page_active:
+            return
+        self._voice_page_active = False
+        self.stack.setCurrentWidget(self.view)
+        self.setWindowTitle(APP_NAME)
+        if self._chat_size.isValid():
+            self.resize(self._chat_size)
+
+    def _voice_stage(self) -> VoiceStage | None:
+        return self.stage
+
+    def _voice_action(self, action: str) -> None:
+        if action in ("end", "close"):
+            self.stop_voice()
+            return
+        if action == "pause":
+            worker, self.voice_worker = self.voice_worker, None
+            if worker is not None:
+                self._retire_voice_worker(worker)
+            self.player.stop()
+            self.view.set_voice_active(False)
+            stage = self._voice_stage()
+            if stage is not None:
+                stage.set_status("Voice mode · paused")
+            return
+        if action == "resume":
+            self.start_voice()
+        elif action == "capture":
+            self.capture_frame("screen", chime=True)
+        elif action == "attach":
+            self.attach_file()
+        elif action in ("conversation", "history"):
+            self.open_history()
+        elif action == "keyboard":
+            self.show()
+            self.raise_()
+            self.activateWindow()
+            self.view.editor.setFocus()
+
+    def _voice_microphone(self, on: bool) -> None:
+        if on:
+            self.start_voice()
+            return
+        worker, self.voice_worker = self.voice_worker, None
+        if worker is not None:
+            self._retire_voice_worker(worker)
+        self.player.stop()
+        self.view.set_voice_active(False)
+        stage = self._voice_stage()
+        if stage is not None:
+            stage.set_status("Microphone off — press Mic to listen")
+
+    def _voice_context(self, on: bool) -> None:
+        """Screen context follows the capture sharing state, so one switch rules it."""
+        if bool(self.sharing.get("screen")) != bool(on):
+            self.toggle_share("screen")
+        stage = self._voice_stage()
+        if stage is not None:
+            stage.set_context(bool(self.sharing.get("screen")))
+
+    def _voice_personality(self, key: str) -> None:
+        """Persist the persona picked in the stage; the next turn uses it."""
+        self.settings = load_settings()
+        voice = dict(self.settings.get("_voice_mode", {}) or {})
+        voice["personality"] = str(key or "default")
+        self.settings["_voice_mode"] = voice
+        save_settings(self.settings)
+        label = PERSONALITY_PRESETS.get(str(key), PERSONALITY_PRESETS["default"])[0]
+        self.view.add_notice(f"Personality · {label}")
+        if self.voice_worker is not None:
+            self.voice_worker.refresh_config(self.voice_config())
+
+    def _voice_status(self, text: str) -> None:
+        self.view.add_notice(text, "voice-status")
+        stage = self._voice_stage()
+        if stage is not None:
+            stage.set_status(text)
+
+    def _voice_audio(self, path: str, _seconds: float) -> None:
+        stage = self._voice_stage()
+        if stage is not None:
+            stage.play_wav(path)
+        else:
+            self.player.play(path)
+
+    def _voice_interrupted(self) -> None:
+        self.player.stop()
+        stage = self._voice_stage()
+        if stage is not None:
+            stage.stop()
+            stage.set_status("Interrupted — listening")
+
+    def _voice_transcript(self, text: str) -> None:
+        self._last_user_text = text
+        self.view.add_message(f"u{time.time_ns()}", "user", text)
+        stage = self._voice_stage()
+        if stage is not None:
+            stage.set_user_text(text)
+        self._persist("user", text)
+
+    def _voice_reply(self, text: str, _emotion: str) -> None:
+        self._last_reply_text = text
+        self.view.add_message(f"a{time.time_ns()}", "assistant", text)
+        stage = self._voice_stage()
+        if stage is not None:
+            stage.set_assistant_text(text)
+        self._persist("assistant", text)
+
+    # -- dictation -------------------------------------------------------- #
+    def dictate(self) -> None:
+        if self.dictation is not None and self.dictation.isRunning():
+            return
+        target = resolve_target(self.settings)
+        if not target.configured or not target.host:
+            self.view.add_notice("Configure LFM3 before dictating.")
+            return
+        self.view.add_notice(self.tr("Listening…"))
+        language = _asr_language_label(str(self.voice_config().get("asr_language", "en-us")))
+        worker = DictationWorker(target, 8.0, language)
+        self.dictation = worker
         worker.finished_ok.connect(self._dictation_done)
         worker.failed.connect(self._dictation_failed)
         worker.start()
 
-    def profile_for(self, key: str) -> BackendProfile:
-        payload = dict(self.settings.get(key, {}) or {})
-        return BackendProfile(
-            key,
-            "LFM3-Omni 2B",
-            "openai_compat",
-            Path(str(payload.get("gguf_path", "lfm3"))).name,
-            str(payload.get("host", "127.0.0.1:8082")),
-            "koboldcpp",
-            False,
-            True,
-        )
-
     def _dictation_done(self, text: str) -> None:
-        self._dictation = None
+        self.dictation = None
         self.view.editor.setPlainText(text)
         self.view.editor.setFocus()
 
     def _dictation_failed(self, message: str) -> None:
-        self._dictation = None
-        self.view.add_message(f"sys{int(time.time() * 1000)}", "system", f"STT failed: {message}")
+        self.dictation = None
+        self.view.add_notice(f"STT failed: {message}")
 
-    def accept_message(self, text: str) -> None:
-        prompt = text.strip()
-        if not prompt:
+    # -- shell ------------------------------------------------------------ #
+    def keyPressEvent(self, event) -> None:
+        if event.key() == Qt.Key.Key_Escape:
+            self.hide()
             return
-        label, host, model, api_key = resolve_llm(self.settings)
-        if not host:
-            self.view.set_backend_state(False)
+        super().keyPressEvent(event)
+
+    def shutdown(self) -> None:
+        """Release workers, timers, hotkey grabs and the overlay exactly once.
+
+        Closing the window only hides it — the global hotkeys must keep working
+        while the popup is behind a game — so this runs on Ctrl+C, SIGTERM and
+        app exit instead.
+        """
+        if getattr(self, "_shut_down", False):
             return
-        if self._worker is not None and self._worker.isRunning():
-            return
+        self._shut_down = True
+        self.stage.stop()
+        _LFM3_VOICE.close()
+        if self.voice_worker is not None:
+            self.voice_worker.stop()
+            self.voice_worker.wait(2000)
+            self.voice_worker = None
+        for worker in list(self._voice_threads):
+            worker.stop()
+            worker.wait(1500)
+        self._voice_threads.clear()
+        for timer in self.capture_timers.values():
+            timer.stop()
+        self.hotkeys.stop()
+        self.overlay.close()
+        self.player.stop()
+        if self.chat_worker is not None:
+            self.chat_worker.cancel()
+            self.chat_worker.wait(2000)
+            self.chat_worker = None
 
-        attached = ""
-        if self._attachments:
-            attached = "\n\nAttached files:\n" + "\n".join(str(p) for p in self._attachments)
-            prompt += attached
+    def closeEvent(self, event) -> None:
+        event.ignore()
+        self.hide()
 
-        user_id = f"u{int(time.time() * 1000)}"
-        self.view.add_message(user_id, "user", text.strip(), datetime.now().strftime("%H:%M"))
-        self.view.clear_draft()
-        self.view.set_busy(True)
-        self._attachments.clear()
-        self.view.editor.setPlaceholderText("Message the model…  Enter sends, Shift+Enter adds a line")
 
-        self._history.append(ChatItemData(role="user", title="You", body=text.strip()))
-        self._persist(user_id, "user", text.strip())
+def _install_signal_handlers(app: QApplication, window: PopupController) -> None:
+    """Ctrl+C must tear down cleanly, not leave a hotkey grab or thread behind."""
 
-        character = None
+    def _on_signal(signum, _frame) -> None:
+        app._exit_code = 128 + int(signum)  # type: ignore[attr-defined]
+        window.shutdown()
+        app.quit()
+
+    for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
         try:
-            library = load_character_library()
-            if library:
-                character = library[0]
-        except Exception:
-            character = None
-        messages = _chat_messages_for_prompt(prompt, character, False)
-        history = [
-            {"role": item.role if item.role != "system" else "system", "content": item.body}
-            for item in self._history[-12:]
-            if item.body.strip()
+            signal.signal(sig, _on_signal)
+        except (ValueError, OSError, AttributeError):
+            continue
+    # Qt's event loop only returns to Python on events; this light timer is what
+    # lets the handler above actually run while the loop is idle.
+    pump = QTimer(app)
+    pump.setInterval(200)
+    pump.timeout.connect(lambda: None)
+    pump.start()
+    app._signal_pump = pump  # type: ignore[attr-defined]
+
+
+def main() -> int:
+    app = QApplication(sys.argv)
+    app.setApplicationName(APP_NAME)
+    window = PopupController()
+    _install_signal_handlers(app, window)
+    app.aboutToQuit.connect(window.shutdown)
+    window.show()
+    try:
+        code = app.exec()
+    except KeyboardInterrupt:
+        window.shutdown()
+        return 130
+    # A handled SIGINT/SIGTERM must be visible to the shell, not reported as 0.
+    return int(getattr(app, "_exit_code", 0) or code)
+
+
+
+# --------------------------------------------------------------------------- #
+# LFM3's own voice — LiquidCodec speech through a helper process
+#
+# llama.cpp serves LFM3 as text-in/text-out (its audio-output support is still
+# a planning issue upstream) and the abliterated GGUF has no audio decoder, so
+# LFM3's voice needs Liquid's transformers checkpoint in its own venv. The
+# helper loads the 2B model once and then answers one JSON request per line.
+# --------------------------------------------------------------------------- #
+LFM3_VOICE_MODEL = "LiquidAI/LFM3-Omni-2B"
+LFM3_VOICE_PACKAGES = [
+    "transformers>=5.20.2",
+    "torch",
+    "torchvision",
+    "torchcodec",
+    "accelerate",
+    "pillow",
+    "librosa",
+    "soundfile",
+]
+LFM3_VOICE_HELPER = r'''#!/usr/bin/env python3
+"""LFM3-Omni speech helper (runs inside the popup's LFM3 voice venv).
+
+Loads the model once, then reads one JSON request per line from stdin and
+answers with one JSON line: {"path": "/…/speech.wav"} or {"error": "…"}.
+"""
+import argparse
+import json
+import sys
+import time
+import traceback
+from pathlib import Path
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--model", default="LiquidAI/LFM3-Omni-2B")
+    parser.add_argument("--out-dir", default="")
+    args = parser.parse_args()
+
+    import soundfile as sf
+    import torch
+    from transformers import AutoModelForMultimodalLM, AutoProcessor
+
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    dtype = torch.bfloat16 if device == "cuda" else torch.float32
+    model = AutoModelForMultimodalLM.from_pretrained(
+        args.model, dtype=dtype, device_map=device, trust_remote_code=True
+    ).eval()
+    processor = AutoProcessor.from_pretrained(args.model, trust_remote_code=True)
+    codec = processor.audio_tokenizer.to(device=device).eval()
+
+    for raw in sys.stdin:
+        line = raw.strip()
+        if not line:
+            continue
+        try:
+            request = json.loads(line)
+            text = " ".join(str(request.get("text", "")).split())
+            language = str(request.get("language", "American English"))
+            gender = str(request.get("gender", "female")).lower()
+            if gender not in ("female", "male"):
+                gender = "female"
+            if not text:
+                raise ValueError("empty text")
+            conversation = [
+                {"role": "system", "content": f"Perform TTS in {language} using a {gender} voice."},
+                {"role": "user", "content": text},
+            ]
+            inputs = processor.apply_chat_template(
+                conversation,
+                add_generation_prompt=True,
+                tokenize=True,
+                return_dict=True,
+                return_tensors="pt",
+            ).to(device)
+            with torch.no_grad():
+                outputs = model.generate(
+                    **inputs,
+                    max_new_tokens=1024,
+                    generation_mode="audio",
+                    audio_temperature=0.4,
+                    audio_repetition_penalty=1.2,
+                )
+                audio = outputs.audio_codes[:1, :, : outputs.audio_lengths[0]]
+                waveform = codec.decode(audio).audio_values[0]
+            samples = waveform.squeeze(0).float().cpu().numpy()
+            out_dir = Path(args.out_dir or ".")
+            out_dir.mkdir(parents=True, exist_ok=True)
+            target = out_dir / f"lfm3_{int(time.time_ns())}.wav"
+            sf.write(str(target), samples, 24_000)
+            print(json.dumps({"path": str(target)}), flush=True)
+        except Exception as exc:
+            traceback.print_exc()
+            print(json.dumps({"error": f"{type(exc).__name__}: {exc}"}), flush=True)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+'''
+
+
+def lfm3_voice_dir() -> Path:
+    return Path.home() / ".cache" / "hanauta-ai-popup" / "runtimes" / "lfm3-voice"
+
+
+def lfm3_voice_python() -> Path | None:
+    root = lfm3_voice_dir()
+    for candidate in (root / "bin" / "python", root / "Scripts" / "python.exe"):
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def lfm3_voice_ready() -> bool:
+    return lfm3_voice_python() is not None and (lfm3_voice_dir() / "lfm3-voice-ready").is_file()
+
+
+LFM3_LANGUAGE_CODES = {
+    "American English": "en",
+    "British English": "en",
+    "Spanish": "es",
+    "Portuguese": "pt",
+    "French": "fr",
+    "German": "de",
+    "Italian": "it",
+    "Dutch": "nl",
+    "Polish": "pl",
+    "Danish": "da",
+    "Finnish": "fi",
+    "Swedish": "sv",
+    "Greek": "el",
+    "Turkish": "tr",
+    "Hebrew": "he",
+    "Arabic": "ar",
+    "Hindi": "hi",
+    "Japanese": "ja",
+    "Korean": "ko",
+    "Chinese": "zh",
+}
+
+_LFM3_LAST_ERROR = ""
+
+
+def lfm3_voice_status() -> str:
+    """Human-readable state of both native routes (llama-tts first, helper second)."""
+    if bundled_llama_tts() is not None:
+        return "Native llama-tts found — replies speak with the loaded GGUF."
+    if lfm3_voice_ready():
+        return "Liquid helper ready — stock LFM3-Omni weights (~4.5 GB on first reply)."
+    if lfm3_voice_python() is not None:
+        return "Helper virtualenv found but setup is incomplete — press Prepare again."
+    return (
+        "No LFM3 speech yet: build llama-tts with scripts/build_llama_lfm3.sh, "
+        "or press Prepare for the transformers helper."
+    )
+
+
+def lfm3_voice_error() -> str:
+    return _LFM3_LAST_ERROR or lfm3_voice_status()
+
+
+def lfm3_tts_command(
+    binary: Path,
+    model: Path,
+    mmproj: Path | None,
+    text: str,
+    output: Path,
+    config: dict,
+) -> list[str]:
+    """argv for ``llama-tts`` exactly as the Liquid GGUF card documents it."""
+    language = LFM3_LANGUAGE_CODES.get(
+        str(config.get("tts_lfm3_language", "American English") or "American English"), "en"
+    )
+    voice = str(config.get("tts_lfm3_gender", "female") or "female").lower()
+    if voice not in ("female", "male"):
+        voice = "female"
+    command = [str(binary), "-m", str(model)]
+    if mmproj is not None:
+        command.extend(["-mm", str(mmproj)])
+    command.extend(
+        ["-p", text, "-o", str(output), "--tts-lang", language, "--tts-voice", voice]
+    )
+    return command
+
+
+def write_lfm3_voice_helper() -> Path:
+    target = lfm3_voice_dir() / "lfm3_tts_helper.py"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if not target.is_file() or target.read_text(encoding="utf-8") != LFM3_VOICE_HELPER:
+        target.write_text(LFM3_VOICE_HELPER, encoding="utf-8")
+    return target
+
+
+def prepare_lfm3_voice(progress=None) -> tuple[bool, str]:
+    """Create the isolated venv and install Liquid's TTS stack (heavy, opt-in)."""
+    root = lfm3_voice_dir()
+    root.parent.mkdir(parents=True, exist_ok=True)
+    python = root / "bin" / "python"
+    try:
+        if not python.is_file():
+            if progress:
+                progress("Creating the LFM3 voice virtualenv…")
+            subprocess.run([sys.executable, "-m", "venv", str(root)], check=True, timeout=600)
+        if progress:
+            progress("Installing torch + transformers (several GB, one time)…")
+        subprocess.run(
+            [str(python), "-m", "pip", "install", "--upgrade", "pip"],
+            check=True,
+            timeout=1200,
+            capture_output=True,
+        )
+        subprocess.run(
+            [str(python), "-m", "pip", "install", *LFM3_VOICE_PACKAGES],
+            check=True,
+            timeout=7200,
+        )
+    except Exception as exc:
+        return False, f"LFM3 voice setup failed: {exc}"
+    write_lfm3_voice_helper()
+    (root / "lfm3-voice-ready").write_text("ok", encoding="utf-8")
+    return True, "LFM3 voice runtime ready — the first reply loads the 2B model."
+
+
+class Lfm3Voice:
+    """Long-lived helper process that speaks through LFM3-Omni's LiquidCodec."""
+
+    def __init__(self) -> None:
+        self._process: subprocess.Popen | None = None
+        self._lines: queue.Queue[str] = queue.Queue()
+        self._lock = threading.Lock()
+        self._log = None
+
+    def command(self) -> list[str]:
+        python = lfm3_voice_python()
+        if python is None:
+            raise RuntimeError(lfm3_voice_status())
+        out_dir = state_dir() / "voice-tts"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        return [
+            str(python),
+            str(write_lfm3_voice_helper()),
+            "--model",
+            LFM3_VOICE_MODEL,
+            "--out-dir",
+            str(out_dir),
         ]
-        messages = [messages[0]] + history
 
-        assistant_id = f"a{int(time.time() * 1000)}"
-        self.view.add_message(assistant_id, "assistant", "…")
-        self._pending_id = assistant_id
-        self._pending_text = ""
-        self._last_flush = 0.0
+    def _start(self) -> None:
+        log_path = state_dir() / "lfm3-voice.log"
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        self._log = log_path.open("a", encoding="utf-8")
+        self._lines = queue.Queue()
+        self._process = subprocess.Popen(
+            self.command(),
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=self._log,
+            text=True,
+            bufsize=1,
+        )
 
-        worker = ChatWorker(host, model, messages, api_key)
-        self._worker = worker
-        worker.delta.connect(self._on_delta)
-        worker.finished_ok.connect(self._on_done)
-        worker.failed.connect(self._on_failed)
-        worker.start()
+        def _read() -> None:
+            process = self._process
+            if process is None or process.stdout is None:
+                return
+            for line in process.stdout:
+                self._lines.put(line.strip())
+            self._lines.put("")
 
-    def _on_delta(self, piece: str) -> None:
-        self._pending_text += piece
-        now = time.monotonic()
-        if now - self._last_flush >= 0.05:  # coalesce to ~20 fps
-            self._last_flush = now
-            self.view.update_message(self._pending_id, self._pending_text)
+        threading.Thread(target=_read, daemon=True).start()
 
-    def _on_done(self, answer: str) -> None:
-        final = answer or self._pending_text
-        self.view.update_message(self._pending_id, final or "(empty reply)")
-        self.view.set_busy(False)
-        self._worker = None
-        self._history.append(ChatItemData(role="assistant", title="Hanauta AI", body=final))
-        self._persist(self._pending_id, "assistant", final)
+    def synthesize(
+        self, text: str, language: str = "American English", gender: str = "female", timeout: float = 600.0
+    ) -> Path | None:
+        spoken = " ".join(str(text or "").split())
+        if not spoken:
+            return None
+        with self._lock:
+            try:
+                if self._process is None or self._process.poll() is not None:
+                    self._start()
+                process = self._process
+                if process is None or process.stdin is None:
+                    return None
+                process.stdin.write(json.dumps({"text": spoken, "language": language, "gender": gender}) + "\n")
+                process.stdin.flush()
+                line = self._lines.get(timeout=max(30.0, float(timeout)))
+            except Exception:
+                self.close()
+                return None
+            if not line:
+                self.close()
+                return None
+            try:
+                payload = json.loads(line)
+            except ValueError:
+                return None
+            path = Path(str(payload.get("path", "")))
+            return path if path.is_file() else None
 
-    def _on_failed(self, message: str) -> None:
-        self.view.update_message(self._pending_id, f"The backend did not answer.\n{message}")
-        self.view.set_busy(False)
-        self._worker = None
-        self.view.set_backend_state(False)
+    def close(self) -> None:
+        process, self._process = self._process, None
+        if process is not None:
+            try:
+                process.terminate()
+                process.wait(timeout=5)
+            except Exception:
+                try:
+                    process.kill()
+                except Exception:
+                    pass
+        if self._log is not None:
+            try:
+                self._log.close()
+            except Exception:
+                pass
+            self._log = None
 
-    def _persist(self, message_id: str, role: str, body: str) -> None:
-        if not body.strip():
+
+_LFM3_VOICE = Lfm3Voice()
+
+
+def lfm3_voice_engine() -> Lfm3Voice:
+    return _LFM3_VOICE
+
+
+def synthesize_lfm3_speech(text: str, config: dict) -> Path | None:
+    """Speak through LFM3's own codec; None when no native route can produce audio.
+
+    Order matters: ``llama-tts`` runs the same GGUF that answers (abliterated
+    weights), so it is preferred. The transformers helper is the official
+    Liquid checkpoint — the Abliter8 repo publishes no speech decoder — and is
+    used only when the native tool is missing.
+    """
+    global _LFM3_LAST_ERROR
+    spoken = " ".join(str(text or "").split())
+    if not spoken:
+        return None
+    language = str(config.get("tts_lfm3_language", "American English") or "American English")
+    gender = str(config.get("tts_lfm3_gender", "female") or "female").lower()
+    try:
+        timeout = float(config.get("tts_lfm3_timeout", 600) or 600)
+    except (TypeError, ValueError):
+        timeout = 600.0
+
+    binary = bundled_llama_tts()
+    settings = load_settings()
+    target = resolve_target(settings)
+    payload = dict(settings.get(target.key, {}) or {})
+    model = _path_or_none(payload.get("gguf_path"))
+    mmproj = _path_or_none(payload.get("mmproj_path"))
+    if binary is not None and model is not None:
+        output = state_dir() / "voice-tts" / f"lfm3_{time.time_ns()}.wav"
+        output.parent.mkdir(parents=True, exist_ok=True)
+        command = lfm3_tts_command(binary, model, mmproj, spoken, output, config)
+        env = dict(os.environ)
+        library = str(binary.parent)
+        current = env.get("LD_LIBRARY_PATH", "").strip()
+        env["LD_LIBRARY_PATH"] = f"{library}:{current}" if current else library
+        try:
+            result = subprocess.run(
+                command, capture_output=True, text=True, timeout=timeout, env=env, check=False
+            )
+        except Exception as exc:
+            _LFM3_LAST_ERROR = f"llama-tts could not run: {exc}"
+        else:
+            if result.returncode == 0 and output.is_file() and wav_rms(output) > 0:
+                _LFM3_LAST_ERROR = ""
+                return output
+            detail = [line for line in (result.stderr or result.stdout or "").splitlines() if line.strip()]
+            _LFM3_LAST_ERROR = "llama-tts: " + (detail[-1] if detail else "no audio produced")
+    elif binary is None:
+        _LFM3_LAST_ERROR = lfm3_voice_status()
+
+    if lfm3_voice_ready():
+        try:
+            clip = lfm3_voice_engine().synthesize(spoken, language, gender, timeout=timeout)
+        except Exception as exc:
+            clip = None
+            _LFM3_LAST_ERROR = f"LFM3 helper failed: {exc}"
+        if clip is not None:
+            if binary is None:
+                _LFM3_LAST_ERROR = ""
+            return clip
+        _LFM3_LAST_ERROR = _LFM3_LAST_ERROR or "LFM3 helper returned no audio (see lfm3-voice.log)."
+    return None
+
+
+def synthesize_speech(text: str, config: dict) -> Path | None:
+    """Speech output: LFM3's own voice, espeak-ng, or piper."""
+    spoken = " ".join(str(text or "").split())
+    if not spoken:
+        return None
+    output = state_dir() / "voice-tts" / f"speech_{time.time_ns()}.wav"
+    output.parent.mkdir(parents=True, exist_ok=True)
+    backend = str(config.get("tts_backend", "espeak")).strip().lower()
+
+    if backend == "lfm3":
+        clip = synthesize_lfm3_speech(spoken, config)
+        if clip is not None:
+            return clip
+        if not bool(config.get("tts_fallback", True)):
+            return None
+        # Fall through to espeak rather than leaving voice mode silent.
+
+    if backend == "piper":
+        piper = shutil.which("piper")
+        model = Path(str(config.get("tts_piper_model", "")).strip()).expanduser()
+        if piper and str(model) and model.is_file():
+            try:
+                subprocess.run(
+                    [piper, "--model", str(model), "-f", str(output)],
+                    input=spoken.encode("utf-8"), capture_output=True, timeout=120, check=True,
+                )
+            except Exception:
+                return None
+            return output if output.exists() and output.stat().st_size > 44 else None
+
+    espeak = shutil.which("espeak-ng") or shutil.which("espeak")
+    if not espeak:
+        return None
+    command = [espeak, "-w", str(output), "-s", str(config.get("tts_speed", "165") or "165")]
+    voice = str(config.get("tts_voice", "")).strip()
+    if voice:
+        command += ["-v", voice]
+    command.append(spoken)
+    try:
+        subprocess.run(command, capture_output=True, timeout=120, check=True)
+    except Exception:
+        return None
+    if not output.exists() or output.stat().st_size <= 44:
+        return None
+    # espeak can report phonemes but not timings, so the sidecar scales them
+    # onto the measured clip; the stage then animates timed visemes.
+    write_viseme_sidecar(output, spoken, voice, str(config.get("tts_speed", "165") or "165"))
+    return output
+
+
+class TtsPlayer(QObject):
+    """Plays synthesized speech, falling back to an external player."""
+
+    def __init__(self, parent: QObject | None = None) -> None:
+        super().__init__(parent)
+        self._player = None
+        self._output = None
+        try:
+            from PyQt6.QtMultimedia import QAudioOutput, QMediaPlayer
+
+            self._output = QAudioOutput(self)
+            self._player = QMediaPlayer(self)
+            self._player.setAudioOutput(self._output)
+        except Exception:
+            self._player = None
+
+    def play(self, path: str) -> None:
+        target = Path(str(path))
+        if not target.exists():
+            return
+        if self._player is not None:
+            try:
+                self._player.stop()
+                self._player.setSource(QUrl.fromLocalFile(str(target)))
+                self._player.play()
+                return
+            except Exception:
+                pass
+        for command in (
+            ["pw-play", str(target)],
+            ["aplay", str(target)],
+            ["ffplay", "-autoexit", "-nodisp", "-loglevel", "quiet", str(target)],
+        ):
+            try:
+                subprocess.Popen(
+                    command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True
+                )
+                return
+            except Exception:
+                continue
+
+    def stop(self) -> None:
+        if self._player is None:
             return
         try:
-            item = ChatItemData(role=role, title="You" if role == "user" else "Hanauta AI", body=body)
-            item.id = message_id
-            secure_append_chat(item)
+            self._player.stop()
         except Exception:
             pass
 
 
-def main() -> int:
-    app = QApplication.instance() or QApplication(sys.argv)
-    app.setApplicationName("Hanauta AI")
-    window = PopupWindow()
-    window.show()
-    return app.exec()
+# --------------------------------------------------------------------------- #
+# Voice mode stage — holographic portrait, live transcripts, viseme lip sync
+#
+# Absorbed from the standalone ``hanauta_voice_yuna.py``: the same inverse
+# Gaussian warp around calibrated mouth/eye landmarks, but the warp is a numpy
+# bilinear gather instead of ``cv2.remap`` so voice mode does not require
+# OpenCV. Timed cues (Rhubarb ``mouthCues``) drive the mouth shape; without them
+# the WAV envelope drives the jaw. Neither path recognises phonemes.
+# --------------------------------------------------------------------------- #
+VOICE_ART_B64 = "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"
+
+# Closure / horizontal mouth scale. Rhubarb A=MBP, B=consonants, C=EH, D=AA,
+# E=AO, F=UW, G=FV, H=L, X=rest. Not a semantic classifier.
+VISEMES: dict[str, tuple[float, float]] = {
+    "A": (0.0, 1.0),
+    "B": (0.22, 1.08),
+    "C": (0.5, 1.12),
+    "D": (1.0, 1.05),
+    "E": (0.65, 0.83),
+    "F": (0.3, 0.75),
+    "G": (0.12, 1.02),
+    "H": (0.38, 1.0),
+    "X": (0.0, 1.0),
+}
+
+
+def parse_visemes(payload: object) -> list[tuple[float, float, str]]:
+    """Validate Rhubarb-style cues: ordered, non-overlapping, A-H or X."""
+    cues = payload.get("mouthCues") if isinstance(payload, dict) else payload
+    if not isinstance(cues, list):
+        raise ValueError("Visemes must be a list of {start, end, value} cues.")
+    checked: list[tuple[float, float, str]] = []
+    end = 0.0
+    for cue in cues:
+        try:
+            start = float(cue["start"])
+            stop = float(cue["end"])
+            value = str(cue["value"]).upper()
+        except (TypeError, KeyError, ValueError, IndexError) as exc:
+            raise ValueError("Invalid viseme: use {start, end, value}.") from exc
+        if not (math.isfinite(start) and math.isfinite(stop)) or not 0 <= start < stop:
+            raise ValueError(f"Viseme out of order: {start}-{stop}.")
+        if start < end:
+            raise ValueError("Overlapping visemes: cues must be ordered and disjoint.")
+        if value not in VISEMES:
+            raise ValueError(f"Unknown viseme {value!r}: use A-H or X.")
+        checked.append((start, stop, value))
+        end = stop
+    return checked
+
+
+def viseme_cues_for(path: Path) -> list[tuple[float, float, str]]:
+    """Cues shipped next to a TTS clip: ``speech.wav.json`` or ``speech.cues.json``.
+
+    The TTS engines here do not emit phoneme timings, so a sidecar written by
+    Rhubarb (or by any aligner) is how timed visemes reach the face. A malformed
+    sidecar is ignored: the envelope still animates the mouth.
+    """
+    wav = Path(path)
+    candidates = (
+        wav.with_suffix(".json"),
+        wav.with_name(wav.stem + ".cues.json"),
+        wav.with_name(wav.name + ".json"),
+    )
+    for candidate in candidates:
+        if not candidate.is_file():
+            continue
+        try:
+            return parse_visemes(json.loads(candidate.read_text(encoding="utf-8")))
+        except Exception:
+            return []
+    return []
+
+
+def wav_envelope(path: Path, step: float = 0.02) -> list[float]:
+    """Per-step RMS in [0, 1] — amplitude only, not phoneme recognition."""
+    with wave.open(str(path), "rb") as handle:
+        if handle.getsampwidth() != 2 or handle.getnchannels() not in (1, 2):
+            raise ValueError("Use 16-bit PCM WAV, mono or stereo.")
+        if handle.getcomptype() != "NONE":
+            raise ValueError("Compressed WAV is not supported.")
+        rate, channels = handle.getframerate(), handle.getnchannels()
+        frames = handle.readframes(handle.getnframes())
+    if not frames:
+        raise ValueError("Empty audio.")
+    values = array.array("h")
+    values.frombytes(frames[: len(frames) - (len(frames) % 2)])
+    if sys.byteorder == "big":
+        values.byteswap()
+    block = max(1, int(rate * step))
+    total = len(values) // channels
+    levels: list[float] = []
+    for start in range(0, total, block):
+        chunk = values[start * channels : min(total, start + block) * channels]
+        if not chunk:
+            continue
+        levels.append((sum(float(value) * value for value in chunk) / (len(chunk) * 32768.0**2)) ** 0.5)
+    if not levels:
+        raise ValueError("Empty audio.")
+    ordered = sorted(levels)
+    norm = max(0.025, ordered[int(0.95 * (len(ordered) - 1))])
+    return [max(0.0, min(1.0, (level - 0.008) / norm)) for level in levels]
+
+
+# espeak ``-x`` mnemonics -> (viseme, relative duration). Longer clusters are
+# matched first so diphthongs and affricates stay one mouth shape.
+_PHONEME_VISEMES: dict[str, tuple[str, float]] = {
+    "tS": ("B", 0.6),
+    "dZ": ("B", 0.6),
+    "aI": ("D", 1.2),
+    "aU": ("E", 1.2),
+    "OI": ("E", 1.2),
+    "eI": ("C", 1.1),
+    "oU": ("E", 1.2),
+    "@L": ("H", 0.6),
+    "@n": ("B", 0.5),
+    "p": ("A", 0.5),
+    "b": ("A", 0.5),
+    "m": ("A", 0.6),
+    "f": ("G", 0.6),
+    "v": ("G", 0.6),
+    "l": ("H", 0.6),
+    "r": ("H", 0.6),
+    "w": ("H", 0.5),
+    "j": ("H", 0.4),
+    "i": ("C", 0.8),
+    "I": ("C", 0.7),
+    "e": ("C", 0.9),
+    "E": ("C", 0.8),
+    "@": ("C", 0.6),
+    "3": ("E", 0.8),
+    "a": ("D", 1.1),
+    "A": ("D", 1.1),
+    "V": ("D", 0.9),
+    "o": ("E", 1.0),
+    "O": ("E", 1.0),
+    "u": ("F", 0.9),
+    "U": ("F", 0.8),
+    "N": ("B", 0.6),
+    "T": ("B", 0.6),
+    "D": ("B", 0.6),
+    "S": ("B", 0.6),
+    "Z": ("B", 0.6),
+    "_": ("X", 0.6),
+}
+
+
+def phoneme_visemes(phonemes: str) -> list[tuple[str, float]]:
+    """espeak mnemonics -> (viseme, relative duration) segments."""
+    text = str(phonemes or "")
+    segments: list[tuple[str, float]] = []
+    index = 0
+    while index < len(text):
+        char = text[index]
+        if char in "',.|" or char.isspace():
+            index += 1
+            continue
+        pair = text[index : index + 2]
+        if pair in _PHONEME_VISEMES:
+            viseme, weight = _PHONEME_VISEMES[pair]
+            index += 2
+        else:
+            viseme, weight = _PHONEME_VISEMES.get(char, ("B", 0.45))
+            index += 1
+        if index < len(text) and text[index] == ":":  # length mark
+            weight *= 1.8
+            index += 1
+        segments.append((viseme, weight))
+    return segments
+
+
+def visemes_from_phonemes(phonemes: str, seconds: float) -> list[tuple[float, float, str]]:
+    """Scale phoneme segments onto a clip's real length to get timed cues."""
+    segments = phoneme_visemes(phonemes)
+    total = sum(weight for _viseme, weight in segments)
+    try:
+        duration = float(seconds)
+    except (TypeError, ValueError):
+        return []
+    if not segments or total <= 0 or duration <= 0:
+        return []
+    cues: list[tuple[float, float, str]] = []
+    cursor = 0.0
+    for viseme, weight in segments:
+        end = cursor + weight * duration / total
+        if cues and cues[-1][2] == viseme:
+            cues[-1] = (cues[-1][0], end, viseme)
+        else:
+            cues.append((cursor, end, viseme))
+        cursor = end
+    # Rounding must never leave a zero-length final cue.
+    cues[-1] = (cues[-1][0], max(cues[-1][0] + 0.01, duration), cues[-1][2])
+    return cues
+
+
+def espeak_phonemes(text: str, voice: str = "", speed: str = "") -> str:
+    """Phoneme mnemonics from espeak, for coarse timed visemes (no audio)."""
+    espeak = shutil.which("espeak-ng") or shutil.which("espeak")
+    spoken = " ".join(str(text or "").split())
+    if not espeak or not spoken:
+        return ""
+    command = [espeak, "-x", "-q"]
+    if voice:
+        command += ["-v", voice]
+    if speed:
+        command += ["-s", str(speed)]
+    command.append(spoken)
+    try:
+        result = subprocess.run(command, capture_output=True, text=True, timeout=60, check=False)
+    except Exception:
+        return ""
+    return (result.stdout or "").strip()
+
+
+def write_viseme_sidecar(
+    clip: Path, text: str, voice: str = "", speed: str = ""
+) -> list[tuple[float, float, str]]:
+    """Write phoneme-derived cues beside an espeak clip; empty when unavailable."""
+    try:
+        cues = visemes_from_phonemes(espeak_phonemes(text, voice, speed), wav_seconds(clip))
+    except Exception:
+        return []
+    if not cues:
+        return []
+    payload = [
+        {"start": round(start, 3), "end": round(end, 3), "value": value} for start, end, value in cues
+    ]
+    try:
+        parse_visemes({"mouthCues": payload})
+    except ValueError:
+        return []
+    Path(clip).with_suffix(".json").write_text(
+        json.dumps({"mouthCues": payload}), encoding="utf-8"
+    )
+    return cues
+
+
+def voice_glyph(p: QPainter, kind: str) -> None:
+    """24x24 vector glyphs, independent of OS icon fonts."""
+
+    def line(a: float, b: float, c: float, d: float) -> None:
+        p.drawLine(QPointF(a, b), QPointF(c, d))
+
+    def rect(x: float, y: float, w: float, h: float, r: float = 2) -> None:
+        p.drawRoundedRect(QRectF(x, y, w, h), r, r)
+
+    if kind == "mic":
+        rect(9, 3, 6, 12, 3)
+        p.drawArc(QRectF(5, 6, 14, 14), 180 * 16, 180 * 16)
+        line(12, 20, 12, 23)
+    elif kind == "wave":
+        for index, height in enumerate([5, 12, 20, 12, 5]):
+            line(4 + index * 4, 12 - height / 2, 4 + index * 4, 12 + height / 2)
+    elif kind == "close":
+        line(5, 5, 19, 19)
+        line(19, 5, 5, 19)
+    elif kind == "clock":
+        p.drawEllipse(QRectF(3, 3, 18, 18))
+        line(12, 6, 12, 12)
+        line(12, 12, 16, 14)
+    elif kind == "settings":
+        p.drawEllipse(QRectF(7, 7, 10, 10))
+        for angle in range(0, 360, 45):
+            x, y = math.cos(math.radians(angle)), math.sin(math.radians(angle))
+            line(12 + x * 8, 12 + y * 8, 12 + x * 10, 12 + y * 10)
+    elif kind == "pause":
+        line(8, 5, 8, 19)
+        line(16, 5, 16, 19)
+    elif kind == "play":
+        line(8, 4, 20, 12)
+        line(20, 12, 8, 20)
+        line(8, 20, 8, 4)
+    elif kind == "screen":
+        rect(2, 3, 20, 14)
+        line(12, 17, 12, 22)
+        line(7, 22, 17, 22)
+    elif kind == "keyboard":
+        rect(1, 5, 22, 14)
+        for y in (9, 13):
+            for x in (5, 9, 13, 17):
+                line(x, y, x + 1, y)
+        line(8, 16, 16, 16)
+    elif kind == "chat":
+        rect(2, 3, 20, 15, 4)
+        line(5, 18, 5, 22)
+        line(5, 22, 10, 18)
+    elif kind == "attach":
+        rect(3, 3, 18, 18)
+        p.drawEllipse(QRectF(6, 6, 3, 3))
+        line(4, 18, 11, 12)
+        line(11, 12, 20, 18)
+    elif kind == "phone":
+        p.drawArc(QRectF(3, 7, 18, 13), 0, 180 * 16)
+        line(3, 13, 3, 18)
+        line(21, 13, 21, 18)
+    elif kind == "speaker":
+        line(3, 10, 7, 10)
+        line(7, 10, 12, 5)
+        line(12, 5, 12, 19)
+        line(12, 19, 7, 14)
+        line(7, 14, 3, 14)
+        line(3, 14, 3, 10)
+        p.drawArc(QRectF(10, 6, 10, 12), -70 * 16, 140 * 16)
+    else:
+        line(6, 9, 12, 15)
+        line(12, 15, 18, 9)
+
+
+class MotionButton(QAbstractButton):
+    """MD3 pill button whose glyph springs and rotates on activation."""
+
+    def __init__(
+        self,
+        glyph: str,
+        text: str = "",
+        primary: bool = False,
+        danger: bool = False,
+        parent=None,
+    ) -> None:
+        super().__init__(parent)
+        self.glyph = glyph
+        self.caption = text
+        self.primary = primary
+        self.danger = danger
+        self.phase = 1.0
+        self.setText(text or glyph)
+        self.setAccessibleName(text or glyph)
+        self.setToolTip(text or glyph)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.setMinimumSize(48, 48)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.setFixedHeight(70 if text else 48)
+        self.anim = QVariantAnimation(self)
+        self.anim.setDuration(440)
+        self.anim.setStartValue(0.0)
+        self.anim.setEndValue(1.0)
+        self.anim.valueChanged.connect(self.animate)
+        self.clicked.connect(self.bounce)
+
+    def bounce(self) -> None:
+        self.anim.stop()
+        self.anim.start()
+
+    def animate(self, value) -> None:
+        self.phase = float(value)
+        self.update()
+
+    def paintEvent(self, event) -> None:  # noqa: N802 - Qt name
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        rect = QRectF(self.rect()).adjusted(1, 1, -1, -1)
+        p.setPen(QPen(QColor(Theme().primary), 1) if self.hasFocus() else Qt.PenStyle.NoPen)
+        p.setBrush(QColor(Theme().primary if self.primary or self.isChecked() else ("#39323f" if self.underMouse() else Theme().raised)))
+        p.drawRoundedRect(rect, 22, 22)
+        if self.phase < 1:
+            p.save()
+            clip = QPainterPath()
+            clip.addRoundedRect(rect, 22, 22)
+            p.setClipPath(clip)
+            p.setBrush(QColor(230, 216, 255, int(48 * (1 - self.phase))))
+            p.drawEllipse(rect.center(), self.width() * self.phase, self.width() * self.phase)
+            p.restore()
+        p.save()
+        p.translate(self.width() / 2, 24 if self.caption else self.height() / 2)
+        pulse = math.sin(self.phase * math.pi * 3) * (1 - self.phase)
+        p.rotate(10 * pulse)
+        p.scale(1 + 0.13 * pulse, 1 + 0.13 * pulse)
+        p.translate(-12, -12)
+        color = Theme().on_primary if self.primary or self.isChecked() else ("#ff99b2" if self.danger else Theme().primary)
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.setPen(
+            QPen(
+                QColor(color),
+                1.8,
+                Qt.PenStyle.SolidLine,
+                Qt.PenCapStyle.RoundCap,
+                Qt.PenJoinStyle.RoundJoin,
+            )
+        )
+        voice_glyph(p, self.glyph)
+        p.restore()
+        if self.caption:
+            p.setPen(QColor(color))
+            p.setFont(QFont("Sans Serif", 10))
+            p.drawText(QRectF(0, 44, self.width(), 22), Qt.AlignmentFlag.AlignCenter, self.caption)
+
+
+class FaceCanvas(QWidget):
+    """Portrait with viseme + envelope lip sync via a local inverse warp."""
+
+    WIDTH = 600
+    HEIGHT = 400
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self.setMinimumHeight(210)
+        self._np = None
+        self._rgb = None
+        self._level = 0.0
+        self._width_scale = 1.0
+        self._target = 0.0
+        self._viseme: str | None = None
+        self._blink = 0.0
+        self._next_blink = 2.8
+        self._t0 = time.monotonic()
+        self.demo = False
+        self.paused = False
+        self.reduced = False
+        decoded = QImage.fromData(base64.b64decode(VOICE_ART_B64))
+        if decoded.isNull():
+            raise ValueError("embedded voice portrait could not be decoded")
+        self._still = decoded.convertToFormat(QImage.Format.Format_RGB888).scaled(
+            self.WIDTH,
+            self.HEIGHT,
+            Qt.AspectRatioMode.IgnoreAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
+        )
+        self._frame = self._still
+        self._build_meshes()
+        self._timer = QTimer(self)
+        self._timer.setTimerType(Qt.TimerType.PreciseTimer)
+        self._timer.timeout.connect(self.tick)
+        self._timer.start(40)
+
+    def _build_meshes(self) -> None:
+        try:
+            import numpy as np
+
+            pointer = self._still.bits()
+            pointer.setsize(self._still.sizeInBytes())
+            buffer = np.frombuffer(pointer, dtype=np.uint8)
+            stride = self._still.bytesPerLine()
+            rows = buffer.reshape(self.HEIGHT, stride)[:, : self.WIDTH * 3]
+            self._rgb = rows.reshape(self.HEIGHT, self.WIDTH, 3).astype(np.float32)
+        except Exception:
+            # Without numpy the portrait stays still; voice mode still works.
+            self._rgb = None
+            self._np = None
+            return
+        self._np = np
+        self._y, self._x = np.mgrid[0 : self.HEIGHT, 0 : self.WIDTH].astype(np.float32)
+        # Landmarks calibrated to the embedded portrait; replace with the artwork.
+        self._mx, self._my = 289.0, 242.0
+        self._eyes = [(258.0, 146.0), (345.0, 157.0)]
+        self._mouth = np.exp(-(((self._x - self._mx) / 46) ** 2 + ((self._y - self._my) / 27) ** 2) * 2)
+        self._head = np.exp(-(((self._x - 300) / 190) ** 2 + ((self._y - 195) / 220) ** 2))
+        self._eye_masks = [
+            np.exp(-(((self._x - ex) / 27) ** 2 + ((self._y - ey) / 12) ** 2) * 2) for ex, ey in self._eyes
+        ]
+
+    @property
+    def lipsync_ready(self) -> bool:
+        return self._rgb is not None
+
+    def set_level(self, level, viseme: str | None = None) -> None:
+        try:
+            self._target = max(0.0, min(1.0, float(level)))
+        except (TypeError, ValueError):
+            self._target = 0.0
+        self._viseme = viseme
+
+    def tick(self) -> None:
+        if not self.isVisible():
+            return
+        t = time.monotonic() - self._t0
+        target, wide = self._target, 1.0
+        if self.demo:
+            target = max(0.0, math.sin(t * 9) * 0.45 + math.sin(t * 15) * 0.2 + 0.25)
+        if self._viseme in VISEMES:
+            target, wide = VISEMES[self._viseme]
+        if self.paused:
+            target = 0.0
+        self._level += (target - self._level) * 0.35
+        self._width_scale += (wide - self._width_scale) * 0.3
+        if self._rgb is None or self.reduced:
+            self._frame = self._still
+            self.update()
+            return
+        if t > self._next_blink + 0.22:
+            self._next_blink = t + 3.1 + 1.3 * (0.5 + 0.5 * math.sin(t * 7))
+        if self._next_blink <= t <= self._next_blink + 0.22:
+            self._blink = max(0.0, math.sin((t - self._next_blink) / 0.22 * math.pi))
+        else:
+            self._blink = 0.0
+        self._frame = self._warp(t)
+        self.update()
+
+    def _warp(self, t: float) -> QImage:
+        np = self._np
+        vertical = 0.48 + 1.05 * self._level
+        mapx = self._x + (self._x - self._mx) * (1.0 / self._width_scale - 1.0) * self._mouth
+        mapy = self._y + (self._y - self._my) * (1.0 / vertical - 1.0) * self._mouth
+        for (ex, ey), mask in zip(self._eyes, self._eye_masks):
+            mapy = mapy + (self._y - ey) * self._blink * 3.2 * mask
+        mapx = mapx + math.sin(t * 0.65) * 2.1 * self._head
+        mapy = mapy + math.sin(t * 0.85) * 1.6 * self._head
+        # Bilinear gather with clamped edges; numpy stands in for cv2.remap.
+        xi = np.clip(mapx, 0.0, float(self.WIDTH - 1))
+        yi = np.clip(mapy, 0.0, float(self.HEIGHT - 1))
+        x0 = np.floor(xi).astype(np.int32)
+        y0 = np.floor(yi).astype(np.int32)
+        x1 = np.minimum(x0 + 1, self.WIDTH - 1)
+        y1 = np.minimum(y0 + 1, self.HEIGHT - 1)
+        fx = (xi - x0)[..., None]
+        fy = (yi - y0)[..., None]
+        top = self._rgb[y0, x0] * (1.0 - fx) + self._rgb[y0, x1] * fx
+        bottom = self._rgb[y1, x0] * (1.0 - fx) + self._rgb[y1, x1] * fx
+        frame = (top * (1.0 - fy) + bottom * fy).astype(np.uint8)
+        return QImage(
+            frame.tobytes(),
+            self.WIDTH,
+            self.HEIGHT,
+            self.WIDTH * 3,
+            QImage.Format.Format_RGB888,
+        ).copy()
+
+    def paintEvent(self, event) -> None:  # noqa: N802 - Qt name
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+        p.fillRect(self.rect(), QColor("#19171e"))
+        scale = min(self.width() / self.WIDTH, self.height() / self.HEIGHT)
+        width, height = self.WIDTH * scale, self.HEIGHT * scale
+        p.drawImage(
+            QRectF((self.width() - width) / 2, (self.height() - height) / 2, width, height), self._frame
+        )
+        if self._rgb is None or self.reduced:
+            return
+        t = time.monotonic() - self._t0
+        p.setPen(Qt.PenStyle.NoPen)
+        for index in range(28):
+            x = self.width() * (0.12 + 0.76 * ((index * 0.618) % 1))
+            y = self.height() * (0.15 + 0.7 * ((index * 0.317) % 1)) + math.sin(t + index) * 4
+            alpha = int((25 + 65 * self._level) * (0.5 + 0.5 * math.sin(t * 1.5 + index)))
+            p.setBrush(QColor(208, 188, 255, alpha))
+            p.drawEllipse(QPointF(x, y), 1.1, 1.1)
+
+
+class VoiceStage(QFrame):
+    """The voice-mode page: portrait, live transcripts, mic/pause/context."""
+
+    action_requested = pyqtSignal(str)
+    microphone_changed = pyqtSignal(bool)
+    context_changed = pyqtSignal(bool)
+    personality_changed = pyqtSignal(str)
+    analysis_ready = pyqtSignal(int, str, object)
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self.setObjectName("voiceRoot")
+        self.setMinimumSize(420, 620)
+        self.setStyleSheet(
+            "QFrame#voiceRoot {background:#141218;border-radius:30px;}"
+            "QFrame#voiceCard {background:#211e27;border-radius:24px;}"
+            "QLabel{color:#f7f4ff;background:transparent;}"
+            "QMenu{background:#302b3a;color:#f7f4ff;padding:8px;}"
+            "QMenu::item:selected{background:#56466d;}"
+            "QComboBox{background:#302b3a;border:0;border-radius:12px;padding:5px 10px;color:#f7f4ff;}"
+            "QComboBox QAbstractItemView{background:#302b3a;color:#f7f4ff;}"
+            "QComboBox QAbstractItemView::item:selected{background:#56466d;}"
+        )
+        self._generation = 0
+        self._cues: list[tuple[float, float, str]] = []
+        self._envelope: list[float] | None = None
+        self._step = 0.02
+        self._external_at = 0.0
+        self._clock_start = 0.0
+        self._context = False
+        self._player = None
+        self._output = None
+        self._playing_state = None
+        try:
+            from PyQt6.QtMultimedia import QAudioOutput, QMediaPlayer
+
+            self._output = QAudioOutput(self)
+            self._player = QMediaPlayer(self)
+            self._player.setAudioOutput(self._output)
+            self._playing_state = QMediaPlayer.PlaybackState.PlayingState
+            self._player.errorOccurred.connect(lambda _error, text: self.set_status(f"Audio error: {text}"))
+        except Exception:
+            self._player = None
+        self.analysis_ready.connect(self._audio_loaded)
+        self._build_ui()
+        self._sync = QTimer(self)
+        self._sync.timeout.connect(self.sync_audio)
+        self._sync.start(33)
+
+    # -- layout ----------------------------------------------------------- #
+    @staticmethod
+    def _card() -> QFrame:
+        frame = QFrame()
+        frame.setObjectName("voiceCard")
+        return frame
+
+    def _build_ui(self) -> None:
+        root = QVBoxLayout(self)
+        root.setContentsMargins(14, 14, 14, 14)
+        root.setSpacing(10)
+
+        head = self._card()
+        h = QHBoxLayout(head)
+        h.setContentsMargins(14, 12, 14, 12)
+        logo = MotionButton("wave", primary=True)
+        logo.setFixedWidth(50)
+        logo.clicked.connect(lambda: self.action("conversation"))
+        h.addWidget(logo)
+        names = QVBoxLayout()
+        title = QLabel(APP_NAME)
+        title.setFont(QFont("Sans Serif", 20, QFont.Weight.DemiBold))
+        names.addWidget(title)
+        self.status = QLabel("Voice mode · ready")
+        self.status.setStyleSheet("color:#c4b4e2;")
+        names.addWidget(self.status)
+        h.addLayout(names, 1)
+        for glyph, action in (("clock", "history"), ("settings", "settings"), ("close", "close")):
+            button = MotionButton(glyph)
+            button.setFixedWidth(48)
+            button.clicked.connect(lambda checked=False, a=action: self.action(a))
+            h.addWidget(button)
+        root.addWidget(head)
+
+        tabs = QHBoxLayout()
+        convo = MotionButton("chat", "Conversation")
+        convo.clicked.connect(lambda: self.action("conversation"))
+        tabs.addWidget(convo)
+        voice = MotionButton("wave", "Voice", True)
+        tabs.addWidget(voice)
+        root.addLayout(tabs)
+
+        body = self._card()
+        body.setMinimumHeight(415)
+        layout = QVBoxLayout(body)
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(8)
+        self.mode = QLabel("  YUNA · WAITING FOR AUDIO")
+        self.mode.setStyleSheet("color:#d0bcff;font-size:11px;")
+        layout.addWidget(self.mode)
+        persona_row = QHBoxLayout()
+        persona_row.setContentsMargins(4, 0, 4, 0)
+        persona_label = QLabel("Persona")
+        persona_label.setStyleSheet("color:#bdb4ca;font-size:11px;")
+        persona_row.addWidget(persona_label)
+        self.persona = QComboBox()
+        for key, (label, _text) in PERSONALITY_PRESETS.items():
+            if key == "custom":
+                continue
+            self.persona.addItem(label, key)
+        self.persona.currentIndexChanged.connect(self._persona_selected)
+        persona_row.addWidget(self.persona, 1)
+        layout.addLayout(persona_row)
+        self.face = FaceCanvas()
+        layout.addWidget(self.face, 1)
+        self.user_text = self._transcript(layout, "YOU", "", False)
+        self.ai_text = self._transcript(layout, "HANAUTA", "", True)
+        root.addWidget(body, 1)
+
+        self.context_button = MotionButton("screen", "Screen context · off")
+        self.context_button.setFixedHeight(64)
+        self.context_button.clicked.connect(self.toggle_context)
+        root.addWidget(self.context_button)
+
+        actions = QHBoxLayout()
+        self.mute = MotionButton("speaker", "Mute")
+        self.mute.setCheckable(True)
+        self.mute.toggled.connect(self.set_muted)
+        self.pause = MotionButton("pause", "Pause")
+        self.pause.setCheckable(True)
+        self.pause.toggled.connect(self.set_paused)
+        self.mic = MotionButton("mic", "Microphone", True)
+        self.mic.setCheckable(True)
+        self.mic.toggled.connect(self.toggle_mic)
+        end = MotionButton("phone", "End", danger=True)
+        end.clicked.connect(self.end_call)
+        keyboard = MotionButton("keyboard", "Keyboard")
+        keyboard.clicked.connect(lambda: self.action("keyboard"))
+        for button in (self.mute, self.pause, self.mic, end, keyboard):
+            actions.addWidget(button)
+        root.addLayout(actions)
+
+        extras = QHBoxLayout()
+        for glyph, label, action in (
+            ("attach", "Attach", "attach"),
+            ("screen", "Capture screen", "capture"),
+            ("settings", "Configure", "settings"),
+        ):
+            button = MotionButton(glyph, label)
+            button.clicked.connect(lambda checked=False, a=action: self.action(a))
+            extras.addWidget(button)
+        root.addLayout(extras)
+
+    def _transcript(self, layout: QVBoxLayout, name: str, text: str, primary: bool) -> QLabel:
+        theme = Theme()
+        frame = QFrame()
+        background = theme.primary if primary else theme.raised
+        frame.setStyleSheet(f"QFrame{{background:{background};border-radius:19px;}}")
+        box = QVBoxLayout(frame)
+        box.setContentsMargins(18, 10, 18, 12)
+        box.setSpacing(4)
+        label = QLabel(name)
+        accent = theme.on_primary if primary else theme.primary
+        label.setStyleSheet(f"color:{accent};font-size:10px;")
+        box.addWidget(label)
+        body = QLabel(text)
+        body.setTextFormat(Qt.TextFormat.PlainText)
+        body.setWordWrap(True)
+        body.setStyleSheet(f"color:{theme.on_primary if primary else theme.text};font-size:14px;")
+        box.addWidget(body)
+        layout.addWidget(frame)
+        return body
+
+    # -- state ------------------------------------------------------------ #
+    def set_status(self, text: str) -> None:
+        self.status.setText(text)
+        self.status.setToolTip(text)
+
+    def set_mode(self, text: str) -> None:
+        self.mode.setText(f"  {text}")
+
+    def set_user_text(self, text: str) -> None:
+        self.user_text.setText(text)
+
+    def set_assistant_text(self, text: str) -> None:
+        self.ai_text.setText(text)
+
+    def set_transcripts(self, user: str, assistant: str) -> None:
+        self.set_user_text(user)
+        self.set_assistant_text(assistant)
+
+    def set_personality(self, key: str) -> None:
+        """Reflect the saved persona without re-saving it."""
+        index = self.persona.findData(str(key or "default"))
+        blocked = self.persona.blockSignals(True)
+        self.persona.setCurrentIndex(index if index >= 0 else 0)
+        self.persona.blockSignals(blocked)
+
+    def _persona_selected(self, _index: int) -> None:
+        key = str(self.persona.currentData() or "default")
+        self.set_status(f"Personality · {self.persona.currentText()}")
+        self.personality_changed.emit(key)
+
+    def set_microphone(self, on: bool) -> None:
+        blocked = self.mic.blockSignals(True)
+        self.mic.setChecked(bool(on))
+        self.mic.blockSignals(blocked)
+        self.mic.caption = "Mic on" if on else "Microphone"
+        self.mic.update()
+
+    def set_context(self, on: bool) -> None:
+        """Reflect screen-sharing state without emitting back to the controller."""
+        self._context = bool(on)
+        self.context_button.caption = "Screen context · " + ("on" if self._context else "off")
+        self.context_button.setChecked(self._context)
+        self.context_button.update()
+
+    def _reset_pause(self) -> None:
+        blocked = self.pause.blockSignals(True)
+        self.pause.setChecked(False)
+        self.pause.blockSignals(blocked)
+
+    def action(self, name: str) -> None:
+        if name == "settings":
+            self.settings_menu()
+            return
+        self.action_requested.emit(name)
+
+    def toggle_context(self) -> None:
+        self.set_context(not self._context)
+        self.context_changed.emit(self._context)
+
+    def toggle_mic(self, on: bool) -> None:
+        self.mic.caption = "Mic on" if on else "Microphone"
+        self.mic.update()
+        self.microphone_changed.emit(bool(on))
+
+    def set_muted(self, on: bool) -> None:
+        if self._output is not None:
+            try:
+                self._output.setMuted(bool(on))
+            except Exception:
+                pass
+        self.mute.caption = "Muted" if on else "Mute"
+        self.mute.update()
+
+    def set_paused(self, on: bool) -> None:
+        self.face.paused = bool(on)
+        self.pause.glyph = "play" if on else "pause"
+        self.pause.caption = "Resume" if on else "Pause"
+        self.pause.update()
+        if on:
+            if self._player is not None:
+                self._player.pause()
+        elif self._envelope is not None and self._player is not None:
+            self._player.play()
+        self.action_requested.emit("pause" if on else "resume")
+
+    # -- visemes + audio -------------------------------------------------- #
+    def set_visemes(self, cues: object) -> None:
+        """Accept raw Rhubarb cues (list or ``{"mouthCues": [...]}``)."""
+        self._cues = parse_visemes(cues)
+
+    def current_viseme(self, seconds: float) -> str | None:
+        return next((value for start, end, value in self._cues if start <= seconds < end), None)
+
+    def play_wav(self, path, cues=None) -> None:
+        """Play a clip and drive the mouth from its envelope (and cues if given)."""
+        self.stop()
+        target = Path(path)
+        self._cues = list(cues) if cues else viseme_cues_for(target)
+        self.set_status("Preparing audio…")
+        self.set_mode("ANALYSING AUDIO")
+        self._generation += 1
+        generation = self._generation
+        filename = str(target.resolve())
+        threading.Thread(target=self._analyse, args=(generation, filename), daemon=True).start()
+
+    def _analyse(self, generation: int, filename: str) -> None:
+        try:
+            payload: object = wav_envelope(Path(filename), self._step)
+        except Exception as exc:
+            payload = str(exc) or "could not read the audio"
+        try:
+            self.analysis_ready.emit(generation, filename, payload)
+        except RuntimeError:
+            pass
+
+    def _audio_loaded(self, generation: int, path: str, payload) -> None:
+        if generation != self._generation:
+            return
+        if isinstance(payload, str) or payload is None:
+            self.set_status(str(payload or "audio unavailable"))
+            self.set_mode("AUDIO NOT LOADED")
+            return
+        self._envelope = list(payload)
+        self._reset_pause()
+        self.face.demo = False
+        if self._player is None:
+            # No Qt Multimedia: still audible through a system player, with the
+            # mouth driven by the clip clock instead of a player position.
+            if self._play_external(path):
+                self._clock_start = time.monotonic()
+                self.set_status("Voice mode · speaking (system player)")
+            else:
+                self.set_status("Voice mode · no audio output")
+            return
+        self._player.setSource(QUrl.fromLocalFile(path))
+        self._player.play()
+        self.set_status("Voice mode · speaking")
+
+    @staticmethod
+    def _play_external(path: str) -> bool:
+        for command in (
+            ["pw-play", path],
+            ["aplay", path],
+            ["ffplay", "-autoexit", "-nodisp", "-loglevel", "quiet", path],
+        ):
+            try:
+                subprocess.Popen(
+                    command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True
+                )
+                return True
+            except Exception:
+                continue
+        return False
+
+    def set_voice_frame(self, level, viseme: str | None = None) -> None:
+        """Feed an externally played TTS chunk: level in [0,1], ~30 Hz."""
+        self.face.demo = False
+        self._external_at = time.monotonic()
+        self.face.set_level(level, viseme)
+        self.set_mode("HANAUTA IS SPEAKING · EXTERNAL TTS")
+
+    def sync_audio(self) -> None:
+        playing = False
+        position = 0.0
+        if self._player is not None and self._playing_state is not None:
+            try:
+                playing = self._player.playbackState() == self._playing_state
+                position = self._player.position() / 1000.0
+            except Exception:
+                playing = False
+        elif self._clock_start > 0.0 and self._envelope is not None:
+            position = time.monotonic() - self._clock_start
+            playing = position < len(self._envelope) * self._step + 0.2
+            if not playing:
+                self._clock_start = 0.0
+        if playing and self._envelope is not None:
+            index = int(position / self._step)
+            level = self._envelope[index] if 0 <= index < len(self._envelope) else 0.0
+            self.face.set_level(level, self.current_viseme(position))
+            self.set_mode("HANAUTA IS SPEAKING · " + ("VISEMES" if self._cues else "AUDIO"))
+        elif not self.face.demo and time.monotonic() - self._external_at > 0.25:
+            self.face.set_level(0.0)
+            self.set_mode("YUNA · " + ("PAUSED" if self.face.paused else "WAITING FOR AUDIO"))
+
+    def stop(self) -> None:
+        self._generation += 1
+        if self._player is not None:
+            try:
+                self._player.stop()
+            except Exception:
+                pass
+        self._envelope = None
+        self._cues = []
+        self._external_at = 0.0
+        self._clock_start = 0.0
+        self.face.demo = False
+        self.face.set_level(0.0)
+        self._reset_pause()
+
+    def end_call(self) -> None:
+        self.stop()
+        self.set_microphone(False)
+        self.set_status("Voice mode · ended")
+        self.action_requested.emit("end")
+
+    # -- settings menu (audio preview, cues, demo, reduced motion) -------- #
+    def settings_menu(self) -> None:
+        menu = QMenu(self)
+        load = menu.addAction("Open audio WAV…")
+        cues = menu.addAction("Load timed visemes (JSON)…")
+        demo = menu.addAction("Motion demo (silent)")
+        reduce = menu.addAction("Reduce motion")
+        reduce.setCheckable(True)
+        reduce.setChecked(self.face.reduced)
+        selected = menu.exec(self.mapToGlobal(self.rect().center()))
+        if selected == load:
+            filename, _ = QFileDialog.getOpenFileName(self, "Voice audio", "", "WAV (*.wav)")
+            if filename:
+                self.play_wav(filename)
+        elif selected == cues:
+            filename, _ = QFileDialog.getOpenFileName(self, "Timed visemes", "", "JSON (*.json)")
+            if filename:
+                try:
+                    self.set_visemes(json.loads(Path(filename).read_text(encoding="utf-8")))
+                    self.set_status(f"{len(self._cues)} visemes loaded")
+                except Exception as exc:
+                    QMessageBox.warning(self, "Visemes", str(exc))
+        elif selected == demo:
+            self.stop()
+            self.face.demo = True
+            self.set_mode("MOTION DEMO · NO AUDIO")
+            self.set_status("Voice mode · demo")
+        elif selected == reduce:
+            self.face.reduced = reduce.isChecked()
+
+    def closeEvent(self, event) -> None:  # noqa: N802 - Qt name
+        self.stop()
+        super().closeEvent(event)
+
+
+# --------------------------------------------------------------------------- #
+# Camera + screen capture (absorbed from the legacy capture modules)
+# --------------------------------------------------------------------------- #
+def parse_resolution(value: object, fallback: tuple[int, int] = (640, 480)) -> tuple[int, int]:
+    raw = str(value or "").strip().lower().replace(",", "x").replace(" ", "")
+    if "x" in raw:
+        left, _, right = raw.partition("x")
+        try:
+            width, height = int(float(left)), int(float(right))
+        except (TypeError, ValueError):
+            return fallback
+    else:
+        try:
+            width = height = int(float(raw))
+        except (TypeError, ValueError):
+            return fallback
+    return max(64, min(1920, width)), max(64, min(1080, height))
+
+
+def capture_snapshot(config: dict, dest_dir: Path | None = None) -> Path:
+    """Grab one camera frame (V4L2 device or RTSP/HTTP stream)."""
+    source = str(config.get("camera_source", "")).strip() or "/dev/video0"
+    width, height = parse_resolution(config.get("camera_resolution", "640x480"))
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        raise RuntimeError("ffmpeg is required for camera capture.")
+    target_dir = Path(dest_dir) if dest_dir is not None else state_dir() / "voice-camera"
+    target_dir.mkdir(parents=True, exist_ok=True)
+    output = target_dir / f"frame_{time.time_ns()}.jpg"
+    command = [ffmpeg, "-y", "-loglevel", "error"]
+    if source.lower().startswith(("http://", "https://", "rtsp://", "rtmp://")):
+        command += ["-rtsp_transport", "tcp", "-i", source]
+    else:
+        command += ["-f", "video4linux2", "-i", source]
+    command += ["-frames:v", "1", "-vf", f"scale={width}:{height}", "-q:v", "4", str(output)]
+    result = subprocess.run(command, capture_output=True, text=True, timeout=15, check=False)
+    if result.returncode != 0 or not output.exists() or output.stat().st_size <= 0:
+        detail = (result.stderr or result.stdout or "").strip().splitlines()
+        raise RuntimeError(f"Camera capture failed for {source}: {detail[-1] if detail else 'unknown error'}")
+    return output
+
+
+def encode_image_data_url(path: Path) -> str:
+    return "data:image/jpeg;base64," + base64.b64encode(Path(path).read_bytes()).decode("ascii")
+
+
+def screen_display(config: dict) -> str:
+    explicit = str(config.get("screen_display", "")).strip()
+    if explicit:
+        return explicit
+    display = str(os.environ.get("DISPLAY", "")).strip()
+    if display and "." not in display.partition(":")[2]:
+        display = f"{display}.0"
+    return display
+
+
+def focused_window_region(display: str = "") -> tuple[int, int, int, int] | None:
+    """Focused window geometry via xdotool, so text fills the frame."""
+    xdotool = shutil.which("xdotool")
+    if not xdotool:
+        return None
+    env = dict(os.environ)
+    if display:
+        env["DISPLAY"] = display
+    try:
+        result = subprocess.run(
+            [xdotool, "getactivewindow", "getwindowgeometry", "--shell"],
+            capture_output=True, text=True, timeout=5, check=False, env=env,
+        )
+    except Exception:
+        return None
+    if result.returncode != 0:
+        return None
+    values: dict[str, int] = {}
+    for line in (result.stdout or "").splitlines():
+        key, _, raw = line.partition("=")
+        try:
+            values[key.strip().upper()] = int(float(raw.strip()))
+        except ValueError:
+            continue
+    width, height = values.get("WIDTH", 0), values.get("HEIGHT", 0)
+    if width <= 0 or height <= 0:
+        return None
+    return values.get("X", 0), values.get("Y", 0), width, height
+
+
+def _capture_filter(width: int, height: int, region=None, upscale: bool = True) -> str:
+    if region is not None and upscale and (region[2] < width or region[3] < height):
+        return f"scale={width}:-2:flags=lanczos"
+    return f"scale={width}:{height}:force_original_aspect_ratio=decrease:flags=lanczos"
+
+
+def capture_screenshot(config: dict, dest_dir: Path | None = None) -> Path:
+    """Grab a downscaled screenshot (X11 via ffmpeg, Wayland via grim)."""
+    width, height = parse_resolution(config.get("screen_resolution", "960x540"), (960, 540))
+    target_dir = Path(dest_dir) if dest_dir is not None else state_dir() / "voice-screen"
+    target_dir.mkdir(parents=True, exist_ok=True)
+    output = target_dir / f"screen_{time.time_ns()}.jpg"
+    errors: list[str] = []
+    ffmpeg = shutil.which("ffmpeg")
+    display = screen_display(config)
+    region = focused_window_region(display) if bool(config.get("screen_crop_focused", True)) else None
+    if ffmpeg and display:
+        command = [ffmpeg, "-y", "-loglevel", "error", "-f", "x11grab"]
+        if region is not None:
+            command += ["-video_size", f"{region[2]}x{region[3]}", "-i", f"{display}+{region[0]},{region[1]}"]
+        else:
+            command += ["-i", display]
+        command += [
+            "-frames:v", "1", "-vf",
+            _capture_filter(width, height, region, bool(config.get("screen_upscale", True))),
+            "-q:v", "5", str(output),
+        ]
+        result = subprocess.run(command, capture_output=True, text=True, timeout=20, check=False)
+        if result.returncode == 0 and output.exists() and output.stat().st_size > 0:
+            return output
+        detail = (result.stderr or result.stdout or "").strip().splitlines()
+        errors.append(detail[-1] if detail else f"ffmpeg x11grab failed for {display}")
+    grim = shutil.which("grim")
+    if grim and os.environ.get("WAYLAND_DISPLAY", "").strip():
+        raw = target_dir / f"screen_{time.time_ns()}.png"
+        result = subprocess.run([grim, str(raw)], capture_output=True, text=True, timeout=20, check=False)
+        if result.returncode == 0 and raw.exists() and raw.stat().st_size > 0:
+            if ffmpeg:
+                scaled = subprocess.run(
+                    [ffmpeg, "-y", "-loglevel", "error", "-i", str(raw),
+                     "-vf", _capture_filter(width, height), "-q:v", "5", str(output)],
+                    capture_output=True, text=True, timeout=20, check=False,
+                )
+                if scaled.returncode == 0 and output.exists() and output.stat().st_size > 0:
+                    raw.unlink(missing_ok=True)
+                    return output
+            return raw
+        detail = (result.stderr or result.stdout or "").strip().splitlines()
+        errors.append(detail[-1] if detail else "grim failed")
+    if not ffmpeg and not grim:
+        errors.append("ffmpeg (X11) or grim (Wayland) is required for screenshots")
+    raise RuntimeError("Screen capture failed: " + ("; ".join(errors) or "no display detected"))
+
+
+# --------------------------------------------------------------------------- #
+# Settings pages: Tokens, Skills, Benchmarking, Storage
+# --------------------------------------------------------------------------- #
+def _profile_file() -> Path:
+    return state_dir() / "user_profile.json"
+
+
+def _write_json(path: Path, payload: dict) -> None:
+    try:
+        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception:
+        pass
+
+
+class TokensPage(QWidget):
+    """User profile injected into prompts, plus the prompt token budget."""
+
+    def __init__(self, settings: dict, parent=None) -> None:
+        super().__init__(parent)
+        self.settings = settings
+        profile = _json_file("user_profile.json")
+        voice = dict(settings.get("_voice_mode", {}) or {})
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(10)
+        title = QLabel("Prompt context")
+        title.setObjectName("sectionTitle")
+        layout.addWidget(title)
+        rows = QFormLayout()
+        rows.setSpacing(9)
+        self.name = QLineEdit(str(profile.get("name", "")))
+        self.about = QLineEdit(str(profile.get("about", "")))
+        self.budget = QSpinBox()
+        self.budget.setRange(256, 200_000)
+        try:
+            self.budget.setValue(int(float(voice.get("prompt_token_budget", 6000) or 6000)))
+        except (TypeError, ValueError):
+            self.budget.setValue(6000)
+        self.personality = QComboBox()
+        for key, (label, _prompt) in PERSONALITY_PRESETS.items():
+            self.personality.addItem(label, key)
+        saved_key = str(voice.get("personality", "default") or "default").strip().lower()
+        index = self.personality.findData(saved_key)
+        self.personality.setCurrentIndex(index if index >= 0 else 0)
+        self.persona_note = QLineEdit(str(voice.get("personality_prompt", "")))
+        self.persona_note.setPlaceholderText("Only used with the Custom personality")
+        self.persona_note.setEnabled(saved_key == "custom")
+        self.personality.currentIndexChanged.connect(self._persona_changed)
+        rows.addRow("Your name", self.name)
+        rows.addRow("About you", self.about)
+        rows.addRow("Personality", self.personality)
+        rows.addRow("Custom personality", self.persona_note)
+        rows.addRow("Prompt token budget", self.budget)
+        layout.addLayout(rows)
+        note = QLabel(
+            "Name, personality and description are injected into the system prompt; the budget caps history."
+        )
+        note.setObjectName("muted")
+        note.setWordWrap(True)
+        layout.addWidget(note)
+        row = QHBoxLayout()
+        self.status = QLabel("")
+        self.status.setObjectName("muted")
+        row.addWidget(self.status, 1)
+        save = QPushButton("Save profile")
+        save.setObjectName("primary")
+        save.clicked.connect(self.save)
+        row.addWidget(save)
+        layout.addLayout(row)
+        layout.addStretch()
+
+    def _persona_changed(self, _index: int) -> None:
+        self.persona_note.setEnabled(str(self.personality.currentData()) == "custom")
+
+    def save(self) -> None:
+        _write_json(_profile_file(), {"name": self.name.text().strip(), "about": self.about.text().strip()})
+        voice = dict(self.settings.get("_voice_mode", {}) or {})
+        voice["personality"] = str(self.personality.currentData() or "default")
+        voice["personality_prompt"] = self.persona_note.text().strip()
+        voice["prompt_token_budget"] = str(self.budget.value())
+        self.settings["_voice_mode"] = voice
+        save_settings(self.settings)
+        self.status.setText("Profile saved")
+
+
+LFM3_SPEECH_LANGUAGES = [
+    "American English",
+    "British English",
+    "Spanish",
+    "Portuguese",
+    "French",
+    "German",
+    "Italian",
+    "Dutch",
+    "Polish",
+    "Danish",
+    "Finnish",
+    "Swedish",
+    "Greek",
+    "Turkish",
+    "Hebrew",
+    "Arabic",
+    "Hindi",
+    "Japanese",
+    "Korean",
+    "Chinese",
+]
+
+
+class Lfm3VoiceInstallWorker(QThread):
+    """Creates the LFM3 voice venv off the UI thread (several GB)."""
+
+    progress = pyqtSignal(str)
+    done = pyqtSignal(bool, str)
+
+    def run(self) -> None:
+        ok, message = prepare_lfm3_voice(self.progress.emit)
+        self.done.emit(ok, message)
+
+
+def espeak_voices() -> list[tuple[str, str]]:
+    """English espeak voices as (code, label); curated fallback if espeak is absent."""
+    fallback = [
+        ("en", "English (default)"),
+        ("en-us", "English (US)"),
+        ("en-gb", "English (GB)"),
+        ("en+f2", "English female 2"),
+        ("en+f3", "English female 3"),
+        ("en+f4", "English female 4"),
+        ("en+m1", "English male 1"),
+        ("en+m2", "English male 2"),
+        ("en+m3", "English male 3"),
+        ("en+m4", "English male 4"),
+    ]
+    espeak = shutil.which("espeak-ng") or shutil.which("espeak")
+    if not espeak:
+        return fallback
+    try:
+        result = subprocess.run([espeak, "--voices"], capture_output=True, text=True, timeout=20, check=False)
+    except Exception:
+        return fallback
+    voices: list[tuple[str, str]] = []
+    for line in (result.stdout or "").splitlines()[1:]:
+        columns = line.split()
+        if len(columns) < 4:
+            continue
+        code = columns[1]
+        if not code.lower().startswith("en"):
+            continue
+        label = " ".join(columns[3:-1]) or code
+        voices.append((code, f"{label} ({code})"))
+    present = {code for code, _label in voices}
+    for code, label in fallback:
+        if "+" in code and code not in present:
+            voices.append((code, label))
+    return voices or fallback
+
+
+class VoicePage(QWidget):
+    """Spoken-reply settings: engine, voice, speed, barge-in and a preview."""
+
+    def __init__(self, settings: dict, parent=None) -> None:
+        super().__init__(parent)
+        self.settings = settings
+        voice = dict(settings.get("_voice_mode", {}) or {})
+        self.player = TtsPlayer(self)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(10)
+        title = QLabel("Voice output")
+        title.setObjectName("sectionTitle")
+        layout.addWidget(title)
+
+        self.speak = QCheckBox("Speak replies out loud in voice mode")
+        self.speak.setChecked(bool(voice.get("tts_enabled", True)))
+        layout.addWidget(self.speak)
+
+        rows = QFormLayout()
+        rows.setSpacing(9)
+        self.backend = QComboBox()
+        self.backend.addItems(["espeak", "piper", "lfm3"])
+        self.backend.setCurrentText(str(voice.get("tts_backend", "espeak")))
+        self.voices = QComboBox()
+        self.voices.addItem("Automatic — voice per personality", "")
+        for code, label in espeak_voices():
+            self.voices.addItem(f"{code} · {label}", code)
+        saved_voice = str(voice.get("tts_voice", "")).strip()
+        index = self.voices.findData(saved_voice)
+        self.voices.setCurrentIndex(index if index >= 0 else 0)
+        self.speed = QSpinBox()
+        self.speed.setRange(80, 300)
+        try:
+            self.speed.setValue(int(float(voice.get("tts_speed", 165) or 165)))
+        except (TypeError, ValueError):
+            self.speed.setValue(165)
+        self.model = QLineEdit(str(voice.get("tts_piper_model", "")))
+        self.model.setPlaceholderText("piper voice model (.onnx)")
+        self.lfm3_language = QComboBox()
+        self.lfm3_language.addItems(LFM3_SPEECH_LANGUAGES)
+        saved_language = str(voice.get("tts_lfm3_language", "American English") or "American English")
+        language_index = self.lfm3_language.findText(saved_language)
+        self.lfm3_language.setCurrentIndex(language_index if language_index >= 0 else 0)
+        self.lfm3_gender = QComboBox()
+        self.lfm3_gender.addItems(["female", "male"])
+        self.lfm3_gender.setCurrentText(str(voice.get("tts_lfm3_gender", "female")))
+        rows.addRow("Engine", self.backend)
+        rows.addRow("Voice (espeak)", self.voices)
+        rows.addRow("Speed", self.speed)
+        rows.addRow("Piper model", self.model)
+        rows.addRow("LFM3 language", self.lfm3_language)
+        rows.addRow("LFM3 voice", self.lfm3_gender)
+        layout.addLayout(rows)
+
+        self.barge = QCheckBox("Let me interrupt speech by talking (headphones recommended)")
+        self.barge.setChecked(bool(voice.get("barge_in_enabled", False)))
+        layout.addWidget(self.barge)
+        self.fallback = QCheckBox("Use espeak when LFM3 speech is unavailable (not LFM3's voice)")
+        self.fallback.setChecked(bool(voice.get("tts_fallback", False)))
+        layout.addWidget(self.fallback)
+
+        lfm3_row = QHBoxLayout()
+        self.lfm3_status = QLabel(lfm3_voice_status())
+        self.lfm3_status.setObjectName("muted")
+        self.lfm3_status.setWordWrap(True)
+        lfm3_row.addWidget(self.lfm3_status, 1)
+        self.prepare = QPushButton("Prepare LFM3 voice")
+        self.prepare.clicked.connect(self.prepare_lfm3)
+        lfm3_row.addWidget(self.prepare)
+        layout.addLayout(lfm3_row)
+
+        self.sample = QLineEdit("Hello, this is how I will sound.")
+        layout.addWidget(self.sample)
+        row = QHBoxLayout()
+        self.status = QLabel("")
+        self.status.setObjectName("muted")
+        row.addWidget(self.status, 1)
+        preview = QPushButton("Speak sample")
+        preview.clicked.connect(self.preview)
+        row.addWidget(preview)
+        save = QPushButton("Save voice")
+        save.setObjectName("primary")
+        save.clicked.connect(self.save)
+        row.addWidget(save)
+        layout.addLayout(row)
+
+        note = QLabel(
+            "espeak voices come from the installed espeak-ng; piper needs an .onnx voice model. "
+            "Timed lip-sync visemes are generated for espeak replies."
+        )
+        note.setObjectName("muted")
+        note.setWordWrap(True)
+        layout.addWidget(note)
+        layout.addStretch()
+        self._installer: Lfm3VoiceInstallWorker | None = None
+        self._engine_changed(self.backend.currentText())
+        self.backend.currentTextChanged.connect(self._engine_changed)
+
+    def _engine_changed(self, engine: str) -> None:
+        lfm3 = str(engine).strip().lower() == "lfm3"
+        self.lfm3_language.setEnabled(lfm3)
+        self.lfm3_gender.setEnabled(lfm3)
+        self.prepare.setEnabled(lfm3 and not lfm3_voice_ready())
+        self.lfm3_status.setText(
+            lfm3_voice_status() if lfm3 else "LFM3 speech is only used when Engine is lfm3."
+        )
+
+    def prepare_lfm3(self) -> None:
+        if self._installer is not None and self._installer.isRunning():
+            return
+        self.prepare.setEnabled(False)
+        self.status.setText("Preparing the LFM3 voice runtime…")
+        worker = Lfm3VoiceInstallWorker(self)
+        worker.progress.connect(self.status.setText)
+        worker.done.connect(self._lfm3_prepared)
+        self._installer = worker
+        worker.start()
+
+    def _lfm3_prepared(self, ok: bool, message: str) -> None:
+        self.status.setText(message)
+        self._engine_changed(self.backend.currentText())
+
+    def speech_settings(self) -> dict:
+        return {
+            "personality": str(dict(self.settings.get("_voice_mode", {}) or {}).get("personality", "default")),
+            "tts_backend": self.backend.currentText(),
+            "tts_voice": str(self.voices.currentData() or ""),
+            "tts_speed": str(self.speed.value()),
+            "tts_piper_model": self.model.text().strip(),
+            "tts_lfm3_language": self.lfm3_language.currentText(),
+            "tts_lfm3_gender": self.lfm3_gender.currentText(),
+            "tts_fallback": self.fallback.isChecked(),
+        }
+
+    def preview(self) -> None:
+        clip = synthesize_speech(self.sample.text() or "Hello.", speech_config(self.speech_settings()))
+        if clip is None:
+            self.status.setText("No engine available — install espeak-ng (or piper with a model).")
+            return
+        self.player.play(str(clip))
+        self.status.setText(f"Playing {clip.name}")
+
+    def save(self) -> None:
+        voice = dict(self.settings.get("_voice_mode", {}) or {})
+        voice["tts_enabled"] = self.speak.isChecked()
+        voice["tts_backend"] = self.backend.currentText()
+        voice["tts_voice"] = str(self.voices.currentData() or "")
+        voice["tts_speed"] = str(self.speed.value())
+        voice["tts_piper_model"] = self.model.text().strip()
+        voice["tts_lfm3_language"] = self.lfm3_language.currentText()
+        voice["tts_lfm3_gender"] = self.lfm3_gender.currentText()
+        voice["tts_fallback"] = self.fallback.isChecked()
+        voice["barge_in_enabled"] = self.barge.isChecked()
+        self.settings["_voice_mode"] = voice
+        save_settings(self.settings)
+        self.status.setText("Voice saved")
+
+
+class SkillsPage(QWidget):
+    """Enable flags for the skills in skills/, written to skills_settings.json."""
+
+    def __init__(self, settings: dict, parent=None) -> None:
+        super().__init__(parent)
+        self.settings = settings
+        self.boxes: dict[str, QCheckBox] = {}
+        self.path = state_dir() / "skills_settings.json"
+        saved = _json_file("skills_settings.json")
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(8)
+        title = QLabel("Skills available to the model")
+        title.setObjectName("sectionTitle")
+        layout.addWidget(title)
+        self.global_toggle = QCheckBox("Enable skills")
+        self.global_toggle.setChecked(bool(saved.get("skills_enabled", True)))
+        layout.addWidget(self.global_toggle)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        body = QWidget()
+        self.rows = QVBoxLayout(body)
+        self.rows.setContentsMargins(0, 0, 6, 0)
+        self.rows.setSpacing(4)
+        skills_dir = Path(__file__).resolve().parent / "skills"
+        for path in sorted(skills_dir.glob("*.py")) if skills_dir.is_dir() else []:
+            if path.name.startswith("_") or path.name == "safety.py":
+                continue
+            key = path.stem.replace("-", "_")
+            box = QCheckBox(path.stem.replace("-", " ").replace("_", " "))
+            box.setChecked(bool(dict(saved.get(key, {}) or {}).get("enabled", True)))
+            self.boxes[key] = box
+            self.rows.addWidget(box)
+        if not self.boxes:
+            empty = QLabel("No skill files found next to the popup.")
+            empty.setObjectName("muted")
+            self.rows.addWidget(empty)
+        self.rows.addStretch()
+        scroll.setWidget(body)
+        layout.addWidget(scroll, 1)
+        row = QHBoxLayout()
+        self.status = QLabel("")
+        self.status.setObjectName("muted")
+        row.addWidget(self.status, 1)
+        save = QPushButton("Save skills")
+        save.setObjectName("primary")
+        save.clicked.connect(self.save)
+        row.addWidget(save)
+        layout.addLayout(row)
+
+    def save(self) -> None:
+        payload: dict = {"skills_enabled": self.global_toggle.isChecked()}
+        for key, box in self.boxes.items():
+            payload[key] = {"enabled": box.isChecked()}
+        _write_json(self.path, payload)
+        self.status.setText("Skills saved")
+
+
+class BenchmarkWorker(QThread):
+    finished_ok = pyqtSignal(str)
+
+    def __init__(self, host: str, model: str) -> None:
+        super().__init__()
+        self._host = host
+        self._model = model
+
+    def run(self) -> None:
+        messages = [{"role": "user", "content": "Reply with the single word READY."}]
+        started = time.time()
+        try:
+            answer = stream_chat(self._host, self._model, messages, timeout=60.0)
+        except Exception as exc:
+            self.finished_ok.emit(f"Failed: {exc}")
+            return
+        elapsed = max(0.001, time.time() - started)
+        # ~4 characters per token is a rough but stable estimate for this probe.
+        tokens = max(1, len(answer) / 4)
+        self.finished_ok.emit(f"{elapsed:.2f}s round-trip · ~{tokens / elapsed:.1f} tok/s · reply: {answer[:40]!r}")
+
+
+class BenchmarkPage(QWidget):
+    """Latency probe against the configured backend."""
+
+    def __init__(self, target: "Target", parent=None) -> None:
+        super().__init__(parent)
+        self.target = target
+        self.worker: BenchmarkWorker | None = None
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(10)
+        title = QLabel("Backend benchmark")
+        title.setObjectName("sectionTitle")
+        layout.addWidget(title)
+        self.detail = QLabel(f"{target.label or 'Backend'} · {target.host or 'no host'}")
+        self.detail.setObjectName("muted")
+        layout.addWidget(self.detail)
+        self.result = QLabel("Not run yet")
+        self.result.setWordWrap(True)
+        layout.addWidget(self.result)
+        run = QPushButton("Run latency test")
+        run.setObjectName("primary")
+        run.clicked.connect(self.run_test)
+        layout.addWidget(run)
+        layout.addStretch()
+
+    def run_test(self) -> None:
+        if self.worker is not None and self.worker.isRunning():
+            return
+        if not _probe(self.target.host):
+            self.result.setText("Backend is not running — press Start backend.")
+            return
+        self.result.setText("Running…")
+        worker = BenchmarkWorker(self.target.host, self.target.model)
+        self.worker = worker
+        worker.finished_ok.connect(self.result.setText)
+        worker.start()
+
+
+class StoragePage(QWidget):
+    """Encrypted history size, with a guarded clear action."""
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(10)
+        title = QLabel("Chat storage")
+        title.setObjectName("sectionTitle")
+        layout.addWidget(title)
+        self.detail = QLabel("")
+        self.detail.setObjectName("muted")
+        self.detail.setWordWrap(True)
+        layout.addWidget(self.detail)
+        row = QHBoxLayout()
+        refresh = QPushButton("Refresh")
+        refresh.clicked.connect(self.refresh)
+        row.addWidget(refresh)
+        self.clear_button = QPushButton("Clear history")
+        self.clear_button.clicked.connect(self.clear)
+        row.addWidget(self.clear_button)
+        row.addStretch()
+        layout.addLayout(row)
+        self.status = QLabel("")
+        self.status.setObjectName("muted")
+        layout.addWidget(self.status)
+        layout.addStretch()
+        self.refresh()
+
+    def refresh(self) -> None:
+        db = state_dir() / "secure_store.sqlite3"
+        size = db.stat().st_size if db.exists() else 0
+        try:
+            rows = len(load_history())
+        except Exception:
+            rows = 0
+        self.detail.setText(
+            f"{db.name} · {size / 1024:.1f} KiB · {rows} messages\n"
+            "Payloads are encrypted with secure_store.key (chmod 600)."
+        )
+
+    def clear(self) -> None:
+        connection = _secure_db()
+        try:
+            connection.execute("DELETE FROM chat_history")
+            connection.commit()
+        finally:
+            connection.close()
+        self.refresh()
+        self.status.setText("History cleared")
 
 
 if __name__ == "__main__":

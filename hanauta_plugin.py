@@ -7,7 +7,16 @@ from pathlib import Path
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QCursor
 from PyQt6.QtWidgets import QHBoxLayout, QLabel, QLineEdit, QPushButton, QVBoxLayout, QWidget
-from hanauta_aipopup.i18n import tr
+try:  # translations come from the legacy package while it exists; never fail without it
+    from hanauta_aipopup.i18n import tr
+except Exception:  # pragma: no cover - standalone plugin load
+
+    def tr(key: str, default: str = "", **kwargs: object) -> str:
+        text = default or key
+        try:
+            return text.format(**kwargs)
+        except Exception:
+            return text
 
 PLUGIN_ROOT = Path(__file__).resolve().parent
 AI_POPUP_APP = PLUGIN_ROOT / "ai_popup.py"
