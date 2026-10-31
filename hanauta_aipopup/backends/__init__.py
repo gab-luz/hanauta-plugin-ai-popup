@@ -228,17 +228,117 @@ def _reassign_busy_port(payload: dict[str, object]) -> str:
     return f"Port {parsed.port} was busy; using {free_port} instead."
 
 
+LFM3_HF_REPO = "abliter8-ai/lfm3-2b-omni-abliter8-gguf"
+LFM3_MODEL_FILE = "LFM3-Omni-2B-Abliter8-Q6_K.gguf"
+LFM3_MMPROJ_FILE = "mmproj-LFM3-Omni-2B-Abliter8-BF16.gguf"
+DEFAULT_LLAMA_CACHE = Path.home() / ".cache" / "hanauta-ai-popup" / "llm-models"
+
+
+def llama_cache_dir(payload: dict[str, object]) -> Path:
+    configured = str(payload.get("llama_hf_cache_dir", "")).strip()
+    return Path(configured).expanduser() if configured else DEFAULT_LLAMA_CACHE
+
+
+def _download_hf_file(repo: str, filename: str, dest: Path, timeout: float = 1800.0) -> Path:
+    """Fetch one file from a HF repo, writing through ``.part`` then renaming."""
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    partial = dest.with_name(dest.name + ".part")
+    url = f"https://huggingface.co/{repo.strip('/')}/resolve/main/{filename.lstrip('/')}?download=true"
+    request = _req.Request(url, headers={"User-Agent": "Hanauta AI/1.0"})
+    with _req.urlopen(request, timeout=timeout) as response, partial.open("wb") as handle:
+        while True:
+            chunk = response.read(1024 * 1024)
+            if not chunk:
+                break
+            handle.write(chunk)
+    partial.replace(dest)
+    return dest
+
+
+def resolve_llama_weights(
+    payload: dict[str, object],
+    *,
+    download: bool = True,
+) -> tuple[Path | None, Path | None, str]:
+    """Locate the GGUF + mmproj llama-server should load, adopting cache hits.
+
+    Configured paths win. Otherwise files already sitting in the download cache
+    are used (a saved path can be a stale placeholder such as ``/models/x.gguf``
+    while the weights were downloaded elsewhere), and when nothing is on disk
+    the published repo is fetched — LFM3 defaults to abliter8-ai's GGUF repo so
+    a fresh install can bring its own weights.
+
+    Returns ``(model, mmproj, note)`` and writes the resolved paths back into
+    ``payload`` so callers can persist them.
+    """
+    configured_model = str(payload.get("gguf_path", "")).strip()
+    # Match the file name only: a directory (or a pytest tmp path) containing
+    # "lfm3" must not make an unrelated model adopt LFM3's weights.
+    model_name = Path(configured_model).name.lower()
+    lfm3 = _llama_flavor(payload) == "lfm3" or "lfm3" in model_name
+    repo = str(payload.get("llama_hf_repo", "")).strip() or (LFM3_HF_REPO if lfm3 else "")
+    model_file = str(payload.get("llama_hf_file", "")).strip() or (LFM3_MODEL_FILE if lfm3 else "")
+    mmproj_file = str(payload.get("llama_hf_mmproj_file", "")).strip() or (LFM3_MMPROJ_FILE if lfm3 else "")
+
+    model = _existing_path(payload.get("gguf_path"))
+    mmproj = _existing_path(payload.get("mmproj_path"))
+    notes: list[str] = []
+    repo_dir = (llama_cache_dir(payload) / repo.replace("/", "--")) if repo else None
+
+    if repo_dir is not None and repo_dir.is_dir():
+        if model is None:
+            preferred = repo_dir / Path(model_file).name if model_file else None
+            if preferred is not None and preferred.is_file():
+                model = preferred
+            else:
+                candidates = sorted(
+                    path for path in repo_dir.glob("*.gguf") if not path.name.lower().startswith("mmproj")
+                )
+                if candidates:
+                    model = candidates[0]
+            if model is not None:
+                notes.append(f"Using cached {model.name}.")
+        if mmproj is None:
+            preferred = repo_dir / Path(mmproj_file).name if mmproj_file else None
+            if preferred is not None and preferred.is_file():
+                mmproj = preferred
+            else:
+                projector = sorted(repo_dir.glob("mmproj*.gguf"))
+                if projector:
+                    mmproj = projector[0]
+
+    allow_download = download and bool(payload.get("llama_auto_download", True))
+    if allow_download and repo and repo_dir is not None:
+        if model is None and model_file:
+            model = _download_hf_file(repo, model_file, repo_dir / Path(model_file).name)
+            notes.append(f"Downloaded {model.name}.")
+        if mmproj is None and mmproj_file:
+            try:
+                mmproj = _download_hf_file(repo, mmproj_file, repo_dir / Path(mmproj_file).name)
+                notes.append(f"Downloaded {mmproj.name}.")
+            except Exception:
+                # Images/audio need the projector; plain text chat does not, so a
+                # failed projection download must not block the whole backend.
+                notes.append(f"Could not download {Path(mmproj_file).name}; images/audio stay off.")
+
+    if model is not None:
+        payload["gguf_path"] = str(model)
+    if mmproj is not None:
+        payload["mmproj_path"] = str(mmproj)
+    return model, mmproj, " ".join(note for note in notes if note)
+
+
 def _missing_model_note(payload: dict[str, object]) -> str:
     """Actionable text in place of llama-server's bare "failed to load model"."""
     configured = str(payload.get("gguf_path", "")).strip()
     where = f" (configured path is missing: {configured})" if configured else ""
-    if _llama_flavor(payload) == "lfm3" or "lfm3" in configured.lower():
+    if _llama_flavor(payload) == "lfm3" or "lfm3" in Path(configured).name.lower():
         return (
-            f"LFM3-Omni weights are not on disk{where}. Download "
-            "abliter8-ai/lfm3-2b-omni-abliter8-gguf — LFM3-Omni-2B-Abliter8-Q6_K.gguf plus "
-            "mmproj-LFM3-Omni-2B-Abliter8-BF16.gguf — with the 'Download LFM3 GGUF + mmproj' "
-            "button in Settings → Backends, or point the model and mmproj fields at files you "
-            "already have."
+            f"LFM3-Omni weights are not on disk{where}. The backend downloads "
+            "abliter8-ai/lfm3-2b-omni-abliter8-gguf automatically when it starts — "
+            "LFM3-Omni-2B-Abliter8-Q6_K.gguf plus mmproj-LFM3-Omni-2B-Abliter8-BF16.gguf — "
+            "or use the 'Download LFM3 GGUF + mmproj' button in Settings → Backends. "
+            "Set llama_auto_download to false to opt out."
         )
     return (
         f"No GGUF model is configured{where}. Pick a local GGUF in Settings → Backends "
@@ -874,30 +974,12 @@ def _start_llamacpp_tuned(payload: dict[str, object]) -> tuple[bool, str]:
             payload["binary_path"] = str(cpu_binary)
             note = "GPU runtime reported no device; using the CPU build."
             bootstrap_note = f"{bootstrap_note} {note}".strip()
-    gguf_path = _existing_path(payload.get("gguf_path"))
-    if gguf_path is None:
-        repo = str(payload.get("llama_hf_repo", "")).strip()
-        filename = str(payload.get("llama_hf_file", "")).strip()
-        if repo and filename:
-            cache_root = Path(str(payload.get("llama_hf_cache_dir", Path.home() / ".cache" / "hanauta-ai-popup" / "llm-models"))).expanduser()
-            safe_repo = repo.replace("/", "--")
-            target_dir = cache_root / safe_repo
-            target_dir.mkdir(parents=True, exist_ok=True)
-            out = target_dir / Path(filename).name
-            if not out.exists() or out.stat().st_size <= 0:
-                url = f"https://huggingface.co/{repo}/resolve/main/{filename}?download=true"
-                try:
-                    req = _req.Request(url, headers={"User-Agent": "Hanauta AI/1.0"})
-                    with _req.urlopen(req, timeout=1800) as resp, out.open("wb") as handle:
-                        while True:
-                            chunk = resp.read(1024 * 1024)
-                            if not chunk:
-                                break
-                            handle.write(chunk)
-                except Exception as exc:
-                    return False, f"Failed to download llama.cpp target GGUF: {exc}"
-            payload["gguf_path"] = str(out)
-            gguf_path = out
+    try:
+        gguf_path, _mmproj_path, weight_note = resolve_llama_weights(payload)
+    except Exception as exc:
+        return False, f"Failed to download the llama.cpp GGUF model: {exc}"
+    if weight_note:
+        bootstrap_note = f"{bootstrap_note} {weight_note}".strip()
     if binary_path is None or gguf_path is None:
         return False, _missing_model_note(payload)
     command = [str(binary_path), "-m", str(gguf_path)]

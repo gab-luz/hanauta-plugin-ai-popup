@@ -195,6 +195,7 @@ class SidebarPanel(QFrame):
         )
         self.profile_by_key = {profile.key: profile for profile in self.profiles}
         self.backend_settings = load_backend_settings()
+        self._adopt_cached_llama_weights()
         _write_privacy_codebook(_voice_mode_settings(self.backend_settings))
         try:
             from .tts import _PROMPT_SMARTNESS
@@ -335,6 +336,7 @@ class SidebarPanel(QFrame):
         if not isinstance(fresh, dict) or not fresh:
             return
         self.backend_settings = fresh
+        self._adopt_cached_llama_weights()
         LOGGER.info("Backend settings reloaded from disk")
         self._refresh_backend_hint()
         self._refresh_available_backends()
@@ -687,6 +689,41 @@ class SidebarPanel(QFrame):
         if profile.key == "lfm3":
             self._maybe_autostart_lfm3()
 
+    def _adopt_cached_llama_weights(self) -> None:
+        """Point llama.cpp backends at weights that are already downloaded.
+
+        A saved path can be a stale placeholder (``/models/LFM3-....gguf``) while
+        the files themselves sit in the download cache, which made the popup
+        claim the model was missing. Adoption is free — it never hits the
+        network; an explicit start downloads whatever is genuinely absent.
+        """
+        from .backends import resolve_llama_weights
+
+        changed = False
+        for key in ("lfm3", "llamacpp"):
+            before = dict(self.backend_settings.get(key, {}) or {})
+            if not before:
+                continue
+            payload = dict(before)
+            try:
+                _model, _mmproj, note = resolve_llama_weights(payload, download=False)
+            except Exception as exc:
+                LOGGER.warning("Could not resolve %s weights: %s", key, exc)
+                continue
+            if note:
+                LOGGER.info("%s weights: %s", key, note)
+            if payload.get("gguf_path") == before.get("gguf_path") and payload.get("mmproj_path") == before.get("mmproj_path"):
+                continue
+            self.backend_settings[key] = payload
+            changed = True
+        if changed:
+            save_backend_settings(self.backend_settings)
+            LOGGER.info("Adopted downloaded GGUF weights into backend settings")
+            try:
+                self._backend_settings_mtime = self._backend_settings_file_mtime()
+            except Exception:
+                pass
+
     def _maybe_autostart_lfm3(self) -> None:
         """Start the pinned LFM3 runtime the first time its backend is selected."""
         if getattr(self, "_lfm3_autostart_attempted", False):
@@ -699,7 +736,23 @@ class SidebarPanel(QFrame):
         if running:
             return
         from .backends import _existing_path as _local_path
-        if _local_path(payload.get("binary_path")) is None or _local_path(payload.get("gguf_path")) is None:
+        from .backends import resolve_llama_weights
+        # Adopt weights already downloaded to the cache before deciding the model
+        # is missing: the saved path may be a stale placeholder such as
+        # /models/LFM3-....gguf while the files themselves are present.
+        model, mmproj, weight_note = resolve_llama_weights(payload, download=False)
+        if weight_note:
+            LOGGER.info("LFM3 autostart weights: %s", weight_note)
+        adopted = str(payload.get("gguf_path", "")) != str(self.backend_settings.get("lfm3", {}).get("gguf_path", ""))
+        if mmproj is not None and str(payload.get("mmproj_path", "")) != str(
+            self.backend_settings.get("lfm3", {}).get("mmproj_path", "")
+        ):
+            adopted = True
+        if adopted:
+            self.backend_settings["lfm3"] = dict(payload)
+            save_backend_settings(self.backend_settings)
+            LOGGER.info("LFM3 autostart adopted weights: %s", model)
+        if _local_path(payload.get("binary_path")) is None or model is None:
             return
         try:
             ok, message = _start_llamacpp(payload)
