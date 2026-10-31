@@ -313,6 +313,31 @@ class SidebarPanel(QFrame):
         self.monitor_timer = QTimer(self)
         self.monitor_timer.timeout.connect(self._poll_sd_output_monitors)
         self.monitor_timer.start(8000)
+        # Pick up backend_settings.json edits without restarting the popup.
+        self._backend_settings_mtime = self._backend_settings_file_mtime()
+        self.settings_watch_timer = QTimer(self)
+        self.settings_watch_timer.timeout.connect(self._reload_backend_settings_if_changed)
+        self.settings_watch_timer.start(2500)
+
+    def _backend_settings_file_mtime(self) -> float:
+        try:
+            return BACKEND_SETTINGS_FILE.stat().st_mtime
+        except OSError:
+            return 0.0
+
+    def _reload_backend_settings_if_changed(self) -> None:
+        mtime = self._backend_settings_file_mtime()
+        if mtime == self._backend_settings_mtime:
+            return
+        self._backend_settings_mtime = mtime
+        from .http import load_backend_settings as _load_backend_settings
+        fresh = _load_backend_settings()
+        if not isinstance(fresh, dict) or not fresh:
+            return
+        self.backend_settings = fresh
+        self._refresh_backend_hint()
+        self._refresh_available_backends()
+        self._sync_web_ui()
 
     def _popup_open(self) -> bool:
         win = self.window()
@@ -684,6 +709,11 @@ class SidebarPanel(QFrame):
         if not ok:
             # Surface the reason in the chat instead of only in the log.
             self.add_card(ChatItemData(role="system", title="LFM3-Omni", body=message))
+            return
+        # A busy port moves the server, so persist whatever host it settled on.
+        self.backend_settings["lfm3"] = dict(payload)
+        from .http import save_backend_settings as _save_backend_settings
+        _save_backend_settings(self.backend_settings)
 
     def _refresh_available_backends(self) -> None:
         available: list[BackendProfile] = []

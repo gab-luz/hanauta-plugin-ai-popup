@@ -140,6 +140,28 @@ def test_busy_port_is_reported_before_launching():
     assert backends._port_in_use_note({}) == ""
 
 
+def test_busy_port_is_reassigned_to_a_free_one():
+    import socket as _socket
+
+    dummy = _socket.socket()
+    dummy.bind(("127.0.0.1", 0))
+    dummy.listen(1)
+    busy = dummy.getsockname()[1]
+    try:
+        payload = {"host": f"127.0.0.1:{busy}"}
+        note = backends._reassign_busy_port(payload)
+        assert note and not note.startswith("!")
+        assert "busy" in note
+        new_port = int(str(payload["host"]).split(":")[1])
+        assert new_port > busy
+    finally:
+        dummy.close()
+    # A free port is left alone.
+    untouched = {"host": "127.0.0.1:1"}
+    assert backends._reassign_busy_port(untouched) == ""
+    assert untouched["host"] == "127.0.0.1:1"
+
+
 def test_cpu_build_reports_no_devices(monkeypatch, tmp_path):
     monkeypatch.setattr(
         backends.subprocess, "run",

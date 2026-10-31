@@ -195,6 +195,39 @@ def _port_in_use_note(payload: dict[str, object]) -> str:
     )
 
 
+def _pick_free_port(start_port: int, attempts: int = 25) -> int | None:
+    """First port at or after ``start_port`` that nothing is listening on."""
+    for port in range(start_port, min(start_port + attempts, 65536)):
+        try:
+            with socket.create_connection(("127.0.0.1", port), timeout=0.3):
+                continue
+        except OSError:
+            return port
+    return None
+
+
+def _reassign_busy_port(payload: dict[str, object]) -> str:
+    """Move the server to a free port instead of dying on a busy one.
+
+    Returns a note for the start message; a leading ``!`` marks a hard failure
+    so the caller can surface it as an error.
+    """
+    host = str(payload.get("host", "")).strip()
+    if not host:
+        return ""
+    parsed = urlparse(_normalize_host_url(host))
+    if not parsed.hostname or not parsed.port:
+        return ""
+    problem = _port_in_use_note(payload)
+    if not problem:
+        return ""
+    free_port = _pick_free_port(parsed.port + 1)
+    if free_port is None:
+        return f"!{problem}"
+    payload["host"] = f"{parsed.hostname}:{free_port}"
+    return f"Port {parsed.port} was busy; using {free_port} instead."
+
+
 def _missing_model_note(payload: dict[str, object]) -> str:
     """Actionable text in place of llama-server's bare "failed to load model"."""
     configured = str(payload.get("gguf_path", "")).strip()
@@ -934,9 +967,11 @@ def start_llamacpp(payload: dict[str, object]) -> tuple[bool, str]:
             note = f"Ignored flags this llama.cpp build does not support: {', '.join(dropped)}."
             bootstrap_note = f"{bootstrap_note} {note}".strip()
         command.extend(extra_tokens)
-    port_problem = _port_in_use_note(payload)
-    if port_problem:
-        return False, port_problem
+    port_note = _reassign_busy_port(payload)
+    if port_note.startswith("!"):
+        return False, port_note[1:]
+    if port_note:
+        bootstrap_note = f"{bootstrap_note} {port_note}".strip()
     try:
         process = subprocess.Popen(
             command,
