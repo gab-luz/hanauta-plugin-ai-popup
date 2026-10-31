@@ -688,6 +688,7 @@ def _ensure_voice_whisper_script() -> Path:
 from __future__ import annotations
 
 import argparse
+import inspect
 import json
 import os
 import sys
@@ -719,13 +720,20 @@ def _resolve_model_path(model_name: str, model_cache: Path) -> Path:
     os.environ.setdefault("HF_HUB_DOWNLOAD_TIMEOUT", "35")
     os.environ.setdefault("HF_HUB_ETAG_TIMEOUT", "20")
     try:
-        snapshot_download(
-            repo_id=repo_id,
-            local_dir=str(target),
-            local_dir_use_symlinks=False,
-            max_workers=4,
-            etag_timeout=20,
-        )
+        # huggingface_hub keeps reshaping this call (local_dir_use_symlinks was
+        # dropped, metadata_errors moved between versions), so only pass the
+        # keywords this installed build actually declares.
+        wanted = {
+            "repo_id": repo_id,
+            "local_dir": str(target),
+            "max_workers": 4,
+            "etag_timeout": 20,
+        }
+        accepted = set(inspect.signature(snapshot_download).parameters)
+        call = {key: value for key, value in wanted.items() if key in accepted}
+        if "local_dir_use_symlinks" in accepted:
+            call["local_dir_use_symlinks"] = False
+        snapshot_download(**call)
     except KeyboardInterrupt:
         raise RuntimeError(
             "Whisper model download was interrupted. "
@@ -834,13 +842,20 @@ def _resolve_model_path(model_name: str, model_cache: Path) -> Path:
     os.environ.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
     os.environ.setdefault("HF_HUB_DOWNLOAD_TIMEOUT", "35")
     os.environ.setdefault("HF_HUB_ETAG_TIMEOUT", "20")
-    snapshot_download(
-        repo_id=repo_id,
-        local_dir=str(target),
-        local_dir_use_symlinks=False,
-        max_workers=4,
-        etag_timeout=20,
-    )
+    # Only pass keywords this huggingface_hub build declares; the signature has
+    # changed more than once (local_dir_use_symlinks removed, metadata_errors
+    # moved), and a mismatch surfaces as an opaque TypeError at model load.
+    wanted = {
+        "repo_id": repo_id,
+        "local_dir": str(target),
+        "max_workers": 4,
+        "etag_timeout": 20,
+    }
+    accepted = set(inspect.signature(snapshot_download).parameters)
+    call = {key: value for key, value in wanted.items() if key in accepted}
+    if "local_dir_use_symlinks" in accepted:
+        call["local_dir_use_symlinks"] = False
+    snapshot_download(**call)
     return target
 
 
@@ -993,7 +1008,13 @@ if __name__ == "__main__":
 def _transcribe_with_whisper(audio_path: Path, config: dict[str, object]) -> str:
     model_name = _canonical_whisper_model(config.get("stt_model", "small"))
     device = "gpu" if str(config.get("stt_device", "cpu")).lower() == "gpu" else "cpu"
-    python_bin = _ensure_voice_venv("whisper", model_name, device, ["faster-whisper", "huggingface-hub"], "faster_whisper")
+    python_bin = _ensure_voice_venv(
+        "whisper",
+        model_name,
+        device,
+        ["faster-whisper>=1.0,<1.2", "huggingface-hub>=0.23,<1.0"],
+        "faster_whisper",
+    )
     script_path = _ensure_voice_whisper_script()
     model_cache = _voice_venv_dir("whisper", model_name, device) / "model-cache"
     def _build_cmd(cache_dir: Path) -> list[str]:

@@ -51,7 +51,10 @@ __POPUP_THEME_CSS__
         <div class="conversation" id="conversation"></div>
         <div class="composer">
           <div class="attachment-tray" id="attachmentTray" hidden></div>
-          <textarea id="composerInput" placeholder="__I18N_COMPOSER_PLACEHOLDER__"></textarea>
+          <div class="input-row">
+            <textarea id="composerInput" placeholder="__I18N_COMPOSER_PLACEHOLDER__"></textarea>
+            <button class="send-btn" id="sendBtn" title="__I18N_SEND_MESSAGE__" aria-label="__I18N_SEND_MESSAGE__"><img class="icon-svg btn-icon" id="sendIcon" alt="" /></button>
+          </div>
           <div class="slash-menu" id="slashMenu" hidden></div>
           <div class="composer-row">
             <div class="provider" id="providerLabel"></div>
@@ -60,7 +63,6 @@ __POPUP_THEME_CSS__
             <button class="send-btn secondary" id="archiveBtn" title="__I18N_ARCHIVE_CHAT__" aria-label="__I18N_ARCHIVE_CHAT__"><img class="icon-svg btn-icon" id="archiveIcon" alt="" /></button>
             <button class="send-btn secondary" id="exportBtn" title="__I18N_EXPORT_CHAT__" aria-label="__I18N_EXPORT_CHAT__"><img class="icon-svg btn-icon" id="exportIcon" alt="" /></button>
             <button class="send-btn secondary" id="clearBtn" title="__I18N_CLEAR_CHAT__" aria-label="__I18N_CLEAR_CHAT__"><img class="icon-svg btn-icon" id="clearIcon" alt="" /></button>
-            <button class="send-btn" id="sendBtn" title="__I18N_SEND_MESSAGE__" aria-label="__I18N_SEND_MESSAGE__"><img class="icon-svg btn-icon" id="sendIcon" alt="" /></button>
           </div>
         </div>
       </div>

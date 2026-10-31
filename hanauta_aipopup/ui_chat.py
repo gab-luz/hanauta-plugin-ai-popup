@@ -1303,7 +1303,7 @@ class VoiceModelsWarmupWorker(QThread):
         device = "gpu" if str(self.config.get("stt_device", "cpu")).lower() == "gpu" else "cpu"
         logging.info(f"[VoiceModels] _warm_stt: whisper model={model_name} device={device}")
         self._emit("Whisper", f"Preparing runtime (model={model_name}, device={device})")
-        _ensure_voice_venv("whisper", model_name, device, ["faster-whisper", "huggingface-hub"], "faster_whisper")
+        _ensure_voice_venv("whisper", model_name, device, list(_WHISPER_REQUIREMENTS), "faster_whisper")
         self._emit("Whisper", "Runtime dependencies ready")
         _ensure_voice_whisper_script()
         self._emit("Whisper", "Warmup script ready")
@@ -1447,6 +1447,11 @@ class VoiceModelsWarmupWorker(QThread):
         except Exception:
             pass
         return True
+
+
+# huggingface-hub 1.x changed the loader signature faster-whisper calls, which
+# surfaced as "open() got an unexpected keyword argument 'metadata_errors'".
+_WHISPER_REQUIREMENTS = ("faster-whisper>=1.0,<1.2", "huggingface-hub>=0.23,<1.0")
 
 
 class VoiceConversationWorker(QThread):
@@ -1595,27 +1600,55 @@ class VoiceConversationWorker(QThread):
             return None
         model_name = _canonical_whisper_model(self.config.get("stt_model", "small"))
         device = "gpu" if str(self.config.get("stt_device", "cpu")).lower() == "gpu" else "cpu"
-        python_bin = _ensure_voice_venv("whisper", model_name, device, ["faster-whisper", "huggingface-hub"], "faster_whisper")
+        python_bin = _ensure_voice_venv("whisper", model_name, device, list(_WHISPER_REQUIREMENTS), "faster_whisper")
         script_path = _ensure_voice_whisper_stream_script()
         model_cache = _voice_venv_dir("whisper", model_name, device) / "model-cache"
         model_cache.mkdir(parents=True, exist_ok=True)
+        log_path = _voice_venv_dir("whisper", model_name, device) / "stream.log"
+        try:
+            log_handle = open(log_path, "w", encoding="utf-8")
+        except Exception:
+            log_handle = subprocess.DEVNULL
+        self._whisper_stream_log = log_handle
         try:
             proc = subprocess.Popen(
                 [str(python_bin), str(script_path), "--model", model_name, "--device", device, "--model-cache", str(model_cache)],
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
-                stderr=subprocess.DEVNULL,
+                stderr=log_handle,
                 text=True,
                 bufsize=1,
             )
         except Exception:
             return None
-        # Read the ready line (non-blocking-ish with short timeout via polling).
+        # The child prints one JSON line saying whether the model loaded. Treating
+        # any line as success kept a dead worker alive, so every later request
+        # returned an error object that was silently read as an empty transcript.
+        if proc.stdout is None:
+            return None
         try:
-            if proc.stdout:
-                proc.stdout.readline()
+            ready_line = proc.stdout.readline()
         except Exception:
-            pass
+            ready_line = ""
+        try:
+            ready = json.loads((ready_line or "").strip())
+        except Exception:
+            ready = {}
+        if not isinstance(ready, dict) or not bool(ready.get("ready", False)):
+            detail = str(ready.get("error", "") or "").strip() if isinstance(ready, dict) else ""
+            if not detail:
+                try:
+                    detail = log_path.read_text(encoding="utf-8").strip().splitlines()[-1]
+                except Exception:
+                    detail = ""
+            if detail:
+                self.status_changed.emit(f"Speech model unavailable: {detail[:180]}")
+            try:
+                proc.terminate()
+            except Exception:
+                pass
+            self._whisper_stream_proc = None
+            return None
         return proc
 
     def _whisper_stream_transcribe(self, audio_path: Path, prompt: str) -> str:
@@ -1638,7 +1671,10 @@ class VoiceConversationWorker(QThread):
             return ""
         if isinstance(msg, dict) and bool(msg.get("ok", False)):
             return str(msg.get("text", "")).strip()
-        return ""
+        # A failed chunk used to look like "the user said nothing"; fall back to
+        # the one-shot transcriber so the turn still produces text.
+        logging.warning("[Voice] Whisper stream chunk failed: %s", msg)
+        return transcribe_voice_audio(audio_path, self.config, self.profiles, self.backend_settings)
 
     def _record_seconds(self) -> int:
         try:

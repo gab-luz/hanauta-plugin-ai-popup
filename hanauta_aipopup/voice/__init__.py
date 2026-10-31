@@ -305,13 +305,23 @@ def _ensure_voice_venv(engine: str, model: str, device: str, requirements: list,
         result = subprocess.run([sys.executable, "-m", "venv", str(venv_dir)], capture_output=True, timeout=120)
         if result.returncode != 0 or not python_bin.exists():
             raise RuntimeError("Failed to create voice venv.")
+    # Pin changes must be able to repair an existing venv; a bare `import` check
+    # keeps stale, incompatible builds alive forever.
+    marker = venv_dir / ".requirements"
+    wanted = " ".join(str(item) for item in requirements)
+    installed_marker = marker.read_text(encoding="utf-8").strip() if marker.exists() else ""
     check = subprocess.run([str(python_bin), "-c", f"import {import_name}"], capture_output=True, timeout=30)
-    if check.returncode == 0:
+    if check.returncode == 0 and installed_marker == wanted:
         return python_bin
     subprocess.run([str(python_bin), "-m", "pip", "install", "-U", "pip", "setuptools", "wheel"], capture_output=True, timeout=240)
     result = subprocess.run([str(python_bin), "-m", "pip", "install", *requirements], capture_output=True, timeout=900)
     if result.returncode != 0:
-        raise RuntimeError("Voice runtime install failed.")
+        detail = (result.stderr or result.stdout or "").strip().splitlines()[-6:]
+        raise RuntimeError("Voice runtime install failed.\n" + "\n".join(detail))
+    try:
+        marker.write_text(wanted, encoding="utf-8")
+    except Exception:
+        pass
     return python_bin
 
 
