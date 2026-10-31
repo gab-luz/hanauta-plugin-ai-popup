@@ -1553,7 +1553,9 @@ class VoiceConversationWorker(QThread):
             self._whisper_stream_proc = None
 
     def _stt_streaming_enabled(self) -> bool:
-        return bool(self.config.get("stt_streaming_enabled", False))
+        # Live transcript by default: words appear while you speak. The voice
+        # defaults already say True, so False here only muted older configs.
+        return bool(self.config.get("stt_streaming_enabled", True))
 
     def _llm_streaming_enabled(self) -> bool:
         return bool(self.config.get("llm_streaming_enabled", True))
@@ -1818,6 +1820,13 @@ class VoiceConversationWorker(QThread):
                     speech_ms = 0
                     speech_seen = False
                     partial = ""
+                    if stt_backend == "whisper" and self._whisper_stream_proc is None:
+                        # First run builds the STT venv and downloads the model. Say
+                        # so, instead of listening in silence for minutes and looking
+                        # like the microphone was never opened.
+                        self.status_changed.emit("Loading speech model (first run)")
+                        self._whisper_stream_proc = self._whisper_stream_start()
+                        self.status_changed.emit("Listening")
                     while self._running and (time.time() - start) < max_seconds:
                         try:
                             part = _record_microphone_wav(chunk)

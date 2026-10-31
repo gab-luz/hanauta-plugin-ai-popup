@@ -95,16 +95,46 @@ def _voice_mode_defaults() -> dict:
     }
 
 
+def _pcm_rms(frames: bytes, width: int) -> float:
+    """Normalised RMS (0..1) of little-endian PCM frames.
+
+    ``audioop`` was removed in Python 3.13 and the voice venvs are 3.13, so the
+    old import raised, got swallowed, and reported *pure silence for every
+    recording* — voice mode looked deaf no matter which microphone it used.
+    """
+    import array
+
+    width = int(width or 2)
+    if not frames:
+        return 0.0
+    if width == 1:
+        # 8-bit WAV is unsigned.
+        samples: list[float] = [byte - 128 for byte in frames]
+    else:
+        usable = len(frames) - (len(frames) % width)
+        if usable <= 0:
+            return 0.0
+        code = "h" if width == 2 else "i" if width == 4 else ""
+        if not code:
+            return 0.0
+        values = array.array(code)
+        values.frombytes(frames[:usable])
+        if values.itemsize != width:
+            return 0.0
+        samples = [float(value) for value in values]
+    if not samples:
+        return 0.0
+    peak = float(1 << (8 * width - 1))
+    total = sum(sample * sample for sample in samples)
+    if total <= 0.0:
+        return 0.0
+    return (total / len(samples)) ** 0.5 / peak
+
+
 def _voice_recording_rms(audio_path: Path) -> float:
     try:
-        import audioop
         with wave.open(str(audio_path), "rb") as w:
-            width = w.getsampwidth()
-            frames = w.readframes(w.getnframes())
-        if not frames:
-            return 0.0
-        peak = float((1 << (8 * width - 1)) - 1)
-        return audioop.rms(frames, width) / peak if peak > 0 else 0.0
+            return _pcm_rms(w.readframes(w.getnframes()), w.getsampwidth())
     except Exception:
         return 0.0
 
