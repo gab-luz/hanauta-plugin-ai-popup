@@ -47,6 +47,25 @@ def _safe_mtime(path: str) -> float:
         return 0.0
 
 
+# Qt reports its own startup chatter at WARNING level; none of it is actionable.
+_BENIGN_QT_NOISE = (
+    "Qt[qt.multimedia.ffmpeg]",
+    "Qt[qt.core.qfuture.continuations]",
+    "Qt[default] :0 GPUInfo not initialized",
+    "Qt[qt.svg.draw] :0 The requested buffer size is too big",
+)
+
+
+class _BenignNoiseFilter(logging.Filter):
+    """Keep the error log limited to things worth acting on."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if record.levelno >= logging.ERROR:
+            return True
+        message = record.getMessage()
+        return not any(pattern in message for pattern in _BENIGN_QT_NOISE)
+
+
 def _setup_diagnostics() -> None:
     AI_STATE_DIR.mkdir(parents=True, exist_ok=True)
     if not LOGGER.handlers:
@@ -59,6 +78,8 @@ def _setup_diagnostics() -> None:
         file_handler = logging.FileHandler(AI_POPUP_ERROR_LOG_FILE, encoding="utf-8")
         file_handler.setLevel(logging.WARNING)
         file_handler.setFormatter(formatter)
+        # Only the file is filtered: the console still shows everything.
+        file_handler.addFilter(_BenignNoiseFilter())
         stream_handler: logging.Handler
         use_rich = str(os.environ.get("HANAUTA_AI_POPUP_RICH_LOG", "1")).strip().lower() not in {"0", "false", "no"}
         if use_rich:

@@ -2388,6 +2388,35 @@ class SidebarPanel(QFrame):
         worker.failed.connect(_on_fail)
         worker.start()
 
+    def _ensure_voice_llm_running(self, config: dict[str, object]) -> None:
+        """Start the voice text backend when voice mode needs it and it is down."""
+        if bool(config.get("llm_external_api", False)):
+            return
+        key = str(config.get("llm_profile", "")).strip()
+        if key not in {"lfm3", "llamacpp"}:
+            return
+        payload = dict(self.backend_settings.get(key, {}) or {})
+        if not payload:
+            return
+        running, _detail = _llamacpp_status(payload)
+        if running:
+            return
+        try:
+            ok, message = _start_llamacpp(payload)
+        except Exception as exc:
+            LOGGER.warning("Voice LLM start failed: %s", exc)
+            self._add_runtime_status_card(
+                "Voice LLM", f"Could not start {key}: {exc}", tone="warn", chips=["voice", "llm"]
+            )
+            return
+        LOGGER.info("Voice LLM start (%s): ok=%s %s", key, ok, message)
+        # The launch may have moved ports, so persist what it settled on.
+        self.backend_settings[key] = dict(payload)
+        from .http import save_backend_settings as _save_backend_settings
+        _save_backend_settings(self.backend_settings)
+        if not ok:
+            self._add_runtime_status_card("Voice LLM", message, tone="warn", chips=["voice", "llm"])
+
     def _start_voice_mode(self, config: dict[str, object]) -> None:
         LOGGER.info(
             "[VoiceMode] _start_voice_mode: stt_backend=%s stt_external_api=%s llm_profile=%s llm_external_api=%s tts_profile=%s",
@@ -2397,6 +2426,7 @@ class SidebarPanel(QFrame):
             bool(config.get("llm_external_api", False)),
             config.get("tts_profile"),
         )
+        self._ensure_voice_llm_running(config)
         try:
             stt_backend, stt_model = self._voice_stt_backend_model()
             llm_backend, llm_model = self._voice_llm_backend_model()
