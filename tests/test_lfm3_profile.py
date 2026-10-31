@@ -50,3 +50,12 @@ def test_lfm3_payload_saves_paths_and_context():
     assert saved["mmproj_path"].endswith("mmproj-BF16.gguf")
     assert saved["llama_context"] == "32768"
     assert saved["llama_runtime_flavor"] == "lfm3"
+    # Both switches are exposed in the UI rather than being JSON-only keys.
+    assert saved["llama_autostart"] is True
+    assert saved["llama_auto_accelerate"] is True
+    dialog.llama_autostart_check.setChecked(False)
+    dialog.llama_auto_accelerate_check.setChecked(False)
+    dialog._save_current_backend()
+    saved = dialog.settings["lfm3"]
+    assert saved["llama_autostart"] is False
+    assert saved["llama_auto_accelerate"] is False

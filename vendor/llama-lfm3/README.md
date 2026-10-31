@@ -29,9 +29,14 @@ cp -aL ~/.cache/hanauta-ai-popup/runtimes/lfm3-llama-cpp/cpu/llama-server \
 ```
 
 This drop-in is **CPU-only** (backend `cpu`). For CUDA/ROCm/Vulkan builds, use
-`BACKENDS="cuda" ./scripts/build_llama_lfm3.sh` and point the binary path at
-that build instead; Flash Attention and MTP are auto-enabled only when the
-build actually advertises them.
+`BACKENDS="cuda" ./scripts/build_llama_lfm3.sh`; the settings window's
+"compile automatically" path then installs it and fills in the binary field.
+Flash Attention and MTP are auto-enabled only when the build reports a GPU
+backend and advertises the flag.
+
+A GPU runtime can also be dropped in at `vendor/llama-lfm3-cuda/`, which is
+checked before this directory. It is not committed: `libggml-cuda.so` alone is
+~150 MB, so GPU users build locally in one click instead.
 
 Licence: llama.cpp is MIT. The patch comes from the Abliter8 serving repo; the
 model weights are covered by the LFM Open License v1.0.

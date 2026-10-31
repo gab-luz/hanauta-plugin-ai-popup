@@ -51,6 +51,8 @@ _LLAMA_INSTALL_DIRS: dict[str, str] = {
 }
 # Drop-in location for a maintainer-provided binary, so users never need a toolchain.
 _VENDOR_LLAMA_DIR = Path(__file__).resolve().parents[2] / "vendor" / "llama-lfm3"
+# GPU build, preferred when present so inference uses the graphics card.
+_VENDOR_LLAMA_CUDA_DIR = Path(__file__).resolve().parents[2] / "vendor" / "llama-lfm3-cuda"
 
 
 def _llama_flavor(payload: dict[str, object]) -> str:
@@ -97,6 +99,7 @@ def _prebuilt_llama_server(payload: dict[str, object]) -> Path | None:
         install_root / backend,
         install_root / "cpu",
         Path(str(plan["build_dir"])) / "bin",
+        _VENDOR_LLAMA_CUDA_DIR,
         _VENDOR_LLAMA_DIR,
     ]
     for root in roots:
@@ -134,6 +137,18 @@ def lfm3_build_env(plan: dict[str, object], payload: dict[str, object]) -> dict[
         if mmproj:
             env["SMOKE_MMPROJ"] = mmproj
     return env
+
+
+def _flash_attn_args(binary: Path | None) -> list[str]:
+    """``--flash-attn`` argv for this build.
+
+    Newer llama.cpp (including the LFM3 pin) made the value mandatory
+    (``--flash-attn [on|off|auto]``); passing the bare flag there aborts startup
+    with "expected value for argument". Older builds only accept the bare flag.
+    """
+    if binary is not None and llama_supports_flag(binary, "--flash-attn [on|off|auto]"):
+        return ["--flash-attn", "on"]
+    return ["--flash-attn"]
 
 
 def llama_supports_flag(binary: Path, flag: str) -> bool:
@@ -181,29 +196,36 @@ def auto_tune_payload(payload: dict[str, object]) -> dict[str, object]:
     if not bool(tuned.get("llama_auto_accelerate", True)):
         return tuned
     defaults = acceleration_defaults(tuned)
-    if "llama_flash_attn" not in tuned and defaults["flash_attn"]:
-        tuned["llama_flash_attn"] = True
-    if "llama_mtp_enabled" not in tuned and defaults["mtp"]:
-        tuned["llama_mtp_enabled"] = True
-    wanted = {"llama_flash_attn": "--flash-attn", "llama_mtp_enabled": "--model-draft"}
-    if any(tuned.get(key) for key in wanted):
-        binary = _prebuilt_llama_server(tuned)
-        if binary is not None:
-            notes = list(tuned.get("llama_autotune_notes") or [])  # type: ignore[arg-type]
-            if not llama_gpu_devices(binary):
-                # A CPU-only build never benefits from GPU flags, even when
-                # --help still advertises them.
-                for key in wanted:
-                    if tuned.get(key):
-                        tuned[key] = False
-                        notes.append(f"{key} disabled: this llama.cpp build has no GPU backend")
-            else:
-                for key, flag in wanted.items():
-                    if tuned.get(key) and not llama_supports_flag(binary, flag):
-                        tuned[key] = False
-                        notes.append(f"{key} disabled: this llama.cpp build lacks {flag}")
-            if notes:
-                tuned["llama_autotune_notes"] = notes
+    binary = _prebuilt_llama_server(tuned)
+    notes = list(tuned.get("llama_autotune_notes") or [])  # type: ignore[arg-type]
+
+    if binary is None:
+        # Nothing built yet: stay conservative rather than guessing that the
+        # build which appears later will be GPU-capable.
+        if defaults["flash_attn"] or defaults["mtp"]:
+            notes.append("acceleration left off: no llama.cpp binary resolved yet")
+    else:
+        devices = llama_gpu_devices(binary)
+        if not devices:
+            if defaults["flash_attn"]:
+                notes.append("llama_flash_attn disabled: this llama.cpp build has no GPU backend")
+        else:
+            if "device" not in tuned:
+                # -ngl only gets emitted for device=gpu, and without it llama.cpp
+                # stays on the CPU even in a CUDA build.
+                tuned["device"] = "gpu"
+            if defaults["flash_attn"] and "llama_flash_attn" not in tuned:
+                if llama_supports_flag(binary, "--flash-attn"):
+                    tuned["llama_flash_attn"] = True
+                else:
+                    notes.append("llama_flash_attn disabled: this build lacks --flash-attn")
+            if defaults["mtp"] and "llama_mtp_enabled" not in tuned:
+                if llama_supports_flag(binary, "--model-draft"):
+                    tuned["llama_mtp_enabled"] = True
+                else:
+                    notes.append("llama_mtp_enabled disabled: this build lacks --model-draft")
+    if notes:
+        tuned["llama_autotune_notes"] = notes
     return tuned
 
 
@@ -687,7 +709,7 @@ def start_llamacpp(payload: dict[str, object]) -> tuple[bool, str]:
         command.extend(str(flag) for flag in extra_flags if str(flag).strip())
     # Performance flags
     if bool(payload.get("llama_flash_attn", False)):
-        command.append("--flash-attn")
+        command.extend(_flash_attn_args(binary_path))
     if bool(payload.get("llama_mtp_enabled", False)):
         draft = _existing_path(payload.get("llama_mtp_draft_model"))
         if draft is None:

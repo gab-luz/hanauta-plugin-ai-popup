@@ -1361,6 +1361,17 @@ class BackendSettingsDialog(QDialog):
         )
         self.llama_auto_provision_check.setChecked(True)
         self.llama_scroll_layout.addWidget(self.llama_auto_provision_check)
+        self.llama_autostart_check = QCheckBox("Start this runtime when the backend is selected")
+        self.llama_autostart_check.setToolTip("Starts the server once on first selection, if a binary and model exist.")
+        self.llama_autostart_check.setChecked(True)
+        self.llama_scroll_layout.addWidget(self.llama_autostart_check)
+        self.llama_auto_accelerate_check = QCheckBox("Auto-enable acceleration the hardware supports")
+        self.llama_auto_accelerate_check.setToolTip(
+            "Flash Attention and GPU offload on a GPU-capable build, MTP when a draft model is "
+            "configured. Leave off to keep the flags exactly as checked below."
+        )
+        self.llama_auto_accelerate_check.setChecked(True)
+        self.llama_scroll_layout.addWidget(self.llama_auto_accelerate_check)
         self.llama_build_card = SurfaceFrame(bg=rgba(CARD_BG, 0.64), border=BORDER_SOFT, radius=14)
         self.llama_build_card.setStyleSheet(
             f"""
@@ -2611,6 +2622,8 @@ class BackendSettingsDialog(QDialog):
                 "llama_auto_configure_lfm3": bool(self.llama_auto_lfm3_check.isChecked()),
                 "llama_context": self.llama_context_input.text().strip(),
                 "llama_auto_provision": bool(self.llama_auto_provision_check.isChecked()),
+                "llama_autostart": bool(self.llama_autostart_check.isChecked()),
+                "llama_auto_accelerate": bool(self.llama_auto_accelerate_check.isChecked()),
                 "llama_source_dir": self.llama_source_dir_input.text().strip(),
                 "llama_build_dir": self.llama_build_dir_input.text().strip(),
                 "gemma4_audio_stt_enabled": bool(self.kobold_gemma4_audio_stt_check.isChecked()) if hasattr(self, "kobold_gemma4_audio_stt_check") else False,
@@ -2719,6 +2732,8 @@ class BackendSettingsDialog(QDialog):
         self.llama_mmproj_path_input.setText(str(payload.get("mmproj_path", "")))
         self.llama_context_input.setText(str(payload.get("llama_context", "")))
         self.llama_auto_provision_check.setChecked(bool(payload.get("llama_auto_provision", True)))
+        self.llama_autostart_check.setChecked(bool(payload.get("llama_autostart", True)))
+        self.llama_auto_accelerate_check.setChecked(bool(payload.get("llama_auto_accelerate", True)))
         if profile.key == "lfm3" and not self.llama_context_input.text().strip():
             # The Omni card's requirements, so the dedicated entry works untouched.
             self.llama_context_input.setText("32768")
