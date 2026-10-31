@@ -335,6 +335,7 @@ class SidebarPanel(QFrame):
         if not isinstance(fresh, dict) or not fresh:
             return
         self.backend_settings = fresh
+        LOGGER.info("Backend settings reloaded from disk")
         self._refresh_backend_hint()
         self._refresh_available_backends()
         self._sync_web_ui()

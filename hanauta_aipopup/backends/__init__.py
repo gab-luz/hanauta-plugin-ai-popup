@@ -831,9 +831,28 @@ def llamacpp_status(payload: dict[str, object]) -> tuple[bool, str]:
     return False, "Server inactive"
 
 
+_LAUNCH_STATE_KEYS = (
+    "binary_path", "gguf_path", "mmproj_path", "host", "llamacpp_pid", "llamacpp_pgid",
+    "device", "llama_flash_attn", "llama_mtp_enabled", "llama_autotune_notes",
+)
+
+
 def start_llamacpp(payload: dict[str, object]) -> tuple[bool, str]:
-    # Hardware-derived defaults (Flash Attention / MTP) before anything reads them.
-    payload = auto_tune_payload(payload)
+    """Launch llama-server, copying its decisions back into the caller's payload.
+
+    Tuning and port reassignment work on a copy, so without this the caller keeps
+    a stale host and pid: requests go to the old port and the process cannot be
+    stopped by pid.
+    """
+    tuned = auto_tune_payload(payload)
+    ok, message = _start_llamacpp_tuned(tuned)
+    for key in _LAUNCH_STATE_KEYS:
+        if key in tuned:
+            payload[key] = tuned[key]
+    return ok, message
+
+
+def _start_llamacpp_tuned(payload: dict[str, object]) -> tuple[bool, str]:
     binary_path = _existing_path(payload.get("binary_path"))
     bootstrap_note = ""
     if binary_path is None:

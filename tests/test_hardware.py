@@ -140,6 +140,23 @@ def test_busy_port_is_reported_before_launching():
     assert backends._port_in_use_note({}) == ""
 
 
+def test_launch_state_is_copied_back_to_the_caller(monkeypatch):
+    # Tuning happens on a copy; the caller must still learn the port it landed
+    # on and the pid it needs to stop.
+    monkeypatch.setattr(backends, "auto_tune_payload", lambda payload: dict(payload))
+
+    def fake_start(tuned):
+        tuned["host"] = "127.0.0.1:9999"
+        tuned["llamacpp_pid"] = 4321
+        return True, "ok"
+
+    monkeypatch.setattr(backends, "_start_llamacpp_tuned", fake_start)
+    payload = {"host": "127.0.0.1:8082"}
+    assert backends.start_llamacpp(payload)[0] is True
+    assert payload["host"] == "127.0.0.1:9999"
+    assert payload["llamacpp_pid"] == 4321
+
+
 def test_busy_port_is_reassigned_to_a_free_one():
     import socket as _socket
 
