@@ -257,7 +257,9 @@ def _voice_mode_defaults() -> dict[str, object]:
         "barge_in_threshold": "0.035",
         # Streaming mode (more realistic voice agents): show live transcript, stream LLM tokens, and
         # speak the reply as it is generated (best with PocketTTS + KoboldCpp streaming).
-        "stt_streaming_enabled": False,
+        # Live transcript by default: the words appear while you speak instead of
+        # only after the utterance ends.
+        "stt_streaming_enabled": True,
         "llm_streaming_enabled": True,
         "tts_streaming_enabled": True,
         "tts_streaming_min_chars": "42",

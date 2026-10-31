@@ -53,7 +53,7 @@ def _voice_mode_defaults() -> dict:
         "tts_external_api": False,
         "barge_in_enabled": True,
         "barge_in_threshold": "0.035",
-        "stt_streaming_enabled": False,
+        "stt_streaming_enabled": True,
         "llm_streaming_enabled": True,
         "tts_streaming_enabled": True,
         "tts_streaming_min_chars": "42",
@@ -169,26 +169,93 @@ def _matches_stop_phrase(text: str, config: dict) -> bool:
     return False
 
 
+_INPUT_DEVICE_CACHE: str = ""
+SILENT_RMS = 1e-4
+
+
+def _arecord_command(device: str, duration: float, output: Path) -> list[str]:
+    return [
+        "arecord", "-q", "-D", device, "-f", "S16_LE", "-c", "1", "-r", "16000",
+        "-d", str(max(1, int(round(duration)))), str(output),
+    ]
+
+
+def _capture_devices() -> list[str]:
+    """ALSA capture devices, USB microphones before onboard analog.
+
+    The default input on this class of machine routes to an analog jack that
+    records pure silence, which made voice mode look like it was not listening.
+    """
+    import re
+
+    arecord = shutil.which("arecord")
+    if not arecord:
+        return []
+    try:
+        listing = subprocess.run(
+            [arecord, "-l"], capture_output=True, text=True, timeout=5
+        ).stdout or ""
+    except Exception:
+        return []
+    ranked: list[tuple[int, str]] = []
+    for line in listing.splitlines():
+        match = re.match(r"card (\d+): \S+ \[([^\]]*)\].*?device (\d+):", line)
+        if not match:
+            continue
+        card, name, index = match.groups()
+        usb = "usb" in f"{name} {line}".lower()
+        ranked.append((0 if usb else 1, f"plughw:{card},{index}"))
+    ranked.sort(key=lambda item: item[0])
+    return [device for _rank, device in ranked]
+
+
 def _record_microphone_wav(seconds: float) -> Path:
+    global _INPUT_DEVICE_CACHE
     VOICE_RECORDINGS_DIR.mkdir(parents=True, exist_ok=True)
     duration = max(0.25, min(30.0, float(seconds or 5.0)))
     output = VOICE_RECORDINGS_DIR / f"voice_{int(time.time() * 1000)}.wav"
-    commands = []
+
+    import os
+
+    attempts: list[list[str]] = []
+    override = str(os.environ.get("HANAUTA_MIC_DEVICE", "")).strip()
+    for device in ([override] if override else []) + ([_INPUT_DEVICE_CACHE] if _INPUT_DEVICE_CACHE else []):
+        attempts.append(_arecord_command(device, duration, output))
+    for device in _capture_devices():
+        attempts.append(_arecord_command(device, duration, output))
     if shutil.which("ffmpeg"):
-        commands.append(["ffmpeg", "-y", "-f", "pulse", "-i", "default", "-t", f"{duration:.2f}", "-ac", "1", "-ar", "16000", str(output)])
+        attempts.append([
+            "ffmpeg", "-y", "-f", "pulse", "-i", "default", "-t", f"{duration:.2f}",
+            "-ac", "1", "-ar", "16000", str(output),
+        ])
     if shutil.which("arecord"):
-        commands.append(["arecord", "-q", "-f", "S16_LE", "-c", "1", "-r", "16000", "-d", str(max(1, int(duration))), str(output)])
-    if shutil.which("pw-record"):
-        commands.append(["pw-record", "--channels", "1", "--rate", "16000", str(output)])
-    if not commands:
+        attempts.append([
+            "arecord", "-q", "-f", "S16_LE", "-c", "1", "-r", "16000",
+            "-d", str(max(1, int(duration))), str(output),
+        ])
+    if not attempts:
         raise RuntimeError("Install ffmpeg, arecord, or pw-record.")
-    for cmd in commands:
+
+    silent_output: Path | None = None
+    for command in attempts:
         try:
-            subprocess.run(cmd, capture_output=True, timeout=duration + 4, check=True)
-            if output.exists() and output.stat().st_size > 44:
-                return output
+            subprocess.run(command, capture_output=True, timeout=duration + 4, check=True)
         except Exception:
             continue
+        if not output.exists() or output.stat().st_size <= 44:
+            continue
+        if _voice_recording_rms(output) > SILENT_RMS:
+            if "-D" in command:
+                _INPUT_DEVICE_CACHE = command[command.index("-D") + 1]
+            return output
+        silent_output = output
+    if silent_output is not None:
+        # Every device produced a file but none carried audio; say so instead of
+        # looping forever in "Listening" as if the user were not speaking.
+        raise RuntimeError(
+            "Microphone captured only silence. Check that the mic is not muted and is the "
+            "default input, or set HANAUTA_MIC_DEVICE to a device from `arecord -l`."
+        )
     raise RuntimeError("Microphone recording failed.")
 
 

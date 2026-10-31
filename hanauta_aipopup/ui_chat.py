@@ -1819,7 +1819,12 @@ class VoiceConversationWorker(QThread):
                     speech_seen = False
                     partial = ""
                     while self._running and (time.time() - start) < max_seconds:
-                        part = _record_microphone_wav(chunk)
+                        try:
+                            part = _record_microphone_wav(chunk)
+                        except RuntimeError as exc:
+                            # A dead input is worth reporting once, not retrying blindly.
+                            self.status_changed.emit(str(exc))
+                            break
                         dur = _wav_duration_seconds(part) or chunk
                         rms = _voice_recording_rms(part)
                         if adaptive and ((not speech_seen) or rms < (threshold * hysteresis)):
