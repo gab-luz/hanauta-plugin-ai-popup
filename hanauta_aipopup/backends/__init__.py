@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 import shlex
 import signal
 import subprocess
@@ -139,6 +140,53 @@ def lfm3_build_env(plan: dict[str, object], payload: dict[str, object]) -> dict[
     return env
 
 
+def _draft_model_args(binary: Path | None, draft: str) -> list[str]:
+    """Draft-model argv. Newer llama.cpp renamed this to ``--spec-draft-model``."""
+    if binary is not None and llama_supports_flag(binary, "--spec-draft-model"):
+        return ["--spec-draft-model", draft]
+    return ["--model-draft", draft]
+
+
+def _draft_max_args(binary: Path | None, count: str) -> list[str]:
+    """Draft length argv. ``--draft-max`` was removed outright in newer builds."""
+    if binary is not None and llama_supports_flag(binary, "--spec-draft-n-max"):
+        return ["--spec-draft-n-max", count]
+    return ["--draft-max", count]
+
+
+def _cpu_runtime_binary(payload: dict[str, object]) -> Path | None:
+    """A CPU build to fall back to when the GPU runtime sees no device."""
+    roots: list[Path] = [_VENDOR_LLAMA_DIR]
+    try:
+        roots.insert(0, Path(str(_runtime_root(payload))))
+    except Exception:
+        pass
+    for root in roots:
+        for name in ("cpu", "backend"):
+            candidate = root / name / "llama-server"
+            if candidate.is_file():
+                return candidate
+    return None
+
+
+def _missing_model_note(payload: dict[str, object]) -> str:
+    """Actionable text in place of llama-server's bare "failed to load model"."""
+    configured = str(payload.get("gguf_path", "")).strip()
+    where = f" (configured path is missing: {configured})" if configured else ""
+    if _llama_flavor(payload) == "lfm3" or "lfm3" in configured.lower():
+        return (
+            f"LFM3-Omni weights are not on disk{where}. Download "
+            "abliter8-ai/lfm3-2b-omni-abliter8-gguf — LFM3-Omni-2B-Abliter8-Q6_K.gguf plus "
+            "mmproj-LFM3-Omni-2B-Abliter8-BF16.gguf — with the 'Download LFM3 GGUF + mmproj' "
+            "button in Settings → Backends, or point the model and mmproj fields at files you "
+            "already have."
+        )
+    return (
+        f"No GGUF model is configured{where}. Pick a local GGUF in Settings → Backends "
+        "or download one from the gallery."
+    )
+
+
 def _flash_attn_args(binary: Path | None) -> list[str]:
     """``--flash-attn`` argv for this build.
 
@@ -151,15 +199,97 @@ def _flash_attn_args(binary: Path | None) -> list[str]:
     return ["--flash-attn"]
 
 
-def llama_supports_flag(binary: Path, flag: str) -> bool:
-    """True when this llama-server build advertises ``flag`` in ``--help``."""
+def _help_text(binary: Path) -> str:
+    """``--help`` output of this build (empty when it cannot be run)."""
     try:
         result = subprocess.run(
-            [str(binary), "--help"], capture_output=True, text=True, timeout=15, check=False
+            [str(binary), "--help"], capture_output=True, text=True, timeout=15, check=False,
+            env=_server_env(binary),
         )
     except Exception:
+        return ""
+    return f"{result.stdout or ''}{result.stderr or ''}"
+
+
+def llama_supports_flag(binary: Path, flag: str) -> bool:
+    """True when this llama-server build advertises ``flag`` in ``--help``."""
+    return flag in _help_text(binary)
+
+
+def _flag_is_usable(help_text: str, flag: str) -> bool:
+    """False for unknown flags and for ones this build documents as removed."""
+    lines = [line for line in help_text.splitlines() if flag in line]
+    if not lines:
         return False
-    return flag in f"{result.stdout or ''}{result.stderr or ''}"
+    return not all("removed" in line.lower() for line in lines)
+
+
+_VALUE_CHECKED_FLAGS = ("-ctk", "--cache-type-k", "-ctv", "--cache-type-v")
+
+
+def _value_is_allowed(help_text: str, flag: str, value: str) -> bool:
+    """Check a flag value against its documented ``allowed values:`` line."""
+    lines = help_text.splitlines()
+    for index, line in enumerate(lines):
+        if flag not in line:
+            continue
+        window = " ".join(lines[index : index + 4])
+        if "allowed values:" not in window:
+            return True
+        allowed = set(re.findall(r"[a-z0-9][a-z0-9_-]*", window.split("allowed values:", 1)[1]))
+        return value in allowed
+    return True
+
+
+def _spec_type_values_ok(help_text: str, value: str) -> bool:
+    """Whether every named speculative-decoding type exists in this build."""
+    line = next((item for item in help_text.splitlines() if "--spec-type" in item), "")
+    tail = line.split("--spec-type", 1)[-1].strip().split()
+    if not tail:
+        return True
+    allowed = set(re.findall(r"[a-z0-9][a-z0-9-]*", tail[0]))
+    return all(part.strip() in allowed for part in value.split(",") if part.strip())
+
+
+def _supported_extra_args(binary: Path | None, tokens: list[str]) -> tuple[list[str], list[str]]:
+    """Split extra args into those this build knows and those it would reject.
+
+    llama.cpp exits on an unknown flag, so a default written for one fork (the
+    shipped ``--spec-type nextn`` speed args) kills a differently pinned build
+    before it can serve anything.
+    """
+    if binary is None:
+        return tokens, []
+    help_text = _help_text(binary)
+    if not help_text.strip():
+        return tokens, []
+    kept: list[str] = []
+    dropped: list[str] = []
+    index = 0
+    while index < len(tokens):
+        token = tokens[index]
+        if token.startswith("-"):
+            name = token.split("=", 1)[0]
+            has_value = index + 1 < len(tokens) and not tokens[index + 1].startswith("-")
+            if not _flag_is_usable(help_text, name):
+                dropped.append(name)
+                index += 2 if has_value else 1
+                continue
+            # Some flags survive as documented no-ops ("the argument has been
+            # removed"), and others reject unknown values such as a spec type.
+            if name == "--spec-type" and has_value and not _spec_type_values_ok(help_text, tokens[index + 1]):
+                dropped.append(f"{name} {tokens[index + 1]}")
+                index += 2
+                continue
+            if name in _VALUE_CHECKED_FLAGS and has_value and not _value_is_allowed(
+                help_text, name, tokens[index + 1]
+            ):
+                dropped.append(f"{name} {tokens[index + 1]}")
+                index += 2
+                continue
+        kept.append(token)
+        index += 1
+    return kept, dropped
 
 
 _GPU_DEVICE_MARKERS = ("cuda", "vulkan", "metal", "hip", "rocm", "sycl", "opencl")
@@ -169,14 +299,19 @@ def llama_gpu_devices(binary: Path) -> list[str]:
     """GPU backends this build can actually use (empty for a CPU-only build)."""
     try:
         result = subprocess.run(
-            [str(binary), "--list-devices"], capture_output=True, text=True, timeout=15, check=False
+            [str(binary), "--list-devices"], capture_output=True, text=True, timeout=15, check=False,
+            # Without the runtime's own library path a CUDA build cannot load
+            # libggml-cuda.so and misleadingly reports zero devices.
+            env=_server_env(binary),
         )
     except Exception:
         return []
     devices: list[str] = []
     for line in f"{result.stdout or ''}{result.stderr or ''}".splitlines():
         lowered = line.lower()
-        if "device" not in lowered and "backend" not in lowered:
+        # llama.cpp prints "  CUDA0: NVIDIA ..." without the word "device" on the
+        # line itself, so only the GPU marker identifies a usable backend.
+        if "available" in lowered:
             continue
         if any(marker in lowered for marker in _GPU_DEVICE_MARKERS):
             devices.append(line.strip())
@@ -210,20 +345,22 @@ def auto_tune_payload(payload: dict[str, object]) -> dict[str, object]:
             if defaults["flash_attn"]:
                 notes.append("llama_flash_attn disabled: this llama.cpp build has no GPU backend")
         else:
-            if "device" not in tuned:
-                # -ngl only gets emitted for device=gpu, and without it llama.cpp
-                # stays on the CPU even in a CUDA build.
-                tuned["device"] = "gpu"
-            if defaults["flash_attn"] and "llama_flash_attn" not in tuned:
+            # The settings dialog always writes a device and checks these boxes,
+            # so a stored "cpu"/false is its default rather than a decision. This
+            # switch is the opt-out, which is why it is checked first.
+            tuned["device"] = "gpu"
+            if defaults["flash_attn"]:
                 if llama_supports_flag(binary, "--flash-attn"):
                     tuned["llama_flash_attn"] = True
                 else:
                     notes.append("llama_flash_attn disabled: this build lacks --flash-attn")
-            if defaults["mtp"] and "llama_mtp_enabled" not in tuned:
-                if llama_supports_flag(binary, "--model-draft"):
+            if defaults["mtp"]:
+                if llama_supports_flag(binary, "--spec-draft-model") or llama_supports_flag(
+                    binary, "--model-draft"
+                ):
                     tuned["llama_mtp_enabled"] = True
                 else:
-                    notes.append("llama_mtp_enabled disabled: this build lacks --model-draft")
+                    notes.append("llama_mtp_enabled disabled: this build has no draft-model flag")
     if notes:
         tuned["llama_autotune_notes"] = notes
     return tuned
@@ -650,6 +787,15 @@ def start_llamacpp(payload: dict[str, object]) -> tuple[bool, str]:
         payload["binary_path"] = str(managed_bin)
         binary_path = managed_bin
         bootstrap_note = note_boot
+    # A CUDA build with no usable device fails deep inside llama.cpp; use the CPU
+    # runtime instead of refusing to start.
+    if binary_path is not None and "cuda" in str(binary_path).lower() and not llama_gpu_devices(binary_path):
+        cpu_binary = _cpu_runtime_binary(payload)
+        if cpu_binary is not None:
+            binary_path = cpu_binary
+            payload["binary_path"] = str(cpu_binary)
+            note = "GPU runtime reported no device; using the CPU build."
+            bootstrap_note = f"{bootstrap_note} {note}".strip()
     gguf_path = _existing_path(payload.get("gguf_path"))
     if gguf_path is None:
         repo = str(payload.get("llama_hf_repo", "")).strip()
@@ -675,7 +821,7 @@ def start_llamacpp(payload: dict[str, object]) -> tuple[bool, str]:
             payload["gguf_path"] = str(out)
             gguf_path = out
     if binary_path is None or gguf_path is None:
-        return False, "Configure both llama.cpp binary path and GGUF model first."
+        return False, _missing_model_note(payload)
     command = [str(binary_path), "-m", str(gguf_path)]
     # Context window. Without an explicit -c llama-server uses the model's trained
     # context, which is far too small for a chat plus images/audio on some cards.
@@ -697,6 +843,11 @@ def start_llamacpp(payload: dict[str, object]) -> tuple[bool, str]:
     mmproj_path = _existing_path(payload.get("mmproj_path"))
     if mmproj_path is not None:
         command.extend(["--mmproj", str(mmproj_path)])
+    elif str(payload.get("mmproj_path", "")).strip():
+        # Never hand llama-server a path that is not there: it logs a CLIP error
+        # and silently drops image/audio input instead of failing clearly.
+        note = "The configured mmproj is missing, so image and audio input are disabled."
+        bootstrap_note = f"{bootstrap_note} {note}".strip()
     # Chat template + reasoning mode. The LFM3-Omni card serves the model with
     # `--jinja --reasoning off` (it is a non-reasoning architecture).
     if bool(payload.get("llama_jinja", True)):
@@ -736,10 +887,10 @@ def start_llamacpp(payload: dict[str, object]) -> tuple[bool, str]:
                 payload["llama_mtp_draft_model"] = str(out)
                 draft = out
         if draft is not None:
-            command.extend(["--draft-model", str(draft)])
+            command.extend(_draft_model_args(binary_path, str(draft)))
         draft_n = str(payload.get("llama_mtp_draft_n", "")).strip()
         if draft_n:
-            command.extend(["--draft-max", draft_n])
+            command.extend(_draft_max_args(binary_path, draft_n))
     n_batch = str(payload.get("llama_n_batch", "")).strip()
     if n_batch:
         command.extend(["--batch-size", n_batch])
@@ -749,9 +900,14 @@ def start_llamacpp(payload: dict[str, object]) -> tuple[bool, str]:
     extra_args = str(payload.get("llama_extra_args", "")).strip()
     if extra_args:
         try:
-            command.extend(shlex.split(extra_args))
+            extra_tokens = shlex.split(extra_args)
         except Exception:
             return False, "Invalid llama.cpp extra args."
+        extra_tokens, dropped = _supported_extra_args(binary_path, extra_tokens)
+        if dropped:
+            note = f"Ignored flags this llama.cpp build does not support: {', '.join(dropped)}."
+            bootstrap_note = f"{bootstrap_note} {note}".strip()
+        command.extend(extra_tokens)
     try:
         process = subprocess.Popen(
             command,

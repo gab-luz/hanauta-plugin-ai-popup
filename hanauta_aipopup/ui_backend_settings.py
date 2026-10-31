@@ -1322,6 +1322,13 @@ class BackendSettingsDialog(QDialog):
         self.llama_hf_draft_file_input.clicked.connect(self._browse_llama_draft_gguf)
         llama_draft_layout.addWidget(self.llama_hf_draft_file_input, 2)
         self.llama_scroll_layout.addWidget(self.llama_draft_row)
+        self.llama_download_draft_btn = QPushButton("Download draft model (MTP)")
+        self.llama_download_draft_btn.setToolTip(
+            "Fetches the draft GGUF named above (default: LFM3-1.7B-Q4_K_M, same tokenizer "
+            "family) into the model cache and turns MTP on."
+        )
+        self.llama_download_draft_btn.clicked.connect(self._download_lfm3_draft)
+        self.llama_scroll_layout.addWidget(self.llama_download_draft_btn)
         self.llama_hf_cache_dir_input = ClickableLineEdit()
         self.llama_hf_cache_dir_input.setPlaceholderText("Model cache dir, e.g. ~/.cache/hanauta-ai-popup/llm-models")
         self.llama_hf_cache_dir_input.clicked.connect(self._browse_llama_cache_dir)
@@ -2755,7 +2762,11 @@ class BackendSettingsDialog(QDialog):
         self.llama_hf_repo_input.setText(str(payload.get("llama_hf_repo", "")))
         self.llama_hf_file_input.setText(str(payload.get("llama_hf_file", "")))
         self.llama_hf_draft_repo_input.setText(str(payload.get("llama_hf_draft_repo", "")))
+        self.llama_hf_draft_repo_input.setText(str(payload.get("llama_hf_draft_repo", "")))
         self.llama_hf_draft_file_input.setText(str(payload.get("llama_hf_draft_file", "")))
+        if profile.key == "lfm3" and not self.llama_hf_draft_repo_input.text().strip():
+            self.llama_hf_draft_repo_input.setPlaceholderText("LiquidAI/LFM3-1.7B-GGUF (default)")
+            self.llama_hf_draft_file_input.setPlaceholderText("LFM3-1.7B-Q4_K_M.gguf (default)")
         self.llama_hf_cache_dir_input.setText(str(payload.get("llama_hf_cache_dir", "")))
         # The dedicated LFM3 entry defaults to the pinned LFM3 runtime; an explicit
         # saved flavor always wins.
@@ -2865,6 +2876,7 @@ class BackendSettingsDialog(QDialog):
         self.llama_numeric_row.setVisible(is_llamacpp)
         self.llama_target_row.setVisible(is_llamacpp)
         self.llama_draft_row.setVisible(is_llamacpp)
+        self.llama_download_draft_btn.setVisible(is_llamacpp)
         self.llama_build_card.setVisible(is_llamacpp)
         self.device_combo.setVisible(device_enabled)
         self.negative_prompt_input.setVisible(is_sd)
@@ -3279,6 +3291,32 @@ class BackendSettingsDialog(QDialog):
             self.status_label.setStyleSheet(f"color: {UI_TEXT_MUTED};")
             return
         self._download_gguf(entry)
+
+    def _download_lfm3_draft(self) -> None:
+        """Download a speculative-decoding draft model into the shared cache."""
+        if self._selected_profile().key not in {"llamacpp", "lfm3"}:
+            self.status_label.setText("Select the llama.cpp or LFM3 backend first.")
+            self.status_label.setStyleSheet(f"color: {UI_TEXT_MUTED};")
+            return
+        # LFM3-1.7B shares the LFM3 language backbone's tokenizer, which is what
+        # speculative decoding requires; a different vocab cannot draft.
+        repo = self.llama_hf_draft_repo_input.text().strip() or "LiquidAI/LFM3-1.7B-GGUF"
+        filename = self.llama_hf_draft_file_input.text().strip() or "LFM3-1.7B-Q4_K_M.gguf"
+        self.llama_hf_draft_repo_input.setText(repo)
+        self.llama_hf_draft_file_input.setText(filename)
+        started = self._gguf_download_manager.start(
+            {"id": "lfm3_draft", "title": f"Draft {filename}", "repo_id": repo, "file": filename, "mmproj": "none"}
+        )
+        if not started:
+            self.status_label.setText("A draft download is already running.")
+            self.status_label.setStyleSheet(f"color: {UI_TEXT_MUTED};")
+            return
+        self.gguf_download_progress.show()
+        self.gguf_download_progress_label.show()
+        self.gguf_download_progress.setValue(0)
+        self.gguf_download_progress_label.setText("Starting draft download…")
+        self.status_label.setText(f"Downloading draft model: {filename}")
+        self.status_label.setStyleSheet(f"color: {UI_TEXT_MUTED};")
 
     def _copy_llama_build_log(self) -> None:
         text = self.llama_build_log.toPlainText().strip() if hasattr(self, "llama_build_log") else ""
@@ -4670,7 +4708,7 @@ class BackendSettingsDialog(QDialog):
 
     def _on_gguf_download_progress(self, entry_id: str, value: int, message: str) -> None:
         profile = self._selected_profile()
-        if profile.key != "koboldcpp":
+        if profile.key not in {"koboldcpp", "llamacpp", "lfm3"}:
             return
         self.gguf_download_progress.show()
         self.gguf_download_progress_label.show()
@@ -4682,6 +4720,15 @@ class BackendSettingsDialog(QDialog):
     def _on_gguf_download_finished(self, entry_id: str, path: str) -> None:
         model_path, _, mmproj_path = path.partition("|")
         profile = self._selected_profile()
+        if entry_id == "lfm3_draft" and model_path:
+            self.llama_mtp_draft_input.setText(model_path)
+            self.llama_mtp_check.setChecked(True)
+            self.gguf_download_progress.setValue(100)
+            self.gguf_download_progress_label.setText("Draft model ready")
+            self.status_label.setText(f"Draft model ready: {Path(model_path).name}. MTP enabled.")
+            self.status_label.setStyleSheet(f"color: {ACCENT};")
+            send_desktop_notification("Draft model ready", f"MTP can now use {Path(model_path).name}.")
+            return
         entry = self._gguf_download_manager.entry(entry_id)
         if entry:
             # Reproducible runtime: carry the model's pinned ref/patch into the
@@ -4713,7 +4760,7 @@ class BackendSettingsDialog(QDialog):
 
     def _on_gguf_download_failed(self, entry_id: str, message: str) -> None:
         profile = self._selected_profile()
-        if profile.key != "koboldcpp":
+        if profile.key not in {"koboldcpp", "llamacpp", "lfm3"}:
             return
         self.gguf_download_progress.hide()
         self.gguf_download_progress_label.hide()

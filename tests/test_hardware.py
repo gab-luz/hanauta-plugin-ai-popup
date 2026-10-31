@@ -103,16 +103,56 @@ def test_auto_tune_refuses_flags_on_a_cpu_build(monkeypatch, tmp_path):
     assert "no GPU backend" in " ".join(tuned["llama_autotune_notes"])
 
 
-def test_auto_tune_respects_explicit_choices(monkeypatch, tmp_path):
+def test_auto_tune_treats_saved_defaults_as_unset(monkeypatch, tmp_path):
+    # The dialog always saves device=cpu and unchecked boxes, so those values
+    # must not be read as "the user said no" on a machine with a GPU.
     monkeypatch.setattr("hanauta_aipopup.hardware.acceleration_defaults", lambda payload: {"flash_attn": True, "mtp": True})
     _patch_binary(monkeypatch, tmp_path, gpu=True)
-    kept = backends.auto_tune_payload({"llama_flash_attn": False, "llama_mtp_enabled": False, "device": "cpu"})
-    assert kept["llama_flash_attn"] is False
-    assert kept["llama_mtp_enabled"] is False
-    assert kept["device"] == "cpu"
-    # The opt-out switch disables tuning entirely.
-    off = backends.auto_tune_payload({"llama_auto_accelerate": False})
-    assert "llama_flash_attn" not in off and "device" not in off
+    tuned = backends.auto_tune_payload(
+        {"llama_flash_attn": False, "llama_mtp_enabled": False, "device": "cpu", "llama_mtp_draft_model": "/d.gguf"}
+    )
+    assert tuned["llama_flash_attn"] is True
+    assert tuned["llama_mtp_enabled"] is True
+    assert tuned["device"] == "gpu"
+
+
+def test_auto_tune_opt_out_switch(monkeypatch, tmp_path):
+    monkeypatch.setattr("hanauta_aipopup.hardware.acceleration_defaults", lambda payload: {"flash_attn": True, "mtp": True})
+    _patch_binary(monkeypatch, tmp_path, gpu=True)
+    off = backends.auto_tune_payload({"llama_auto_accelerate": False, "device": "cpu"})
+    assert "llama_flash_attn" not in off and off["device"] == "cpu"
+
+
+def test_cpu_build_reports_no_devices(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        backends.subprocess, "run",
+        lambda cmd, **kwargs: _Result("Available devices:\n"),
+    )
+    binary = tmp_path / "llama-server"
+    binary.write_text("x")
+    assert backends.llama_gpu_devices(binary) == []
+
+
+def test_gpu_probe_sets_the_runtime_library_path(monkeypatch, tmp_path):
+    # A CUDA build only loads libggml-cuda.so when its own directory is on the
+    # library path; without it --list-devices reports nothing.
+    seen = {}
+
+    def fake_run(cmd, **kwargs):
+        seen[cmd[-1]] = kwargs.get("env", {}).get("LD_LIBRARY_PATH", "")
+        # Exactly what the real binary prints; note the line has no "device" word.
+        listing = "Available devices:\n  CUDA0: NVIDIA GeForce RTX 3060 (12029 MiB, 5096 MiB free)\n"
+        return _Result(listing if "--list-devices" in cmd else "--flash-attn")
+
+    monkeypatch.setattr(backends.subprocess, "run", fake_run)
+    binary = tmp_path / "llama-server"
+    binary.write_text("x")
+    assert backends.llama_gpu_devices(binary) == [
+        "CUDA0: NVIDIA GeForce RTX 3060 (12029 MiB, 5096 MiB free)"
+    ]
+    assert str(tmp_path) in seen["--list-devices"]
+    assert backends.llama_supports_flag(binary, "--flash-attn") is True
+    assert str(tmp_path) in seen["--help"]
 
 
 def test_flash_attn_passes_a_value_when_the_build_demands_one(monkeypatch, tmp_path):
@@ -125,6 +165,87 @@ def test_flash_attn_passes_a_value_when_the_build_demands_one(monkeypatch, tmp_p
     old = _patch_binary(monkeypatch, tmp_path, gpu=True, flags=("--flash-attn",))
     assert backends._flash_attn_args(old) == ["--flash-attn"]
     assert backends._flash_attn_args(None) == ["--flash-attn"]
+
+
+def test_draft_flags_follow_the_build_dialect(monkeypatch, tmp_path):
+    new = _patch_binary(monkeypatch, tmp_path, gpu=True, flags=("--spec-draft-model", "--spec-draft-n-max"))
+    assert backends._draft_model_args(new, "/d.gguf") == ["--spec-draft-model", "/d.gguf"]
+    assert backends._draft_max_args(new, "16") == ["--spec-draft-n-max", "16"]
+    old = _patch_binary(monkeypatch, tmp_path, gpu=True, flags=("--model-draft", "--draft-max"))
+    assert backends._draft_model_args(old, "/d.gguf") == ["--model-draft", "/d.gguf"]
+    assert backends._draft_max_args(old, "16") == ["--draft-max", "16"]
+
+
+REAL_HELP = "\n".join([
+    "-fa,   --flash-attn [on|off|auto]       set Flash Attention use",
+    "--batch-size N                          logical maximum batch size",
+    "--spec-type none,draft-simple,draft-mtp,ngram-cache",
+    "--draft, --draft-n, --draft-max N       the argument has been removed. use --spec-draft-n-max",
+])
+
+
+def _help_binary(monkeypatch, tmp_path):
+    monkeypatch.setattr(backends, "_help_text", lambda binary: REAL_HELP)
+    binary = tmp_path / "llama-server"
+    binary.write_text("x")
+    return binary
+
+
+def test_unknown_extra_args_are_dropped(monkeypatch, tmp_path):
+    binary = _help_binary(monkeypatch, tmp_path)
+    kept, dropped = backends._supported_extra_args(
+        binary, ["--spec-type", "nextn", "-fa", "on", "--batch-size", "1024", "--no-such-flag"]
+    )
+    assert kept == ["-fa", "on", "--batch-size", "1024"]
+    assert dropped == ["--spec-type nextn", "--no-such-flag"]
+
+
+def test_removed_and_unknown_values_are_dropped(monkeypatch, tmp_path):
+    # --draft-max is documented as removed and --spec-type nextn is not a type
+    # this build knows; either would abort startup.
+    binary = _help_binary(monkeypatch, tmp_path)
+    kept, dropped = backends._supported_extra_args(
+        binary, ["--spec-type", "nextn", "--batch-size", "512", "--draft-max", "2", "-fa", "on"]
+    )
+    assert kept == ["--batch-size", "512", "-fa", "on"]
+    assert "--spec-type nextn" in dropped and "--draft-max" in dropped
+
+
+def test_invalid_cache_type_value_is_dropped(monkeypatch, tmp_path):
+    # `-ctk turbo3` exists only in another fork's help; this build allows a
+    # fixed list and exits on anything else.
+    help_text = (
+        "-ctk,  --cache-type-k TYPE              KV cache data type for K\n"
+        "                                        allowed values: f32, f16, bf16, q8_0\n"
+    )
+    monkeypatch.setattr(backends, "_help_text", lambda binary: help_text)
+    binary = tmp_path / "llama-server"
+    binary.write_text("x")
+    kept, dropped = backends._supported_extra_args(binary, ["-ctk", "turbo3", "-ctk", "q8_0"])
+    assert kept == ["-ctk", "q8_0"]
+    assert dropped == ["-ctk turbo3"]
+
+
+def test_valid_spec_type_is_kept(monkeypatch, tmp_path):
+    binary = _help_binary(monkeypatch, tmp_path)
+    kept, dropped = backends._supported_extra_args(binary, ["--spec-type", "draft-mtp", "-fa", "on"])
+    assert kept == ["--spec-type", "draft-mtp", "-fa", "on"]
+    assert dropped == []
+
+
+def test_missing_weights_message_is_actionable():
+    note = backends._missing_model_note({"gguf_path": "/models/nope.gguf", "llama_runtime_flavor": "lfm3"})
+    assert "Q6_K" in note and "mmproj" in note and "/models/nope.gguf" in note
+    assert "Download LFM3" in note
+    generic = backends._missing_model_note({"gguf_path": "/models/nope.gguf"})
+    assert "No GGUF model is configured" in generic
+
+
+def test_cpu_runtime_is_found_for_the_gpu_fallback(monkeypatch, tmp_path):
+    (tmp_path / "cpu").mkdir()
+    (tmp_path / "cpu" / "llama-server").write_text("x")
+    monkeypatch.setattr(backends, "_runtime_root", lambda payload: tmp_path)
+    assert backends._cpu_runtime_binary({}) == tmp_path / "cpu" / "llama-server"
 
 
 def test_vendored_cuda_binary_wins_over_the_cpu_drop_in(monkeypatch, tmp_path):

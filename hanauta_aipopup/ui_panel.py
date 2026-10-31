@@ -679,6 +679,10 @@ class SidebarPanel(QFrame):
             LOGGER.info("LFM3 autostart: ok=%s %s", ok, message)
         except Exception as exc:
             LOGGER.warning("LFM3 autostart failed: %s", exc)
+            ok, message = False, f"LFM3-Omni could not start: {exc}"
+        if not ok:
+            # Surface the reason in the chat instead of only in the log.
+            self.add_card(ChatItemData(role="system", title="LFM3-Omni", body=message))
 
     def _refresh_available_backends(self) -> None:
         available: list[BackendProfile] = []
