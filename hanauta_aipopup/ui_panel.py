@@ -1783,6 +1783,36 @@ class SidebarPanel(QFrame):
                 active.append(profile)
         return active
 
+    def _download_progress_card(self, filename: str, done: int, total: int) -> None:
+        """Keep one card showing weight-download progress instead of many."""
+        from .catalog import _format_bytes
+
+        card_id = "lfm3-download-progress"
+        percent = int(done * 100 / total) if total > 0 else 0
+        size = (
+            f"{percent}% ({_format_bytes(done)} of {_format_bytes(total)})"
+            if total > 0
+            else _format_bytes(done)
+        )
+        body = f"<p>Downloading <code>{html.escape(filename)}</code> — {size}</p>"
+        for item in self.chat_history:
+            if getattr(item, "id", "") == card_id:
+                item.body = body
+                item.title = "Downloading LFM3 weights"
+                self._render_chat_history()
+                self._sync_web_ui()
+                QApplication.processEvents()
+                return
+        card = ChatItemData(
+            role="system",
+            title="Downloading LFM3 weights",
+            body=body,
+            chips=[SourceChipData("lfm3"), SourceChipData("download")],
+        )
+        card.id = card_id
+        self.add_card(card)
+        QApplication.processEvents()
+
     def _start_active_backends(self) -> list[str]:
         notes: list[str] = []
         for profile in self._active_backend_profiles():
@@ -1792,7 +1822,7 @@ class SidebarPanel(QFrame):
             if profile.key == "koboldcpp":
                 ok, message = _start_koboldcpp(payload)
             elif profile.key in {"llamacpp", "lfm3"}:
-                ok, message = _start_llamacpp(payload)
+                ok, message = _start_llamacpp(payload, progress=self._download_progress_card)
             elif profile.key == "kokorotts":
                 ok, message = _start_kokoro_server(payload)
             elif profile.key == "pockettts":
@@ -1852,7 +1882,7 @@ class SidebarPanel(QFrame):
             if profile.key == "koboldcpp":
                 ok, message = _start_koboldcpp(payload)
             elif profile.key in {"llamacpp", "lfm3"}:
-                ok, message = _start_llamacpp(payload)
+                ok, message = _start_llamacpp(payload, progress=self._download_progress_card)
             elif profile.key == "kokorotts":
                 ok, message = _start_kokoro_server(payload)
             elif profile.key == "pockettts":

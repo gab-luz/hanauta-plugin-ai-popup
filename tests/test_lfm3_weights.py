@@ -63,10 +63,14 @@ def test_configured_paths_are_never_overwritten(tmp_path, monkeypatch):
 def test_missing_weights_are_downloaded_from_the_lfm3_repo(tmp_path, monkeypatch):
     calls: list[tuple[str, str]] = []
 
-    def fake_download(repo: str, filename: str, dest: Path, timeout: float = 1800.0) -> Path:
+    def fake_download(
+        repo: str, filename: str, dest: Path, timeout: float = 1800.0, progress=None
+    ) -> Path:
         calls.append((repo, filename))
         dest.parent.mkdir(parents=True, exist_ok=True)
         dest.write_bytes(b"gguf")
+        if progress is not None:
+            progress(dest.name, 4, 4)
         return dest
 
     monkeypatch.setattr(backends, "_download_hf_file", fake_download)
@@ -80,6 +84,26 @@ def test_missing_weights_are_downloaded_from_the_lfm3_repo(tmp_path, monkeypatch
     assert "Downloaded" in note
 
 
+def test_download_progress_is_forwarded_to_the_caller(tmp_path, monkeypatch):
+    seen: list[tuple] = []
+
+    def fake_download(repo, filename, dest, timeout=1800.0, progress=None):
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(b"x" * 10)
+        if progress is not None:
+            progress(dest.name, 10, 10)
+        return dest
+
+    monkeypatch.setattr(backends, "_download_hf_file", fake_download)
+
+    def report(name: str, done: int, total: int) -> None:
+        seen.append((name, done, total))
+
+    backends.resolve_llama_weights(_payload(tmp_path), progress=report)
+
+    assert seen and seen[0][1] == 10
+
+
 def test_auto_download_can_be_disabled(tmp_path, monkeypatch):
     monkeypatch.setattr(backends, "_download_hf_file", lambda *a, **k: pytest.fail("network used"))
 
@@ -91,7 +115,9 @@ def test_auto_download_can_be_disabled(tmp_path, monkeypatch):
 
 
 def test_a_failed_projector_download_still_leaves_text_usable(tmp_path, monkeypatch):
-    def fake_download(repo: str, filename: str, dest: Path, timeout: float = 1800.0) -> Path:
+    def fake_download(
+        repo: str, filename: str, dest: Path, timeout: float = 1800.0, progress=None
+    ) -> Path:
         if filename.startswith("mmproj"):
             raise RuntimeError("404")
         dest.parent.mkdir(parents=True, exist_ok=True)

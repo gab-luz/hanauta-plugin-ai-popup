@@ -239,19 +239,51 @@ def llama_cache_dir(payload: dict[str, object]) -> Path:
     return Path(configured).expanduser() if configured else DEFAULT_LLAMA_CACHE
 
 
-def _download_hf_file(repo: str, filename: str, dest: Path, timeout: float = 1800.0) -> Path:
-    """Fetch one file from a HF repo, writing through ``.part`` then renaming."""
+def _download_hf_file(
+    repo: str,
+    filename: str,
+    dest: Path,
+    timeout: float = 1800.0,
+    progress: callable | None = None,
+) -> Path:
+    """Fetch one file from a HF repo, writing through ``.part`` then renaming.
+
+    ``progress(name, done, total)`` is called at most twice a second so a caller
+    can render the download without being flooded with per-megabyte updates.
+    """
+    import time as _time
+
     dest.parent.mkdir(parents=True, exist_ok=True)
     partial = dest.with_name(dest.name + ".part")
     url = f"https://huggingface.co/{repo.strip('/')}/resolve/main/{filename.lstrip('/')}?download=true"
     request = _req.Request(url, headers={"User-Agent": "Hanauta AI/1.0"})
     with _req.urlopen(request, timeout=timeout) as response, partial.open("wb") as handle:
+        try:
+            total = int(response.headers.get("Content-Length") or 0)
+        except Exception:
+            total = 0
+        done = 0
+        last_report = 0.0
         while True:
             chunk = response.read(1024 * 1024)
             if not chunk:
                 break
             handle.write(chunk)
+            done += len(chunk)
+            if progress is not None:
+                now = _time.time()
+                if now - last_report >= 0.5 or (total and done >= total):
+                    last_report = now
+                    try:
+                        progress(Path(filename).name, done, total)
+                    except Exception:
+                        progress = None
     partial.replace(dest)
+    if progress is not None:
+        try:
+            progress(Path(filename).name, done, done)
+        except Exception:
+            pass
     return dest
 
 
@@ -259,6 +291,7 @@ def resolve_llama_weights(
     payload: dict[str, object],
     *,
     download: bool = True,
+    progress: callable | None = None,
 ) -> tuple[Path | None, Path | None, str]:
     """Locate the GGUF + mmproj llama-server should load, adopting cache hits.
 
@@ -310,11 +343,15 @@ def resolve_llama_weights(
     allow_download = download and bool(payload.get("llama_auto_download", True))
     if allow_download and repo and repo_dir is not None:
         if model is None and model_file:
-            model = _download_hf_file(repo, model_file, repo_dir / Path(model_file).name)
+            model = _download_hf_file(
+                repo, model_file, repo_dir / Path(model_file).name, progress=progress
+            )
             notes.append(f"Downloaded {model.name}.")
         if mmproj is None and mmproj_file:
             try:
-                mmproj = _download_hf_file(repo, mmproj_file, repo_dir / Path(mmproj_file).name)
+                mmproj = _download_hf_file(
+                    repo, mmproj_file, repo_dir / Path(mmproj_file).name, progress=progress
+                )
                 notes.append(f"Downloaded {mmproj.name}.")
             except Exception:
                 # Images/audio need the projector; plain text chat does not, so a
@@ -937,22 +974,22 @@ _LAUNCH_STATE_KEYS = (
 )
 
 
-def start_llamacpp(payload: dict[str, object]) -> tuple[bool, str]:
+def start_llamacpp(payload: dict[str, object], progress: callable | None = None) -> tuple[bool, str]:
     """Launch llama-server, copying its decisions back into the caller's payload.
 
     Tuning and port reassignment work on a copy, so without this the caller keeps
     a stale host and pid: requests go to the old port and the process cannot be
-    stopped by pid.
+    stopped by pid. ``progress`` is forwarded to the weight download.
     """
     tuned = auto_tune_payload(payload)
-    ok, message = _start_llamacpp_tuned(tuned)
+    ok, message = _start_llamacpp_tuned(tuned, progress=progress)
     for key in _LAUNCH_STATE_KEYS:
         if key in tuned:
             payload[key] = tuned[key]
     return ok, message
 
 
-def _start_llamacpp_tuned(payload: dict[str, object]) -> tuple[bool, str]:
+def _start_llamacpp_tuned(payload: dict[str, object], progress: callable | None = None) -> tuple[bool, str]:
     binary_path = _existing_path(payload.get("binary_path"))
     bootstrap_note = ""
     if binary_path is None:
@@ -975,7 +1012,7 @@ def _start_llamacpp_tuned(payload: dict[str, object]) -> tuple[bool, str]:
             note = "GPU runtime reported no device; using the CPU build."
             bootstrap_note = f"{bootstrap_note} {note}".strip()
     try:
-        gguf_path, _mmproj_path, weight_note = resolve_llama_weights(payload)
+        gguf_path, _mmproj_path, weight_note = resolve_llama_weights(payload, progress=progress)
     except Exception as exc:
         return False, f"Failed to download the llama.cpp GGUF model: {exc}"
     if weight_note:

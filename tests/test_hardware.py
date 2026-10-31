@@ -145,7 +145,7 @@ def test_launch_state_is_copied_back_to_the_caller(monkeypatch):
     # on and the pid it needs to stop.
     monkeypatch.setattr(backends, "auto_tune_payload", lambda payload: dict(payload))
 
-    def fake_start(tuned):
+    def fake_start(tuned, progress=None):
         tuned["host"] = "127.0.0.1:9999"
         tuned["llamacpp_pid"] = 4321
         return True, "ok"
